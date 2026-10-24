@@ -6,3 +6,5 @@
 *.jpeg binary
 *.gif binary
 *.pdf binary
+*.wav binary
+*.mp3 binary

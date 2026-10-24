@@ -221,3 +221,6 @@ __marimo__/
 
 # Local scratch output
 .tmp_preview/
+
+# Local writing-tool snapshots
+.writing/

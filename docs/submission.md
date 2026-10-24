@@ -21,13 +21,15 @@
 | 触觉规格 | `docs/tactile_spec.md` | 完成 |
 | 运行说明 | `docs/run_windows.md` | 完成 |
 | 盲测方案 | `docs/blind_test_protocol.md` | 方案完成，未执行 |
+| 盲测材料制作包 | `fabrication/README.md` | 完成 |
 | 两个案例输入 | `examples/*/diagram.json` | 完成 |
 | 两个案例 STL | `dist/*/model.stl` | 完成，未实体打印 |
 | 预览图 | `dist/*/preview.svg`、`docs/images/*.svg` | 完成 |
 | 检查报告 | `dist/*/report.json` | 完成 |
 | 决策轨迹 | `dist/*/trace.jsonl` | 完成 |
-| 音频脚本 | `dist/*/audio.txt` | 完成，未 TTS |
-| 图例卡 | `dist/*/legend.svg` | 完成，A6 打印件 |
+| 音频脚本 | `dist/*/audio.txt` | 完成，已导出试运行 TTS |
+| 试运行音频与播放页 | `fabrication/audio/` | TTS 完成，未真人录音、未手机实测 |
+| 图例卡 | `dist/*/legend.svg`、`fabrication/print/*.pdf` | 完成，A6 打印件，未送印 |
 | 测试 | `tests/` | 47 项通过 |
 | CI | `.github/workflows/ci.yml` | 完成 |
 | 可选 UI | `app/streamlit_app.py` | 完成，需标准 Python + Streamlit |
@@ -42,7 +44,7 @@
 - 8–12 页路演 PPT；
 - 实体打印照片或视频（打印完成后补）；
 - 盲测记录（如果能在截止前完成）；
-- 二维码指向的音频页面或音频文件；
+- 公开音频页面链接与二维码贴纸（制作方法见 `fabrication/README.md`）；
 - 任何使用到的第三方素材的授权说明。
 
 ## 4. 演示视频脚本（3 分钟版）
@@ -99,7 +101,7 @@ A：A5 PLA 板材料成本低，具体数字取决于当地耗材价格和打印
 
 **Q：二维码里是什么？**
 
-A：当前是音频脚本，尚未托管。二维码区在 STL 里预留，二维码本身是贴纸或后印刷。我们不想在演示里放一个打不开的链接。
+A：当前已有试运行 TTS 和本地播放页，尚未公开托管。二维码区在 STL 里预留，二维码本身是贴纸或后印刷。正式演示前会生成经过三台手机测试的公开链接；链接不稳定就不放二维码，不在台上赌网络。
 
 **Q：和 3D 打印盲文/触觉图现有工作相比呢？**
 
@@ -147,6 +149,9 @@ git status --short
 - [ ] README 的构建数字与 `dist/manifest.json` 一致；
 - [ ] `dist/` 里没有过期文件；
 - [ ] `docs/images/` 的预览与 `dist/` 同源；
+- [ ] `fabrication/print/*.pdf` 打开是单页 A6，中文字体已嵌入；
+- [ ] `fabrication/audio/*.wav` 能播放，对应 HTML 页面能打开；
+- [ ] 如果贴二维码，URL 在未登录的手机上实测通过；
 - [ ] 提交材料中没有姓名、电话、病历等个人信息；
 - [ ] 没有提交 `.env`、密钥、实验室照片、未授权字体或图片；
 - [ ] 视频和 PPT 中明确写出"未打印、未盲测"；

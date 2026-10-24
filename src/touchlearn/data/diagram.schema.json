@@ -20,7 +20,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "0.1.0"
+      "enum": ["0.1.0", "0.2.0"]
     },
     "id": {
       "type": "string",
@@ -39,7 +39,7 @@
     },
     "domain": {
       "type": "string",
-      "enum": ["robotics", "math", "other"]
+      "enum": ["robotics", "math", "scene", "other"]
     },
     "canvas": {
       "type": "object",
@@ -59,7 +59,7 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["photo", "sketch", "textbook", "expression", "manual", "other"]
+          "enum": ["photo", "sketch", "textbook", "expression", "manual", "scene", "document", "other"]
         },
         "ref": {"type": "string"},
         "note": {"type": "string"}
@@ -92,6 +92,7 @@
               "axis",
               "label",
               "legend",
+              "scene",
               "other"
             ]
           },
@@ -113,7 +114,7 @@
           "to": {"type": "string", "minLength": 1},
           "kind": {
             "type": "string",
-            "enum": ["joint", "connect", "contains", "on_curve", "through", "other"]
+            "enum": ["joint", "connect", "contains", "on_curve", "through", "reading_order", "other"]
           },
           "joint": {"type": "string", "maxLength": 12},
           "order": {"type": "integer", "minimum": 0},
@@ -128,7 +129,7 @@
       "properties": {
         "engine": {
           "type": "string",
-          "enum": ["kinematic_chain", "cartesian_plot"]
+          "enum": ["kinematic_chain", "cartesian_plot", "function_plot", "robot_relief", "scene"]
         },
         "options": {"type": "object", "additionalProperties": true}
       }

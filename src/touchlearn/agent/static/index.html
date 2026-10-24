@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TouchLearn · 触觉教材智能体</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+        </span>
+        <div class="brand-copy">
+          <h1>TouchLearn</h1>
+          <p>把图像、文字与三维文件，转成可直接打印的触觉教材</p>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="server-pill" id="serverPill" title="本地智能体连接状态">
+          <span class="server-dot" id="serverDot"></span>
+          <span id="serverLabel">连接本地智能体</span>
+        </div>
+        <button class="ghost small" id="helpBtn" type="button">使用说明</button>
+      </div>
+    </header>
+
+    <main class="workspace-grid">
+      <section class="card composer" aria-labelledby="composerTitle">
+        <div class="section-heading">
+          <span class="eyebrow">STEP 01</span>
+          <h2 id="composerTitle">描述你要做的触觉教材</h2>
+          <p>不限于函数和机械臂。智能体先判断需求路径、给出置信度与待确认问题，确认后才生成 STL。</p>
+        </div>
+
+        <div class="segmented" id="subjectTabs" role="tablist" aria-label="输入类型">
+          <button class="segment active" data-subject="auto" role="tab" aria-selected="true" type="button">任意需求</button>
+          <button class="segment" data-subject="function" role="tab" aria-selected="false" type="button">函数图像</button>
+          <button class="segment" data-subject="robot" role="tab" aria-selected="false" type="button">机械臂</button>
+          <button class="segment" data-subject="mesh" role="tab" aria-selected="false" type="button">三维文件</button>
+        </div>
+
+        <div class="provider-strip" id="providerStrip">
+          <span class="provider-dot" id="providerDot" aria-hidden="true"></span>
+          <span class="provider-copy">
+            <strong id="providerText">读取模型配置…</strong>
+            <span id="providerVision">视觉模型状态待读取</span>
+          </span>
+          <button class="link-button" id="providerRefresh" type="button">刷新</button>
+        </div>
+
+        <div class="subject-panel" data-panel="auto">
+          <label class="field">
+            <span class="field-label">用一句话描述你要的触觉教材</span>
+            <textarea id="freeText" rows="4" placeholder="例如：把这张细胞结构图做成 A5 触觉板；或画一个水循环流程图；或把这个 STL 缩放成 120 mm 高的模型">把这张串联电路示意图做成 A5 触觉板：电池、开关、电阻和灯泡依次连接成回路。</textarea>
+            <span class="field-hint">智能体先判断需求类型，再选择函数、机械臂、三维文件或通用场景管线。二维示意图会被拆成可触摸图块，按阅读顺序编号。</span>
+          </label>
+          <div class="chips" aria-label="任意需求示例">
+            <button type="button" class="chip" data-free-text="把这张教材里的细胞结构图做成可触摸的 A5 板：细胞膜、细胞核、线粒体和细胞质。">细胞结构</button>
+            <button type="button" class="chip" data-free-text="画一个说明水循环流程的触觉示意图：蒸发、凝结、降水、收集，用箭头按顺序连接。">水循环流程</button>
+            <button type="button" class="chip" data-free-text="画一个串联电路示意图：电池、开关、电阻和灯泡依次连接成回路。">串联电路</button>
+            <button type="button" class="chip" data-free-text="画一个直角三角形，标出三条边和直角符号。">几何图形</button>
+          </div>
+          <label class="field compact">
+            <span class="field-label">或选择一个离线结构模板（可选）</span>
+            <select id="sceneTemplate">
+              <option value="">让智能体判断或生成</option>
+            </select>
+            <span class="field-hint">模板不调用大模型，断网也能演示；选中后直接按模板排版。</span>
+          </label>
+          <p class="hint-line">支持图片、PDF、STL/OBJ、TXT/JSON：图片按结构参考，PDF/TXT/JSON 读取文字，场景 JSON 可直接排版。无法可靠转成触觉几何的请求会被明确拒绝，而不是硬生成一块无意义的板子。</p>
+        </div>
+
+        <div class="subject-panel hidden" data-panel="function">
+          <label class="field">
+            <span class="field-label">函数解析式</span>
+            <textarea id="expression" rows="2" spellcheck="false" placeholder="例如 x^2-2x-3">x^2-2x-3</textarea>
+            <span class="field-hint">支持 + − × ÷、幂、sin/cos/tan、sqrt、log、abs、π。自动计算视窗、零点、极值与 y 轴截距。</span>
+          </label>
+          <div class="chips" aria-label="示例">
+            <button type="button" class="chip" data-expression="x^2-2x-3">x²−2x−3</button>
+            <button type="button" class="chip" data-expression="sin(x)">sin(x)</button>
+            <button type="button" class="chip" data-expression="sqrt(x+4)">√(x+4)</button>
+          </div>
+          <details class="advanced">
+            <summary>手动指定视窗（可选）</summary>
+            <div class="grid-4">
+              <label class="field compact"><span class="field-label">x 最小</span><input id="xMin" type="number" step="0.1" placeholder="自动"></label>
+              <label class="field compact"><span class="field-label">x 最大</span><input id="xMax" type="number" step="0.1" placeholder="自动"></label>
+              <label class="field compact"><span class="field-label">y 最小</span><input id="yMin" type="number" step="0.1" placeholder="自动"></label>
+              <label class="field compact"><span class="field-label">y 最大</span><input id="yMax" type="number" step="0.1" placeholder="自动"></label>
+            </div>
+          </details>
+          <p class="hint-line">也可以上传函数图片或 PDF：PDF 会先读文字层，扫描件则需配置视觉模型。离线模式不会从图片里猜公式。</p>
+        </div>
+
+        <div class="subject-panel hidden" data-panel="robot">
+          <label class="field">
+            <span class="field-label">机械臂描述</span>
+            <textarea id="robotDescription" rows="3" placeholder="例如：六自由度机械臂，连杆约 150 毫米，末端是两指夹爪">六自由度机械臂，六个关节，连杆约 150 毫米，末端为两指夹爪。</textarea>
+            <span class="field-hint">支持中文自由描述，也支持直接上传书本图片、工程图、STL/OBJ 或 JSON 参数。</span>
+          </label>
+          <div class="grid-2">
+            <label class="field compact">
+              <span class="field-label">自由度</span>
+              <select id="dof">
+                <option value="4">4 轴</option>
+                <option value="5">5 轴</option>
+                <option value="6" selected>6 轴</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span class="field-label">末端执行器</span>
+              <select id="endEffector">
+                <option value="gripper" selected>两指夹爪</option>
+                <option value="suction">吸盘</option>
+              </select>
+            </label>
+          </div>
+          <label class="field compact">
+            <span class="field-label">连杆长度（毫米，应用到各连杆）</span>
+            <input id="linkLength" type="number" min="20" max="400" step="5" value="150">
+          </label>
+          <div class="mode-grid" role="radiogroup" aria-label="机械臂输出方式">
+            <label class="mode-card">
+              <input type="radio" name="robotMode" value="volumetric_model" checked>
+              <span class="mode-icon" aria-hidden="true">3D</span>
+              <span class="mode-title">三维立体缩小模型</span>
+              <span class="mode-desc">带底座、关节、夹爪和二维码平台，可整体打印后触摸。</span>
+            </label>
+            <label class="mode-card">
+              <input type="radio" name="robotMode" value="tactile_plate">
+              <span class="mode-icon" aria-hidden="true">A5</span>
+              <span class="mode-title">A5 浮雕触觉板</span>
+              <span class="mode-desc">把机械臂姿态刻成凸起示意图，带标注、盲文和缩放条。</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="subject-panel hidden" data-panel="mesh">
+          <div class="mode-grid" role="radiogroup" aria-label="三维文件输出方式">
+            <label class="mode-card">
+              <input type="radio" name="meshMode" value="volumetric_model" checked>
+              <span class="mode-icon" aria-hidden="true">STL</span>
+              <span class="mode-title">缩放为立体模型</span>
+              <span class="mode-desc">保持完整外形，按目标高度缩放并居中，适合直接打印。</span>
+            </label>
+            <label class="mode-card">
+              <input type="radio" name="meshMode" value="silhouette_relief">
+              <span class="mode-icon" aria-hidden="true">A5</span>
+              <span class="mode-title">投影为 A5 轮廓浮雕</span>
+              <span class="mode-desc">取最大两个投影面生成高度场。只保留外形，不还原文字和内部结构。</span>
+            </label>
+          </div>
+          <div class="grid-2">
+            <label class="field compact">
+              <span class="field-label">目标高度（毫米）</span>
+              <input id="meshHeight" type="number" min="20" max="220" step="5" value="120">
+            </label>
+            <label class="field compact">
+              <span class="field-label">浮雕分辨率（毫米）</span>
+              <input id="meshResolution" type="number" min="0.6" max="3" step="0.1" value="1.0">
+            </label>
+          </div>
+          <p class="hint-line">支持 STL（二进制/ASCII）和 OBJ。上传后会先做网格体检：三角面数、包围盒、水密性、体积与悬垂比例。</p>
+        </div>
+
+        <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="上传文件">
+          <input type="file" id="fileInput" multiple hidden>
+          <span class="dropzone-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="28" height="28"><path d="M12 16V4m0 0 4 4m-4-4L8 8M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span class="dropzone-title" id="dropTitle">拖入教材图片、工程图或三维文件</span>
+          <span class="dropzone-note" id="dropNote">PNG / JPG / PDF / STL / OBJ / TXT / JSON，单文件 30 MB 以内</span>
+        </div>
+        <ul class="file-list" id="fileList" aria-live="polite"></ul>
+
+        <button class="primary wide" id="analyzeBtn" type="button">
+          <span class="button-label">让智能体理解输入</span>
+          <span class="button-spinner" aria-hidden="true"></span>
+        </button>
+        <p class="privacy-note">STL 生成与合规检查始终在本机完成。配置云端模型后，理解阶段会把文字或图片发送到你选择的 API；密钥只保存在本机环境变量或 .env，不会写入产物。</p>
+      </section>
+
+      <div class="result-stack">
+        <section class="card draft-card" id="draftCard" aria-live="polite">
+          <div class="empty-state" id="draftEmpty">
+            <span class="empty-glyph" aria-hidden="true">
+              <svg viewBox="0 0 48 48" width="42" height="42"><path d="M10 38V14a4 4 0 0 1 4-4h14l10 10v18a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4Z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M28 10v10h10M16 26h16M16 32h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </span>
+            <h2>等待智能体理解</h2>
+            <p>左侧可以输入任意教材需求：函数、机械臂、二维示意图，或直接上传三维文件。智能体会先给出结构化草稿，确认后才开始建模。</p>
+            <ul class="empty-points">
+              <li>函数解析式 / 图片 → A5 触觉函数板</li>
+              <li>机械臂 → 立体模型或浮雕板</li>
+              <li>电路、流程、几何、细胞等二维示意图 → A5 触觉场景板</li>
+              <li>STL / OBJ → 缩放模型或轮廓浮雕</li>
+            </ul>
+          </div>
+          <div id="draftBody" class="hidden"></div>
+        </section>
+
+        <section class="card job-card" id="jobCard" aria-live="polite">
+          <div class="empty-state" id="jobEmpty">
+            <span class="empty-glyph" aria-hidden="true">
+              <svg viewBox="0 0 48 48" width="42" height="42"><path d="M8 34V14l12-6 12 6v20l-12 6-12-6Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 14l12 6 12-6M20 20v20" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+            </span>
+            <h2>产物会出现在这里</h2>
+            <p>STL、预览、合规报告、讲解音频、二维码和打印说明会打包到同一个作业目录。</p>
+            <div class="badge-row">
+              <span class="tag">STL</span><span class="tag">SVG 预览</span><span class="tag">合规报告</span><span class="tag">中文讲解</span><span class="tag">二维码</span>
+            </div>
+          </div>
+          <div id="jobBody" class="hidden"></div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <span>TouchLearn Agent 0.2 · 本地运行 · 可接多家大模型 API</span>
+      <span>标准依据：GB/T 40142-2021 · GB/T 39758-2021 · GB/T 44725-2024 · GF 0019-2018</span>
+      <span>STL 需由用户自行切片打印</span>
+    </footer>
+  </div>
+
+  <dialog class="help-dialog" id="helpDialog">
+    <div class="help-head">
+      <h2>使用说明</h2>
+      <button class="icon-button" id="helpClose" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="help-body">
+      <p><strong>1. 选输入。</strong>“任意需求”可以自由描述，也可以上传图片、PDF、STL/OBJ、TXT/JSON；函数和机械臂保留专用入口。</p>
+      <p><strong>2. 看草稿。</strong>智能体会把路由理由、理解结果、置信度和待确认问题摆出来；不会凭空补公式或尺寸。</p>
+      <p><strong>3. 选形态。</strong>机械臂和三维文件可选“立体缩小模型”或“A5 浮雕触觉板”；二维示意图统一排成 A5 触觉场景板。</p>
+      <p><strong>4. 生成产物。</strong>STL、预览、合规报告、中文讲解 WAV、二维码和打印说明会一起生成。大模型只负责理解与结构化，几何和合规判定由本机确定性代码完成。</p>
+      <p><strong>5. 扫码听讲解。</strong>二维码指向本机局域网地址，手机需与电脑在同一 Wi-Fi。首次使用请允许 Windows 防火墙放行 8765 端口。</p>
+      <p><strong>6. 打印。</strong>本智能体不直接控制打印机；把 STL 交给切片软件，按报告里的层高、支撑与方向建议打印。</p>
+      <p class="help-note">合规报告区分“可打印”和“完全合规”：前者只表示没有阻断打印的 FAIL；后者还要求没有工艺偏离和人工复核项。</p>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

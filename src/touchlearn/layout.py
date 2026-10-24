@@ -494,6 +494,18 @@ def build_layout(diagram: Diagram) -> LayoutResult:
         result = _layout_robot(diagram)
     elif engine == "cartesian_plot":
         result = _layout_quadratic(diagram)
+    elif engine in {"function_plot", "robot_relief", "scene"}:
+        # Imported lazily: the agent layout engines themselves build on the
+        # primitives in this module.
+        from .agent.parametric import build_function_layout, build_robot_layout
+        from .agent.scene import build_scene_layout
+
+        if engine == "function_plot":
+            result = build_function_layout(diagram)
+        elif engine == "robot_relief":
+            result = build_robot_layout(diagram)
+        else:
+            result = build_scene_layout(diagram)
     else:
         raise ValueError(f"unsupported layout engine: {engine}")
 

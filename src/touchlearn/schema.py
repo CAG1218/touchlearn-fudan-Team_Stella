@@ -14,8 +14,8 @@ from typing import Any
 
 from .model import DiagramError
 
-ALLOWED_ENGINES = {"kinematic_chain", "cartesian_plot"}
-ALLOWED_DOMAINS = {"robotics", "math", "other"}
+ALLOWED_ENGINES = {"kinematic_chain", "cartesian_plot", "function_plot", "robot_relief", "scene"}
+ALLOWED_DOMAINS = {"robotics", "math", "scene", "other"}
 ALLOWED_ELEMENT_KINDS = {
     "link",
     "joint",
@@ -26,6 +26,7 @@ ALLOWED_ELEMENT_KINDS = {
     "axis",
     "label",
     "legend",
+    "scene",
     "other",
 }
 
@@ -112,8 +113,8 @@ def _manual_checks(payload: dict[str, Any]) -> list[SchemaIssue]:
         if key not in payload:
             error("$", f"missing required field '{key}'")
 
-    if payload.get("schema_version") != "0.1.0":
-        error("$.schema_version", "expected schema_version '0.1.0'")
+    if payload.get("schema_version") not in {"0.1.0", "0.2.0"}:
+        error("$.schema_version", "expected schema_version '0.1.0' or '0.2.0'")
 
     domain = payload.get("domain")
     if domain not in ALLOWED_DOMAINS:

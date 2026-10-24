@@ -37,7 +37,7 @@
       "printability": "PASS",
       "stl": {
         "bytes": 937884,
-        "sha256": "455183563722603157930cd5c1572ec8165dd80ab9d73cd2e7f04b73e11149a1",
+        "sha256": "72907456c10901a5a1429eb4f56041c605eb922fef160927e4265743d3cc65f7",
         "triangles": 18756
       },
       "title": "Six-Axis Robot Arm",
@@ -76,12 +76,12 @@
       "printability": "PASS",
       "stl": {
         "bytes": 1032684,
-        "sha256": "07621d0947d915db49741e6c3aef9a1afdbf05a84b2a031e0fa1cc2563d42cd5",
+        "sha256": "e0284cf84f4fc587806764772732f8abc171e06515dcd04799b8042863b95d20",
         "triangles": 20652
       },
       "title": "Quadratic Function",
       "title_zh": "二次函数 y=x²-2x-3 图像"
     }
   ],
-  "tool": "touchlearn 0.1.0"
+  "tool": "touchlearn 0.2.0"
 }

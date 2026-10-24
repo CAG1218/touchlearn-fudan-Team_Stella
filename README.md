@@ -1,47 +1,72 @@
 # 触见 TouchLearn
 
-把 STEM 图重构成可触摸的 3D 结构图，配编号盲文和扫码音频。
+把多模态 STEM 学习材料转成**可打印、可触摸、可扫码听讲**的触觉产物。
 
 2026 复旦大学未来智造智能体大赛 · Team Stella
 
-TouchLearn 不是一个"把图片描一遍"的工具。它先要求输入一张图的**语义结构**（有哪些元素、谁和谁相连、关键点在哪），再由两个确定性布局引擎生成触觉版式，最后同时导出 STL、SVG 预览、可打印性报告、决策轨迹和中文音频脚本。所有产物都来自同一份 JSON，改一个数，版式、几何和讲解会一起变。
+TouchLearn 不是两个写死的案例。它是一套通用的“理解 → 确认 → 生成 → 合规检查”智能体：函数图和机械臂只是两个演示样例，电路、流程图、几何图形、坐标系、路线图、柱状图、细胞结构，以及用户上传的场景 JSON，都可以走同一条链路。核心几何、STL 和标准检查完全本地确定性执行；大模型只负责理解，不负责编造尺寸。
 
-当前版本是 **v0.1.0**：两个案例已经能完整编译并通过自动检查，但**尚未实体打印，也尚未经过盲人用户测试**。这一点在 README、提交材料和演示中都会如实标注。
+当前版本 **v0.2.0**。已经能端到端生成 STL、预览、合规报告、音频和二维码；**尚未完成实体打印验证和盲人用户测试**，这两点在本文和提交材料里都如实标注。
 
-## 两个案例
+## 它解决什么问题
 
-| 案例 | 语义内容 | 布局引擎 | 触觉重点 |
-|---|---|---|---|
-| 六轴机械臂 | 8 个元素：基座、3 段连杆、J1–J3、J4–J6 腕部、末端夹爪 | `kinematic_chain` | 串联运动链、关节顺序、腕部三轴不糊成一团 |
-| 二次函数 `y = x² − 2x − 3` | 8 个元素：曲线、顶点、两个根、对称轴、坐标轴、原点 | `cartesian_plot` | 曲线走向、顶点与根的位置、对称轴 |
+| 用户给出 | 智能体理解成 | 用户确认后得到 |
+|---|---|---|
+| 函数图片或 `x^2-2x-3` | 解析式、视窗、零点、极值 | A5 函数触觉板 |
+| 机械臂照片、工程图、文字描述 | 自由度、连杆、关节、末端 | 缩放立体模型或 A5 浮雕板 |
+| STL / OBJ | 网格健康、包围盒、水密性 | 缩放立体或高度场浮雕 |
+| 电路/流程图/几何/细胞/路线/柱状图 | 图块、图元、阅读顺序 | A5 结构触觉板 |
+| PDF / TXT / JSON | 文字层、场景结构 | 对应的函数、机械臂或场景草稿 |
+| 无法结构化的散文 | 明确拒绝 | 不生成无意义的板子 |
 
-两个案例都是 A5 竖版（148 × 210 mm）触觉板。机械臂用编号 1–8 的盲文索引，配合 A6 图例卡；函数图用编号 1–3 标出顶点和两个根，其余元素用短盲文标注。
+输出统一包含：`model.stl`、`preview.svg`、`compliance.json/md`、`diagram.json`、`decision_trace.json`、`manifest.json`、中文音频脚本与播放页、二维码贴纸、打印说明。用户拿 STL 去自己的切片软件和打印机；TouchLearn 不负责实体打印。
 
 ## 快速开始
 
-### Windows 自带 Python（本仓库的开发环境）
+### 1. 启动交互式前端（推荐）
 
-仓库里的 Python 是嵌入式发行版，不读 `PYTHONPATH`，也没有 setuptools。直接用引导脚本：
+仓库自带嵌入式 Python，不读 `PYTHONPATH`，用启动脚本：
+
+```bash
+python scripts/run_agent.py --port 8765
+```
+
+浏览器打开 `http://127.0.0.1:8765`。默认监听 `0.0.0.0`，同一 Wi-Fi 下的手机可以扫码访问音频页。
+
+关闭自动打开浏览器：
+
+```bash
+python scripts/run_agent.py --port 8765 --no-browser
+```
+
+### 2. 接入大模型（可选）
+
+不配置也能离线演示：分类走关键词，函数走正则，场景走 8 个离线模板，图片只留档不猜。要启用图片理解和自由文字生成场景，复制 `.env.example` 为 `.env`，填一个 OpenAI 兼容服务：
+
+```dotenv
+TOUCHLEARN_LLM_PROVIDER=dashscope
+TOUCHLEARN_LLM_KEY=sk-...
+```
+
+视觉模型默认复用同一预置；自定义网关时再填 `TOUCHLEARN_VLM_*`。支持 OpenAI、DeepSeek、阿里云百炼/通义千问、月之暗面/Kimi、智谱 GLM、本地 Ollama/vLLM 和任意兼容接口。详细配置、端点语义、失败行为见 [docs/providers.md](docs/providers.md)。
+
+密钥只从环境变量或本机 `.env` 读取，不写入作业目录，状态接口只返回 `has_key`。
+
+### 3. 命令行构建两个基准案例
 
 ```bash
 python scripts/dev_cli.py validate examples/robot_arm/diagram.json
-python scripts/dev_cli.py check examples/robot_arm/diagram.json
 python scripts/dev_cli.py all examples/robot_arm/diagram.json -o dist/robot-arm-6axis
+python scripts/dev_cli.py all examples/quadratic/diagram.json -o dist/quadratic-y-x2-2x-3
 ```
 
-构建两个案例并刷新 `dist/`、`docs/images/` 和清单：
+刷新两个案例的 `dist/`、`docs/images/` 和清单：
 
 ```bash
 python scripts/build_examples.py
 ```
 
-跑测试：
-
-```bash
-python -m unittest discover -s tests -t .
-```
-
-### 普通 Python 环境
+### 4. 普通 Python 环境
 
 ```bash
 python -m venv .venv
@@ -53,117 +78,144 @@ touchlearn all examples/quadratic/diagram.json -o dist/quadratic-y-x2-2x-3
 
 可选依赖：
 
-- `pip install -e ".[qr]"`：生成二维码（需要 `qrcode[pil]`）。
-- `pip install -e ".[ui]"`：启动 Streamlit 预览界面。
+- `pip install -e ".[docs-reader]"`：读取 PDF 文字层（`pypdf`）。
+- `pip install -e ".[qr]"`：二维码（已包含在基础依赖里）。
+- `pip install -e ".[ui]"`：旧的 Streamlit 预览界面。
+
+### 5. 跑测试
 
 ```bash
-streamlit run app/streamlit_app.py
+python -m unittest discover -t . -s tests
 ```
 
-## 一次编译产出什么
+测试不调用任何付费接口；模型接入用本机临时 HTTP mock。
 
-`dist/<diagram.id>/` 下固定七个文件。两个案例的目录是 `dist/robot-arm-6axis/` 和 `dist/quadratic-y-x2-2x-3/`：
-
-| 文件 | 内容 |
-|---|---|
-| `model.stl` | 二进制 STL，可作为 A5 触觉板直接切片 |
-| `preview.svg` | 与几何同源的矢量预览，不是另画的一张图 |
-| `legend.svg` | A6 图例卡，编号对应英文名和中文名 |
-| `report.json` | 可打印性指标与问题清单 |
-| `trace.jsonl` | 每一步布局决策、理由和证据 |
-| `audio.txt` | 中文讲解脚本，含停顿与制作说明 |
-| `diagram.json` | 本次编译使用的输入快照 |
-
-此外 `dist/manifest.json` 记录两个案例的 STL SHA256、三角形数、体积和检查结论。
-
-当前构建结果：
-
-| 案例 | 三角形 | 体积 | 水密 | 最小标签间距 | 结论 |
-|---|---:|---:|---|---:|---|
-| 机械臂 | 18,756 | 96,938.755 mm³ | 是 | 5.4 mm | PASS |
-| 二次函数 | 20,652 | 95,555.098 mm³ | 是 | 4.8 mm | PASS |
-
-数字会随版式调整变化，以 `dist/manifest.json` 和 `report.json` 为准。
-
-## 工作流
+## 架构
 
 ```mermaid
 flowchart LR
-    A[diagram.json<br/>语义结构] --> B[Schema 校验]
-    B --> C{布局引擎}
-    C -->|kinematic_chain| D[机械臂版式]
-    C -->|cartesian_plot| E[函数图版式]
-    D --> F[触觉图元<br/>线 / 面 / 点 / 文本 / 盲文]
-    E --> F
-    F --> G[可打印性检查]
-    G -->|PASS| H[STL + SVG]
-    G -->|FAIL| A
-    F --> I[中文音频脚本]
-    G --> J[决策轨迹 trace.jsonl]
+    A[图片 / PDF / TXT / JSON / STL / OBJ / 文字] --> B[本地解析]
+    B --> C{路由}
+    C -->|显式解析式| D[函数引擎]
+    C -->|机械臂规格| E[运动链引擎]
+    C -->|STL/OBJ| F[体积/浮雕引擎]
+    C -->|场景 JSON/模板| G[通用场景引擎]
+    C -->|模型分类| G
+    D --> H[归一化语义结构]
+    E --> H
+    F --> H
+    G --> H
+    H --> I[用户确认草稿]
+    I --> J[确定性布局与网格]
+    J --> K[标准与可打印性检查]
+    K --> L[STL / SVG / 报告 / 音频 / 二维码]
 ```
 
 关键约束：
 
-- **语义是唯一真源**。布局引擎不读图片像素，曲线由 `a/b/c` 系数采样生成，关节位置由运动链和画布约束决定。
-- **先检查，再出件**。边距、最小线宽、标签间距与净空、二维码区域、浮雕高度、网格边界、体积方向、水密性任何一项失败，构建返回非零退出码。
-- **决策可追溯**。`trace.jsonl` 记录"选了什么引擎、为什么、腕部放大板多大、编号为什么用数字"，方便复盘和答辩。
-- **核心零依赖**。三角化、棱柱、STL、盲文和笔画字体全部用标准库实现，换一台没有 CAD 的电脑也能复现。
+- **语义是唯一真源**。场景用归一化 0–100 坐标，模型不给毫米；函数曲线由系数采样；机械臂由运动链计算。
+- **模型不改合规结论**。PASS / DEVIATION / NEEDS_REVIEW / FAIL 全部由本地规则引擎产生。
+- **先确认再构建**。草稿可改函数视窗、机械臂参数、场景标题；未确认不生成 STL。
+- **离线可复现**。三角化、棱柱、STL、盲文和笔画字体用标准库实现；8 个模板断网可用。
+- **不确定就拒绝**。看不清的图片、没有文字层的扫描 PDF、无法结构化的散文，不会被硬编成一个结构。
 
-详细设计见 [docs/architecture.md](docs/architecture.md)，触觉规格见 [docs/tactile_spec.md](docs/tactile_spec.md)。
+## 通用场景编译器
+
+当前支持 8 个离线模板：三角形与高、3-4-5 直角三角形、串联电路、流程图、平面直角坐标系、路线图、柱状图、植物细胞。
+
+场景图元包括线/折线/路径、多边形、矩形、圆、椭圆、箭头、圆弧、点、文字、盲文。最多 12 个图块，每块最多 48 个图元；按阅读顺序自动编号，标签在全部几何生成后统一做碰撞避让，并避开标题和二维码区。
+
+8 个模板都通过了网格水密和可打印性检查，无 FAIL。它们仍只是**结构示意图**：表达位置、连接关系和顺序，不还原照片细节，也不代表真实尺寸。
+
+## 标准依据
+
+主依据是 [GB/T 40142-2021《触摸图形设计及图例》](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=E72CE9A9B4200759B27F08F13118F5B8)，盲文点阵依据 [GB/T 39758-2021](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=63A112B519D601DBA74264AAEB314DB0)（等同 ISO 17049:2013）。同时核对了 GB/T 44725-2024、GF 0019-2018、国歌盲文方案、GB/T 45281-2025、GB/T 45567-2025、GB/T 18028-2010 的适用范围和状态。
+
+必须说清楚的三点：
+
+- GB/T 40142 的公开 PDF 只有封面和目录，仓库里的点径、线高、标注距离来自民政部公开解读，属于**公开摘要级证据**，不是逐条抄录条款。
+- GB/T 15720-2008 已于 2025-11-03 废止且无替代，不能再作为现行依据。
+- 单张 A5 触觉板不是盲文出版物，GB/T 44725 只在输出盲文书册/说明页时适用。
+
+完整题录、日期、链接、合规矩阵和“不能宣称的内容”见 [docs/standards/evidence.md](docs/standards/evidence.md)。
+
+## 一次构建产出什么
+
+作业目录 `outputs/jobs/<job_id>/` 下：
+
+| 文件 | 内容 |
+|---|---|
+| `model.stl` | 二进制 STL，可直接切片 |
+| `preview.svg` | 与几何同源的矢量预览 |
+| `qr.png` / `qr_card.svg` | 指向音频页的二维码与贴纸卡 |
+| `audio.html` | 扫码后的本地播放页 |
+| `narration.wav` / `audio_script.txt` | 中文语音与文字稿 |
+| `compliance.json` / `compliance.md` | 逐条规则检查结果 |
+| `diagram.json` | 本次构建的语义快照 |
+| `decision_trace.json` | 路由、版式、检查的决策轨迹 |
+| `manifest.json` | 标题、模式、几何指标、哈希 |
+| `README.txt` | 给打印者的说明 |
+
+两个基准案例的 STL 水密、体积为正、尺寸 148 × 210 × 3.8 mm，可打印性为 PASS。数字以 `dist/manifest.json` 和各作业的 `report.json` 为准。
 
 ## 仓库结构
 
 ```text
-src/touchlearn/          编译器核心
-  model.py               语义模型
-  schema.py              JSON Schema + 手写校验
-  layout.py              两个确定性布局引擎
-  braille.py             UEB 盲文编码与点阵
-  font.py                3×5 笔画字体
-  geometry.py            耳切三角化、棱柱、网格
-  printability.py        可打印性与触觉安全门禁
-  svg.py                 SVG 预览
-  stl.py                 二进制 STL
-  audio.py               音频脚本
-  legend.py              A6 图例卡
-  trace.py               决策轨迹
-  cli.py                 命令行入口
-examples/                两个案例的 diagram.json
-schemas/                 对外 JSON Schema
-tests/                   47 项单元测试
-scripts/                 本地引导、双案例构建、二维码工具
-app/streamlit_app.py     可选预览界面
-docs/                    架构、规格、运行、盲测、提交、路线图
-dist/                    已提交的两个案例产物
-fabrication/             盲测材料：A6 图例 PDF、试运行音频、制作说明
+src/touchlearn/
+  model.py schema.py            语义模型与校验
+  layout.py                     确定性布局调度
+  braille.py font.py            盲文点阵与 3×5 笔画字体
+  geometry.py printability.py   三角化、网格、可打印性门禁
+  svg.py stl.py                 预览与二进制 STL
+  cli.py                        命令行
+  agent/
+    agent.py                    四段式编排、草稿、构建
+    router.py                   意图分类与函数抽取
+    llm.py                      多供应商 OpenAI 兼容传输
+    vision.py                   图片理解适配
+    documents.py                PDF/TXT/JSON 文字读取
+    scene.py                    通用场景编译器与 8 个模板
+    standards.py                规则引擎
+    server.py                   本地 HTTP API
+    static/                     交互式前端
+examples/                       两个基准案例
+schemas/                        对外 JSON Schema
+tests/                          单元测试
+scripts/                        启动、构建、二维码工具
+docs/                           架构、规格、标准证据、产品蓝图、提交材料
+dist/                           两个基准案例产物
+fabrication/                    盲测材料与打印说明
 ```
 
 ## 当前状态与边界
 
-已经做到的：
+已经做到：
 
-- 两个案例端到端编译，47 项测试通过；
-- 两个网格水密、体积为正、尺寸 148 × 210 × 3.8 mm；
-- 可打印性检查覆盖边距、线宽、标签碰撞、二维码侵入、浮雕范围和网格完整性；
-- 输入快照、报告、轨迹、音频脚本和 STL 一次生成；
-- A6 图例卡已导出可直接送印的 PDF，试运行 TTS 音频和本地播放页已生成。
+- 函数、机械臂、三维、通用场景四条链路端到端构建；
+- 8 个场景模板全部通过合规检查，无 FAIL；
+- 图片、PDF 文字层、TXT/JSON、STL/OBJ 都能进入对应解析路径；
+- 多家大模型 API 的统一接入与离线降级；
+- 草稿确认、可编辑、构建进度、产物下载、二维码与音频；
+- 单元测试覆盖几何、布局、标准、路由、模型、文档、服务端。
 
-尚未做到的，不在 README 里含糊：
+尚未做到，不在 README 里含糊：
 
-- **没有实体打印**。STL 只经过几何与水密检查，未经切片软件和真实打印机验证。
-- **没有盲人用户测试**。`docs/blind_test_protocol.md` 是可执行的测试方案，不是已完成的结论。
-- **二维码还没有生成**。试运行音频已有，但还没有确定公开音频 URL；`scripts/make_qr.py` 可在拿到 URL 后生成贴纸。
-- **试运行音频不是最终录音**。当前是 Windows 中文 TTS，正式测试前要换真人朗读并做三台手机播放测试。
-- **图例卡是 A6 打印件**，不是独立触觉板；盲文索引本身已经在 A5 板上。
-- **只支持两个案例和两个引擎**。输入不是任意图片；从照片到语义结构的上游提取在 v0 中由人工完成，并在 `diagram.json` 中显式记录。
+- **没有实体打印验证**。STL 只经过几何、水密和可打印性检查，未经过真实切片与打印机。
+- **没有盲人用户测试**。`docs/blind_test_protocol.md` 是可执行方案，不是已完成结论。
+- **扫描版 PDF 不能直接读图**。没有文字层时需要导出 PNG 并配置视觉模型；当前不内置 PDF 光栅化。
+- **3D 照片重建不是目标**。机械臂图片用于理解结构，不承诺从单张照片还原真实尺寸。
+- **汉语盲文转写未实现**。板面使用数字索引和短英文标签，中文在音频与说明里。
+- **盲文书册版式未实现**。GB/T 44725 只在未来输出书册时适用。
 
 ## 文档
 
+- [产品蓝图](docs/product/blueprint.md)
+- [大模型接入](docs/providers.md)
+- [标准证据表与合规矩阵](docs/standards/evidence.md)
 - [架构与数据契约](docs/architecture.md)
 - [触觉板规格](docs/tactile_spec.md)
 - [Windows 运行说明](docs/run_windows.md)
 - [盲测方案](docs/blind_test_protocol.md)
-- [盲测材料制作包](fabrication/README.md)
 - [初赛提交清单](docs/submission.md)
 - [路线图](docs/roadmap.md)
 
@@ -171,4 +223,4 @@ fabrication/             盲测材料：A6 图例 PDF、试运行音频、制作
 
 代码使用 MIT License，见 [LICENSE](LICENSE)。文档、示例 JSON、生成的触觉板设计与预览使用 CC BY 4.0，见 [LICENSE-docs](LICENSE-docs)。
 
-仓库不包含任何第三方照片；机械臂是原创示意图，不复制具体厂商的产品图。
+仓库不包含第三方照片；机械臂是原创示意图，不复制具体厂商的产品图。

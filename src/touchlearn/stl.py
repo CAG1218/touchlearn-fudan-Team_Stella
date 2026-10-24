@@ -22,7 +22,7 @@ def _normal(a: Point3, b: Point3, c: Point3) -> Point3:
     return (nx / length, ny / length, nz / length)
 
 
-def write_binary_stl(mesh: Mesh, path: str | Path, header: str = "TouchLearn v0.1.0 - Team Stella") -> Path:
+def write_binary_stl(mesh: Mesh, path: str | Path, header: str = "TouchLearn v0.2.0 - Team Stella") -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     header_bytes = header.encode("ascii", errors="replace")[:80].ljust(80, b" ")

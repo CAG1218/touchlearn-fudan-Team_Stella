@@ -221,6 +221,8 @@ __marimo__/
 
 # Local scratch output
 .tmp_preview/
+.tmp_agent_*/
+outputs/
 
 # Local writing-tool snapshots
 .writing/

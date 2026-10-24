@@ -1,0 +1,36 @@
+{
+  "diagram_id": "quadratic-y-x2-2x-3",
+  "passed": true,
+  "issues": [],
+  "metrics": {
+    "semantic_features": 8,
+    "label_features": 8,
+    "min_line_width_mm": 1.0,
+    "min_label_spacing_mm": 4.8,
+    "min_label_clearance_mm": 1.4,
+    "layout_bounds_mm": [
+      7.4,
+      11.4,
+      135.1,
+      193.1
+    ],
+    "mesh": {
+      "triangles": 20652,
+      "bounds_mm": [
+        0.0,
+        0.0,
+        0.0,
+        148.0,
+        210.0,
+        3.8
+      ],
+      "size_mm": [
+        148.0,
+        210.0,
+        3.8
+      ],
+      "volume_mm3": 95555.098,
+      "watertight": true
+    }
+  }
+}

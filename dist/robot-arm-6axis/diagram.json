@@ -1,0 +1,203 @@
+{
+  "schema_version": "0.1.0",
+  "id": "robot-arm-6axis",
+  "title": "Six-Axis Robot Arm",
+  "title_zh": "六轴机械臂关节与连杆图",
+  "domain": "robotics",
+  "canvas": {
+    "size": "A5",
+    "width_mm": 148,
+    "height_mm": 210,
+    "margin_mm": 5
+  },
+  "source": {
+    "kind": "photo",
+    "ref": "examples/robot_arm/source.md",
+    "note": "Laboratory six-axis arm, side view. Background removed; no lab photo is committed."
+  },
+  "elements": [
+    {
+      "id": "BASE",
+      "kind": "link",
+      "label": "BASE",
+      "label_zh": "基座",
+      "order": 1,
+      "semantics": {
+        "length_mm": 30,
+        "width_mm": 12,
+        "texture": "crosshatch"
+      }
+    },
+    {
+      "id": "L1",
+      "kind": "link",
+      "label": "L1",
+      "label_zh": "第一连杆",
+      "order": 2,
+      "semantics": {
+        "length_mm": 35,
+        "width_mm": 11
+      }
+    },
+    {
+      "id": "L2",
+      "kind": "link",
+      "label": "L2",
+      "label_zh": "第二连杆",
+      "order": 3,
+      "semantics": {
+        "length_mm": 46,
+        "width_mm": 10
+      }
+    },
+    {
+      "id": "J1",
+      "kind": "joint",
+      "label": "J1",
+      "label_zh": "第一关节",
+      "order": 4,
+      "semantics": {
+        "radius_mm": 6,
+        "axis": "vertical"
+      }
+    },
+    {
+      "id": "J2",
+      "kind": "joint",
+      "label": "J2",
+      "label_zh": "第二关节",
+      "order": 5,
+      "semantics": {
+        "radius_mm": 5.5,
+        "axis": "horizontal"
+      }
+    },
+    {
+      "id": "J3",
+      "kind": "joint",
+      "label": "J3",
+      "label_zh": "第三关节",
+      "order": 6,
+      "semantics": {
+        "radius_mm": 5,
+        "axis": "horizontal"
+      }
+    },
+    {
+      "id": "J4J6",
+      "kind": "joint_group",
+      "label": "J4-J6",
+      "label_zh": "四到六轴腕部",
+      "order": 7,
+      "semantics": {
+        "joints": [
+          "J4",
+          "J5",
+          "J6"
+        ],
+        "spacing_mm": 12,
+        "panel_mm": [
+          18,
+          42
+        ]
+      }
+    },
+    {
+      "id": "EE",
+      "kind": "end_effector",
+      "label": "EE",
+      "label_zh": "末端执行器",
+      "order": 8,
+      "semantics": {
+        "type": "two_finger_gripper",
+        "opening_mm": 4
+      }
+    }
+  ],
+  "relations": [
+    {
+      "from": "BASE",
+      "to": "J1",
+      "kind": "joint",
+      "joint": "J1",
+      "order": 1
+    },
+    {
+      "from": "J1",
+      "to": "L1",
+      "kind": "connect",
+      "order": 2
+    },
+    {
+      "from": "L1",
+      "to": "J2",
+      "kind": "joint",
+      "joint": "J2",
+      "order": 3
+    },
+    {
+      "from": "J2",
+      "to": "L2",
+      "kind": "connect",
+      "order": 4
+    },
+    {
+      "from": "L2",
+      "to": "J3",
+      "kind": "joint",
+      "joint": "J3",
+      "order": 5
+    },
+    {
+      "from": "J3",
+      "to": "J4J6",
+      "kind": "connect",
+      "order": 6
+    },
+    {
+      "from": "J4J6",
+      "to": "EE",
+      "kind": "joint",
+      "joint": "J4-J6",
+      "order": 7
+    }
+  ],
+  "layout": {
+    "engine": "kinematic_chain",
+    "options": {
+      "pose": "side_view",
+      "link_width_mm": [
+        11,
+        10,
+        9
+      ],
+      "wrist_panel_mm": [
+        18,
+        42
+      ],
+      "wrist_joint_spacing_mm": 12
+    }
+  },
+  "constraints": {
+    "max_features": 12,
+    "min_line_width_mm": 1.0,
+    "min_spacing_mm": 4.0,
+    "base_thickness_mm": 3.0,
+    "relief_height_mm": 0.8,
+    "braille_dot_mm": 1.5,
+    "braille_height_mm": 0.6
+  },
+  "audio": {
+    "intro": "这是一张六轴机械臂的触觉图。图幅左上角有缺口，缺口方向是上方。",
+    "steps": [
+      "先摸左上角的缺口，确认图的方向。",
+      "从底部宽大的基座开始，编号 1。基座上方是第一个关节，编号 4。",
+      "沿粗线向上，摸到编号 2 的第一连杆，再摸到编号 5 的第二个关节。",
+      "继续沿斜线向右上，摸到编号 3 的第二连杆和编号 6 的第三个关节。",
+      "右上角有一个 18 乘 42 毫米的腕部放大板，编号 7，里面并排三个小圆点，分别是第四、第五、第六轴。",
+      "腕部上方是末端执行器，编号 8，形状像两指夹爪。",
+      "最后从基座沿粗线一路摸到夹爪，这就是从底座到末端的运动链。"
+    ],
+    "outro": "这张图只表达关节顺序和连接关系，不表示真实尺寸和姿态。"
+  }
+}

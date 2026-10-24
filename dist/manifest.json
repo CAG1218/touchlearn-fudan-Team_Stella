@@ -1,0 +1,87 @@
+{
+  "canvas_mm": [
+    148.0,
+    210.0
+  ],
+  "cases": [
+    {
+      "files": {
+        "audio": "dist/robot-arm-6axis/audio.txt",
+        "diagram": "dist/robot-arm-6axis/diagram.json",
+        "legend": "dist/robot-arm-6axis/legend.svg",
+        "report": "dist/robot-arm-6axis/report.json",
+        "stl": "dist/robot-arm-6axis/model.stl",
+        "svg": "dist/robot-arm-6axis/preview.svg",
+        "trace": "dist/robot-arm-6axis/trace.jsonl"
+      },
+      "id": "robot-arm-6axis",
+      "issues": [],
+      "mesh": {
+        "bounds_mm": [
+          0.0,
+          0.0,
+          0.0,
+          148.0,
+          210.0,
+          3.8
+        ],
+        "size_mm": [
+          148.0,
+          210.0,
+          3.8
+        ],
+        "triangles": 18756,
+        "volume_mm3": 96938.755,
+        "watertight": true
+      },
+      "printability": "PASS",
+      "stl": {
+        "bytes": 937884,
+        "sha256": "455183563722603157930cd5c1572ec8165dd80ab9d73cd2e7f04b73e11149a1",
+        "triangles": 18756
+      },
+      "title": "Six-Axis Robot Arm",
+      "title_zh": "六轴机械臂关节与连杆图"
+    },
+    {
+      "files": {
+        "audio": "dist/quadratic-y-x2-2x-3/audio.txt",
+        "diagram": "dist/quadratic-y-x2-2x-3/diagram.json",
+        "legend": "dist/quadratic-y-x2-2x-3/legend.svg",
+        "report": "dist/quadratic-y-x2-2x-3/report.json",
+        "stl": "dist/quadratic-y-x2-2x-3/model.stl",
+        "svg": "dist/quadratic-y-x2-2x-3/preview.svg",
+        "trace": "dist/quadratic-y-x2-2x-3/trace.jsonl"
+      },
+      "id": "quadratic-y-x2-2x-3",
+      "issues": [],
+      "mesh": {
+        "bounds_mm": [
+          0.0,
+          0.0,
+          0.0,
+          148.0,
+          210.0,
+          3.8
+        ],
+        "size_mm": [
+          148.0,
+          210.0,
+          3.8
+        ],
+        "triangles": 20652,
+        "volume_mm3": 95555.098,
+        "watertight": true
+      },
+      "printability": "PASS",
+      "stl": {
+        "bytes": 1032684,
+        "sha256": "07621d0947d915db49741e6c3aef9a1afdbf05a84b2a031e0fa1cc2563d42cd5",
+        "triangles": 20652
+      },
+      "title": "Quadratic Function",
+      "title_zh": "二次函数 y=x²-2x-3 图像"
+    }
+  ],
+  "tool": "touchlearn 0.1.0"
+}

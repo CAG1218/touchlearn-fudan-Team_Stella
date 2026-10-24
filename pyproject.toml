@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "touchlearn"
+version = "0.1.0"
+description = "Compile STEM diagrams into touchable 3D structures with braille indices and audio."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Team Stella" }]
+keywords = ["accessibility", "tactile-graphics", "braille", "3d-printing", "stem-education"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["jsonschema>=4.22", "pytest>=8.0"]
+ui = ["streamlit>=1.36"]
+qr = ["qrcode[pil]>=7.4"]
+
+[project.scripts]
+touchlearn = "touchlearn.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+touchlearn = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

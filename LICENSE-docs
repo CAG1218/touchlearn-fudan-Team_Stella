@@ -1,0 +1,28 @@
+TouchLearn documentation and tactile plate designs
+Copyright (c) 2026 Team Stella
+
+The source code in this repository is licensed under the MIT License; see
+LICENSE.
+
+All non-code material is licensed under the Creative Commons
+Attribution 4.0 International License (CC BY 4.0):
+
+  - documentation under docs/ and the README;
+  - the diagram JSON files under examples/;
+  - the generated tactile plate designs and previews under dist/;
+  - the narration scripts under dist/*/audio.txt.
+
+You may share and adapt this material for any purpose, including commercial
+use, provided that you give appropriate credit, link to the license, and
+indicate whether changes were made.
+
+License summary and full legal text:
+https://creativecommons.org/licenses/by/4.0/
+
+Suggested attribution:
+  TouchLearn, Team Stella, Fudan University, 2026.
+  https://github.com/CAG1218/touchlearn-fudan-Team_Stella
+
+Note: this repository does not include any third-party photographs. The
+robot-arm case is an original schematic, not a reproduction of a specific
+manufacturer's product image.

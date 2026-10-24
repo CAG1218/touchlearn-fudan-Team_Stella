@@ -7,10 +7,10 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+# `dist/` is intentionally tracked: it holds the two reproducible v0 plates.
 .Python
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local scratch output
+.tmp_preview/

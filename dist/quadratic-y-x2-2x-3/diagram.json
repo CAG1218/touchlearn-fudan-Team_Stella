@@ -1,0 +1,187 @@
+{
+  "schema_version": "0.1.0",
+  "id": "quadratic-y-x2-2x-3",
+  "title": "Quadratic Function",
+  "title_zh": "二次函数 y=x²-2x-3 图像",
+  "domain": "math",
+  "canvas": {
+    "size": "A5",
+    "width_mm": 148,
+    "height_mm": 210,
+    "margin_mm": 5
+  },
+  "source": {
+    "kind": "expression",
+    "ref": "y=x^2-2x-3",
+    "note": "Generated from coefficients a=1, b=-2, c=-3; domain [-2,4], range [-5,6]."
+  },
+  "elements": [
+    {
+      "id": "curve",
+      "kind": "curve",
+      "label": "CURVE",
+      "label_zh": "抛物线",
+      "order": 1,
+      "semantics": {
+        "expression": "y=x^2-2x-3",
+        "a": 1,
+        "b": -2,
+        "c": -3,
+        "domain": [
+          -2,
+          4
+        ]
+      }
+    },
+    {
+      "id": "vertex",
+      "kind": "point",
+      "label": "V",
+      "label_zh": "顶点",
+      "order": 2,
+      "semantics": {
+        "x": 1,
+        "y": -4
+      }
+    },
+    {
+      "id": "root_left",
+      "kind": "point",
+      "label": "R1",
+      "label_zh": "左根",
+      "order": 3,
+      "semantics": {
+        "x": -1,
+        "y": 0
+      }
+    },
+    {
+      "id": "root_right",
+      "kind": "point",
+      "label": "R2",
+      "label_zh": "右根",
+      "order": 4,
+      "semantics": {
+        "x": 3,
+        "y": 0
+      }
+    },
+    {
+      "id": "symmetry_axis",
+      "kind": "axis",
+      "label": "X=1",
+      "label_zh": "对称轴",
+      "order": 5,
+      "semantics": {
+        "x": 1,
+        "style": "dashed"
+      }
+    },
+    {
+      "id": "x_axis",
+      "kind": "axis",
+      "label": "X",
+      "label_zh": "横轴",
+      "order": 6,
+      "semantics": {
+        "direction": "horizontal",
+        "min": -2,
+        "max": 4
+      }
+    },
+    {
+      "id": "y_axis",
+      "kind": "axis",
+      "label": "Y",
+      "label_zh": "纵轴",
+      "order": 7,
+      "semantics": {
+        "direction": "vertical",
+        "min": -5,
+        "max": 6
+      }
+    },
+    {
+      "id": "origin",
+      "kind": "point",
+      "label": "O",
+      "label_zh": "原点",
+      "order": 8,
+      "semantics": {
+        "x": 0,
+        "y": 0
+      }
+    }
+  ],
+  "relations": [
+    {
+      "from": "vertex",
+      "to": "curve",
+      "kind": "on_curve",
+      "order": 1
+    },
+    {
+      "from": "root_left",
+      "to": "curve",
+      "kind": "on_curve",
+      "order": 2
+    },
+    {
+      "from": "root_right",
+      "to": "curve",
+      "kind": "on_curve",
+      "order": 3
+    },
+    {
+      "from": "symmetry_axis",
+      "to": "vertex",
+      "kind": "through",
+      "order": 4
+    },
+    {
+      "from": "origin",
+      "to": "x_axis",
+      "kind": "connect",
+      "order": 5
+    },
+    {
+      "from": "origin",
+      "to": "y_axis",
+      "kind": "connect",
+      "order": 6
+    }
+  ],
+  "layout": {
+    "engine": "cartesian_plot",
+    "options": {
+      "x_min": -2,
+      "x_max": 4,
+      "y_min": -5,
+      "y_max": 6,
+      "mm_per_unit": 10,
+      "grid_step": 2
+    }
+  },
+  "constraints": {
+    "max_features": 12,
+    "min_line_width_mm": 1.0,
+    "min_spacing_mm": 4.0,
+    "base_thickness_mm": 3.0,
+    "relief_height_mm": 0.8,
+    "braille_dot_mm": 1.5,
+    "braille_height_mm": 0.6
+  },
+  "audio": {
+    "intro": "这是一张二次函数 y 等于 x 平方减 2x 减 3 的触觉图。左上角缺口表示上方。",
+    "steps": [
+      "先摸左上角缺口，确认图的方向。",
+      "找到两条最粗的直线，横的是 x 轴，竖的是 y 轴，交点是原点。",
+      "从原点向右一个单位、向下四个单位，摸到编号 1 的顶点。",
+      "沿横轴向左，摸到编号 2 的左根；向右，摸到编号 3 的右根。",
+      "中间竖直的虚线是对称轴 x 等于 1。",
+      "沿粗曲线从左上滑到右下，再滑回来，感受开口向上。",
+      "这张图每个单位是 10 毫米，定义域从 -2 到 4。"
+    ],
+    "outro": "音频只描述关系和读图顺序，不替代数学课上的讲解。"
+  }
+}

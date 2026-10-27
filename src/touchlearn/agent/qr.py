@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 from pathlib import Path
 
 import qrcode
@@ -71,10 +72,51 @@ def audio_page_html(
     audio_url: str,
     download_url: str,
     model_url: str,
+    audio_available: bool = True,
+    script_url: str = "audio_script.txt",
 ) -> str:
     safe_title = html.escape(title)
     safe_subtitle = html.escape(subtitle)
     safe_script = html.escape(script).replace("\n", "<br/>")
+    script_json = json.dumps(script, ensure_ascii=False).replace("</", "<\\/")
+    if audio_available:
+        player = f'<audio controls autoplay preload="metadata" src="{html.escape(audio_url)}"></audio>'
+    else:
+        player = (
+            '<div class="fallback">'
+            "<p>当前部署没有可用的语音合成服务，讲解稿已经生成。</p>"
+            '<button class="button" id="speakBtn" type="button">用浏览器朗读</button>'
+            "</div>"
+        )
+    audio_download = (
+        f'<a class="button" href="{html.escape(download_url)}">下载音频</a>'
+        if audio_available and download_url
+        else ""
+    )
+    fallback_script = ""
+    if not audio_available:
+        fallback_script = f"""
+<script>
+(() => {{
+  const text = {script_json};
+  const button = document.getElementById("speakBtn");
+  if (!button || !("speechSynthesis" in window)) return;
+  let speaking = false;
+  const reset = () => {{ speaking = false; button.textContent = "用浏览器朗读"; }};
+  button.addEventListener("click", () => {{
+    if (speaking) {{ speechSynthesis.cancel(); reset(); return; }}
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "zh-CN";
+    utterance.rate = 0.95;
+    utterance.onend = reset;
+    utterance.onerror = reset;
+    speechSynthesis.speak(utterance);
+    speaking = true;
+    button.textContent = "停止朗读";
+  }});
+}})();
+</script>
+"""
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -90,9 +132,10 @@ def audio_page_html(
   p.sub {{ color:#52606d; margin: 0 0 22px; }}
   .player {{ background:#fffdf7; border:1px solid #e3dccb; border-radius:14px; padding:18px; box-shadow:0 8px 24px rgba(23,32,51,.06); }}
   audio {{ width:100%; }}
+  .fallback p {{ margin:0 0 12px; color:#52606d; line-height:1.7; }}
   .script {{ margin-top:22px; background:#fffdf7; border-left:4px solid #b8863b; padding:18px 18px 18px 20px; border-radius:0 12px 12px 0; line-height:1.9; font-size:16px; }}
   .actions {{ display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }}
-  a.button {{ display:inline-block; padding:10px 16px; border-radius:999px; background:#172033; color:#fff; text-decoration:none; font-size:14px; }}
+  a.button, button.button {{ display:inline-block; padding:10px 16px; border-radius:999px; background:#172033; color:#fff; text-decoration:none; font-size:14px; border:0; cursor:pointer; font-family:inherit; }}
   a.ghost {{ background:transparent; color:#172033; border:1px solid #c9c2b2; }}
   footer {{ margin-top:28px; color:#6b7280; font-size:12px; }}
 </style>
@@ -103,15 +146,17 @@ def audio_page_html(
   <h1>{safe_title}</h1>
   <p class="sub">{safe_subtitle}</p>
   <div class="player">
-    <audio controls autoplay preload="metadata" src="{html.escape(audio_url)}"></audio>
+    {player}
   </div>
   <div class="script">{safe_script}</div>
   <div class="actions">
-    <a class="button" href="{html.escape(download_url)}">下载音频</a>
+    {audio_download}
+    <a class="button ghost" href="{html.escape(script_url)}">下载讲解稿</a>
     <a class="button ghost" href="{html.escape(model_url)}">下载 STL</a>
   </div>
   <footer>音频为机器合成，关键尺寸与读图顺序以触觉图和合规报告为准。</footer>
 </main>
+{fallback_script}
 </body>
 </html>
 """

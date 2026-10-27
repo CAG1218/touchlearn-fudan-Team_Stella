@@ -39,6 +39,16 @@ python scripts/run_agent.py --port 8765
 python scripts/run_agent.py --port 8765 --no-browser
 ```
 
+界面是移动端优先的聊天式工作台：上传入口只有一个，函数、机械臂、STL/OBJ、PDF/图片、示意图都走同一个对话框；理解结果以草稿卡出现，确认后才生成。右上角可以查看当前模型、二维码基础地址和访问控制状态。
+
+#### 手机、平板与其他设备
+
+- **同一 Wi-Fi**：启动后直接用 `http://<电脑局域网 IP>:8765` 打开；默认监听 `0.0.0.0`，不需要额外配置。
+- **临时公网**：`python scripts/run_public.py` 会启动 Cloudflare Quick Tunnel，生成一个 `https://*.trycloudflare.com` 地址和访问码，任何设备都能打开。电脑休眠或进程停止后地址失效。
+- **固定公网**：仓库包含 `Dockerfile`、`render.yaml` 和 `Procfile`，可以部署到 Render/Railway/VPS。访问码、持久化、二维码域名和 TTS 平台差异见 [docs/deploy.md](docs/deploy.md)。
+
+公网暴露时必须设置 `TOUCHLEARN_ACCESS_CODE`；分析和生成接口需要登录。已经生成的产物链接按不可猜测的作业 ID 公开，方便手机扫码听讲解。
+
 ### 2. 接入大模型（可选）
 
 不配置也能离线演示：分类走关键词，函数走正则，场景走 8 个离线模板，图片只留档不猜。要启用图片理解和自由文字生成场景，复制 `.env.example` 为 `.env`，填一个 OpenAI 兼容服务：

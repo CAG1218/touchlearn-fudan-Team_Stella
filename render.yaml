@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: touchlearn
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: TOUCHLEARN_ACCESS_CODE
+        sync: false
+      - key: TOUCHLEARN_OUTPUTS
+        value: /app/outputs
+      - key: TOUCHLEARN_LLM_PROVIDER
+        sync: false
+      - key: TOUCHLEARN_LLM_KEY
+        sync: false
+      - key: TOUCHLEARN_LLM_MODEL
+        sync: false
+      - key: TOUCHLEARN_VLM_PROVIDER
+        sync: false
+      - key: TOUCHLEARN_VLM_KEY
+        sync: false
+      - key: TOUCHLEARN_VLM_MODEL
+        sync: false

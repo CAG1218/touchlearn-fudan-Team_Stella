@@ -1081,8 +1081,10 @@ class TouchLearnAgent:
                 subtitle=str(metadata.get("subtitle") or ""),
                 script=script,
                 audio_url="narration.wav",
-                download_url="narration.wav",
+                download_url="narration.wav" if wav_ok else "",
                 model_url="model.stl",
+                audio_available=wav_ok,
+                script_url="audio_script.txt",
             )
             (job_dir / "audio.html").write_text(page, encoding="utf-8")
 

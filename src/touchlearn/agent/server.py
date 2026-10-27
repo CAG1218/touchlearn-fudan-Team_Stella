@@ -10,11 +10,15 @@ directory with path-traversal checks.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import io
 import json
 import mimetypes
+import os
 import socket
 import threading
+import time
 import uuid
 import webbrowser
 import zipfile
@@ -22,7 +26,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 from . import __version__
 from .agent import TouchLearnAgent
@@ -34,6 +38,10 @@ from .vision import vision_status
 STATIC_DIR = Path(__file__).with_name("static")
 MAX_BODY_BYTES = 96 * 1024 * 1024
 BUILD_LOCK = threading.Lock()
+
+def running_in_container() -> bool:
+    return os.environ.get("TOUCHLEARN_CONTAINER") == "1" or Path("/.dockerenv").exists()
+
 
 MIME_OVERRIDES = {
     ".stl": "model/stl",
@@ -63,10 +71,39 @@ def detect_lan_ip() -> str:
 
 
 class AppState:
-    def __init__(self, output_root: Path, public_base_url: str) -> None:
+    def __init__(self, output_root: Path, public_base_url: str = "", access_code: str = "") -> None:
         self.agent = TouchLearnAgent(output_root=output_root)
         self.public_base_url = public_base_url.rstrip("/")
         self.output_root = output_root
+        self.access_code = access_code.strip()
+        self.access_token = (
+            hashlib.sha256(f"touchlearn-access:{self.access_code}".encode("utf-8")).hexdigest()
+            if self.access_code
+            else ""
+        )
+        self._login_failures: dict[str, list[float]] = {}
+        self._login_lock = threading.Lock()
+        self._voices: list[str] | None = None
+
+    @property
+    def auth_required(self) -> bool:
+        return bool(self.access_code)
+
+    def voices(self) -> list[str]:
+        if self._voices is None:
+            self._voices = available_voices()
+        return self._voices
+
+    def login_allowed(self, ip: str) -> bool:
+        now = time.time()
+        with self._login_lock:
+            attempts = [stamp for stamp in self._login_failures.get(ip, []) if now - stamp < 300]
+            self._login_failures[ip] = attempts
+            return len(attempts) < 10
+
+    def note_login_failure(self, ip: str) -> None:
+        with self._login_lock:
+            self._login_failures.setdefault(ip, []).append(time.time())
 
     def prepare_job(self, draft_id: str) -> str:
         job_id = uuid.uuid4().hex[:12]
@@ -86,12 +123,17 @@ class Handler(BaseHTTPRequestHandler):
     def state(self) -> AppState:
         return self.server.state  # type: ignore[attr-defined]
 
-    def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+    def _send_json(self, payload: dict[str, Any], status: int = 200, headers: dict[str, str] | None = None) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -108,10 +150,79 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
         if download:
             self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
         self.end_headers()
         self.wfile.write(data)
+
+    def _request_host(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
+        return forwarded.split(",")[0].strip()
+
+    def _request_proto(self) -> str:
+        proto = (self.headers.get("X-Forwarded-Proto") or "http").split(",")[0].strip().lower()
+        return proto if proto in {"http", "https"} else "http"
+
+    def _request_base_url(self) -> str:
+        host = self._request_host()
+        if not host:
+            host = f"127.0.0.1:{self.server.server_address[1]}"
+        try:
+            parsed = urlsplit(f"//{host}")
+            hostname = (parsed.hostname or "").lower()
+            port = parsed.port
+        except ValueError:
+            hostname, port = "", None
+        if not hostname:
+            hostname = host.split(":")[0].strip("[]").lower()
+        if hostname in {"127.0.0.1", "localhost", "::1"}:
+            # Keep the port the browser actually used.  In Docker the
+            # container listens on 8765 but the published port may be 8766;
+            # using server_address here would produce an unreachable QR URL.
+            # A container cannot discover the host's LAN address, so keep the
+            # host it was reached on and let TOUCHLEARN_PUBLIC_URL override.
+            if not running_in_container():
+                hostname = detect_lan_ip()
+            if port is None:
+                port = self.server.server_address[1]
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        netloc = f"{hostname}:{port}" if port else hostname
+        return f"{self._request_proto()}://{netloc}"
+
+    def _cookies(self) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            if "=" in part:
+                key, value = part.split("=", 1)
+                result[key.strip()] = value.strip()
+        return result
+
+    def _is_authorized(self) -> bool:
+        if not self.state.auth_required:
+            return True
+        token = self._cookies().get("touchlearn_access", "")
+        return bool(token) and hmac.compare_digest(token, self.state.access_token)
+
+    def _require_auth(self) -> bool:
+        if self._is_authorized():
+            return True
+        self._send_error_json(HTTPStatus.UNAUTHORIZED, "需要访问码。请输入部署者提供的访问码。")
+        return False
+
+    def _access_cookie_header(self) -> str:
+        secure = "; Secure" if self._request_proto() == "https" else ""
+        return (
+            f"touchlearn_access={self.state.access_token}; Path=/; HttpOnly; "
+            f"SameSite=Lax; Max-Age=2592000{secure}"
+        )
+
+    def _client_ip(self) -> str:
+        forwarded = self.headers.get("CF-Connecting-IP") or self.headers.get("X-Forwarded-For") or ""
+        return (forwarded.split(",")[0].strip() or self.client_address[0])
 
     def _safe_under(self, base: Path, relative: str) -> Path | None:
         try:
@@ -166,20 +277,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(target)
             return
         if path == "/api/health":
+            authorized = self._is_authorized()
+            locked = {"configured": False, "mode": "locked", "message": "需要访问码"}
             self._send_json(
                 {
                     "ok": True,
                     "version": __version__,
-                    "public_base_url": self.state.public_base_url,
+                    "public_base_url": self.state.public_base_url or self._request_base_url(),
                     "lan_ip": detect_lan_ip(),
-                    "voices": available_voices(),
-                    "vision": vision_status(),
-                    "llm": llm_status(),
-                    "output_root": str(self.state.output_root.resolve()),
+                    "access_required": self.state.auth_required,
+                    "authenticated": authorized,
+                    "voices": self.state.voices() if authorized else [],
+                    "vision": vision_status() if authorized else locked,
+                    "llm": llm_status() if authorized else locked,
                     "limits": {"file_mb": 30, "total_mb": 80},
                 }
             )
             return
+        if path in {"/api/providers", "/api/scene-templates", "/api/examples"}:
+            if not self._require_auth():
+                return
         if path == "/api/providers":
             self._send_json(providers_payload())
             return
@@ -213,6 +330,8 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path.startswith("/api/drafts/"):
+            if not self._require_auth():
+                return
             draft_id = path[len("/api/drafts/") :].strip("/")
             target = self._safe_under(self.state.agent.root / "drafts", f"{draft_id}/draft.json")
             if target is None:
@@ -224,8 +343,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(json.loads(target.read_text(encoding="utf-8")))
             return
         if path.startswith("/api/jobs/"):
+            if not self._require_auth():
+                return
             self._handle_job_get(path[len("/api/jobs/") :])
             return
+        # Generated artifacts are intentionally readable by unguessable job ID
+        # so a QR code or shared link works on a phone without a login cookie.
         if path.startswith("/files/"):
             self._handle_job_file(path[len("/files/") :], download="download" in parsed.query)
             return
@@ -316,8 +439,37 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_file(target)
 
+    def _handle_login(self) -> None:
+        payload = self._read_json()
+        if payload is None:
+            return
+        code = str(payload.get("code") or "")
+        ip = self._client_ip()
+        if not self.state.login_allowed(ip):
+            self._send_error_json(HTTPStatus.TOO_MANY_REQUESTS, "尝试次数过多，请 5 分钟后再试。")
+            return
+        if not self.state.auth_required or hmac.compare_digest(code, self.state.access_code):
+            self._send_json(
+                {"ok": True, "access_required": self.state.auth_required},
+                headers={"Set-Cookie": self._access_cookie_header()},
+            )
+            return
+        self.state.note_login_failure(ip)
+        self._send_error_json(HTTPStatus.UNAUTHORIZED, "访问码不正确。")
+
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path == "/api/login":
+            self._handle_login()
+            return
+        if path == "/api/logout":
+            self._send_json(
+                {"ok": True},
+                headers={"Set-Cookie": "touchlearn_access=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"},
+            )
+            return
+        if not self._require_auth():
+            return
         if path == "/api/analyze":
             payload = self._read_json()
             if payload is None:
@@ -346,6 +498,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             overrides = payload.get("overrides") if isinstance(payload.get("overrides"), dict) else {}
             job_id = self.state.prepare_job(draft_id)
+            # Capture the address the user actually used (LAN IP, tunnel host,
+            # or a fixed public URL) so the QR code points somewhere reachable.
+            public_base_url = self.state.public_base_url or self._request_base_url()
 
             def run_build() -> None:
                 with BUILD_LOCK:
@@ -353,7 +508,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.state.agent.build(
                             draft_id,
                             overrides=overrides,
-                            public_base_url=self.state.public_base_url,
+                            public_base_url=public_base_url,
                             job_id=job_id,
                         )
                     except Exception as error:  # the job.json already records the failure
@@ -377,10 +532,28 @@ class Server(ThreadingHTTPServer):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="TouchLearn 交互式前端服务")
-    parser.add_argument("--host", default="0.0.0.0", help="监听地址，默认 0.0.0.0（同一 Wi-Fi 可扫码）")
-    parser.add_argument("--port", type=int, default=8765, help="端口，默认 8765")
-    parser.add_argument("--outputs", default="outputs", help="产物目录，默认 outputs")
-    parser.add_argument("--public-url", default="", help="二维码使用的公网/局域网地址，默认自动检测")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("TOUCHLEARN_HOST", "0.0.0.0"),
+        help="监听地址，默认 0.0.0.0（同一 Wi-Fi 可扫码）",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT") or os.environ.get("TOUCHLEARN_PORT") or 8765),
+        help="端口，默认 8765；云平台会注入 PORT",
+    )
+    parser.add_argument("--outputs", default=os.environ.get("TOUCHLEARN_OUTPUTS", "outputs"), help="产物目录，默认 outputs")
+    parser.add_argument(
+        "--public-url",
+        default=os.environ.get("TOUCHLEARN_PUBLIC_URL", ""),
+        help="固定公网地址；默认按请求 Host/X-Forwarded-* 自动推导",
+    )
+    parser.add_argument(
+        "--access-code",
+        default=os.environ.get("TOUCHLEARN_ACCESS_CODE", ""),
+        help="可选访问码；设置后分析、生成和作业查询需要登录",
+    )
     parser.add_argument("--no-browser", action="store_true", help="启动后不自动打开浏览器")
     return parser
 
@@ -389,13 +562,21 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     output_root = Path(args.outputs).expanduser()
     port = int(args.port)
-    public_base_url = args.public_url.rstrip("/") if args.public_url else f"http://{detect_lan_ip()}:{port}"
-    state = AppState(output_root=output_root, public_base_url=public_base_url)
+    public_base_url = args.public_url.rstrip("/") if args.public_url else ""
+    access_code = args.access_code.strip()
+    state = AppState(output_root=output_root, public_base_url=public_base_url, access_code=access_code)
     server = Server((args.host, port), state)
     local_url = f"http://127.0.0.1:{port}"
+    lan_url = f"http://{detect_lan_ip()}:{port}"
     print("TouchLearn Agent", __version__)
     print(f"  本机界面: {local_url}")
-    print(f"  扫码地址: {public_base_url}")
+    print(f"  局域网:   {lan_url}")
+    if public_base_url:
+        print(f"  公网地址: {public_base_url}")
+    if access_code:
+        print(f"  访问码:   {access_code}")
+    else:
+        print("  访问码:   未设置（公网暴露时请设置 TOUCHLEARN_ACCESS_CODE）")
     print(f"  产物目录: {output_root.resolve()}")
     print("  按 Ctrl+C 停止服务。")
     if not args.no_browser:

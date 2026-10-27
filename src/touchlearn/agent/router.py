@@ -403,15 +403,26 @@ def _heuristic_function(text: str) -> dict[str, Any] | None:
     if match:
         candidate = match.group(1).strip().rstrip("。，,;；")
         if candidate and FUNCTION_CHARS_RE.match(candidate):
-            return {"expression": candidate, "confidence": 0.82, "notes": ["从文本中提取到显式解析式。"]}
+            return {
+                "expression": candidate,
+                "confidence": 0.82,
+                "notes": ["从文本中提取到显式解析式。"],
+                "source": "explicit",
+            }
     lowered = text.lower()
     if "正弦" in text or "sine" in lowered:
-        return {"expression": "sin(x)", "confidence": 0.42, "notes": ["文本只说明是正弦曲线，振幅和周期需要确认。"]}
+        return {"expression": "sin(x)", "confidence": 0.42, "notes": ["文本只说明是正弦曲线，振幅和周期需要确认。"], "source": "inferred"}
     if "余弦" in text or "cosine" in lowered:
-        return {"expression": "cos(x)", "confidence": 0.42, "notes": ["文本只说明是余弦曲线，振幅和周期需要确认。"]}
+        return {"expression": "cos(x)", "confidence": 0.42, "notes": ["文本只说明是余弦曲线，振幅和周期需要确认。"], "source": "inferred"}
     if "抛物线" in text or "parabola" in lowered:
-        return {"expression": "x^2", "confidence": 0.38, "notes": ["文本只说明是抛物线，系数和开口方向需要确认。"]}
+        return {"expression": "x^2", "confidence": 0.38, "notes": ["文本只说明是抛物线，系数和开口方向需要确认。"], "source": "inferred"}
     return None
+
+
+def _heuristic_question(candidate: dict[str, Any]) -> str:
+    if candidate.get("source") == "explicit":
+        return "请确认解析式、系数和定义域是否与题目一致。"
+    return "该表达式是按关键词推断的，请核对系数、振幅和定义域。"
 
 
 def extract_function(text: str, *, images: Sequence[str | Path] = ()) -> dict[str, Any]:
@@ -429,7 +440,8 @@ def extract_function(text: str, *, images: Sequence[str | Path] = ()) -> dict[st
         result = dict(heuristic)
         result["ok"] = True
         result["provider"] = "heuristic"
-        result["questions"] = ["该表达式是按关键词推断的，请核对系数、振幅和定义域。"]
+        result["questions"] = [_heuristic_question(heuristic)]
+        result.pop("source", None)
         return result
 
     prompt = FUNCTION_PROMPT.format(text=text[:3000])
@@ -446,7 +458,8 @@ def extract_function(text: str, *, images: Sequence[str | Path] = ()) -> dict[st
             value["ok"] = True
             value["provider"] = "heuristic"
             value["message"] = result.message
-            value["questions"] = ["大模型不可用；表达式按关键词推断，请核对。"]
+            value["questions"] = [_heuristic_question(heuristic)]
+            value.pop("source", None)
             return value
         return {"ok": False, "message": result.message, "confidence": 0.0, "expression": ""}
 
@@ -459,6 +472,7 @@ def extract_function(text: str, *, images: Sequence[str | Path] = ()) -> dict[st
             value["provider"] = f"llm:{result.provider}"
             value["message"] = "模型没有给出可靠表达式，使用关键词候选。"
             value["questions"] = ["请确认候选表达式是否与你的需求一致。"]
+            value.pop("source", None)
             return value
         return {"ok": False, "message": "模型没有给出可靠表达式，请手动填写。", "confidence": 0.0, "expression": ""}
     try:

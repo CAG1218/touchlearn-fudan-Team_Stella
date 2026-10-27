@@ -47,13 +47,15 @@ class RouterTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["provider"], "heuristic")
         self.assertIn("x^2-2x-3", result["expression"].replace(" ", ""))
+        self.assertFalse(any("按关键词推断" in item for item in result["questions"]))
+        self.assertNotIn("source", result)
 
     def test_extract_function_shape_without_expression(self) -> None:
         with patch("touchlearn.agent.router.llm_status", return_value={"configured": False}):
             result = extract_function("画一条正弦曲线")
         self.assertTrue(result["ok"])
         self.assertEqual(result["expression"], "sin(x)")
-        self.assertTrue(result["questions"])
+        self.assertTrue(any("按关键词推断" in item for item in result["questions"]))
 
 
 if __name__ == "__main__":

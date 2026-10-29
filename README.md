@@ -39,7 +39,7 @@ python scripts/run_agent.py --port 8765
 python scripts/run_agent.py --port 8765 --no-browser
 ```
 
-界面是移动端优先的聊天式工作台：上传入口只有一个，函数、机械臂、STL/OBJ、PDF/图片、示意图都走同一个对话框；理解结果以草稿卡出现，确认后才生成。右上角可以查看当前模型、二维码基础地址和访问控制状态。
+界面是移动端优先的聊天式工作台：上传入口只有一个，函数、机械臂、STL/OBJ、PDF/图片、示意图都走同一个对话框；理解结果以草稿卡出现，确认后才生成。输入框上方的模型按钮可以随时切换当前实例提供的模型和思考强度（低/中/高；只有支持推理开关的预置会显示该菜单），选择只影响下一次请求并记在浏览器本地；右上角可以查看当前模型、二维码基础地址和访问控制状态。
 
 #### 手机、平板与其他设备
 
@@ -54,11 +54,12 @@ python scripts/run_agent.py --port 8765 --no-browser
 不配置也能离线演示：分类走关键词，函数走正则，场景走 8 个离线模板，图片只留档不猜。要启用图片理解和自由文字生成场景，复制 `.env.example` 为 `.env`，填一个 OpenAI 兼容服务：
 
 ```dotenv
-TOUCHLEARN_LLM_PROVIDER=dashscope
+TOUCHLEARN_LLM_PROVIDER=tokenhub
 TOUCHLEARN_LLM_KEY=sk-...
+TOUCHLEARN_LLM_MODEL=deepseek-v4.1-flash
 ```
 
-视觉模型默认复用同一预置；自定义网关时再填 `TOUCHLEARN_VLM_*`。支持 OpenAI、DeepSeek、阿里云百炼/通义千问、月之暗面/Kimi、智谱 GLM、本地 Ollama/vLLM 和任意兼容接口。详细配置、端点语义、失败行为见 [docs/providers.md](docs/providers.md)。
+这里的 `TOUCHLEARN_LLM_MODEL` 和 `TOUCHLEARN_LLM_EFFORT` 只是**初始默认值**：服务启动后，用户可以在页面模型菜单里切换到当前实例提供的其他模型和思考强度，不需要改 `.env` 或重启。视觉模型默认复用同一预置；自定义网关时再填 `TOUCHLEARN_VLM_*`。支持腾讯云 TokenHub、OpenAI、DeepSeek、阿里云百炼/通义千问、月之暗面/Kimi、智谱 GLM、本地 Ollama/vLLM 和任意兼容接口。详细配置、端点语义、失败行为见 [docs/providers.md](docs/providers.md)。
 
 密钥只从环境变量或本机 `.env` 读取，不写入作业目录，状态接口只返回 `has_key`。
 
@@ -205,6 +206,7 @@ fabrication/                    盲测材料与打印说明
 - 8 个场景模板全部通过合规检查，无 FAIL；
 - 图片、PDF 文字层、TXT/JSON、STL/OBJ 都能进入对应解析路径；
 - 多家大模型 API 的统一接入与离线降级；
+- 模型与思考强度可在页面内切换，环境变量只提供初始默认；
 - 草稿确认、可编辑、构建进度、产物下载、二维码与音频；
 - 单元测试覆盖几何、布局、标准、路由、模型、文档、服务端。
 

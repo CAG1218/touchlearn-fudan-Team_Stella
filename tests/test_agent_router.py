@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from tests import EXAMPLES  # noqa: F401  (ensures src is on sys.path)
 
+from touchlearn.agent.llm import LLMResult
 from touchlearn.agent.router import classify_request, extract_function
 
 
@@ -56,6 +57,68 @@ class RouterTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["expression"], "sin(x)")
         self.assertTrue(any("按关键词推断" in item for item in result["questions"]))
+
+    def test_classify_passes_model_and_effort_to_text_calls(self) -> None:
+        reply = LLMResult(
+            True,
+            provider="tokenhub",
+            model="glm-5.3",
+            data={"subject": "scene", "confidence": 0.9, "reason": "示意图"},
+        )
+        with (
+            patch("touchlearn.agent.router.llm_status", return_value={"configured": True}),
+            patch("touchlearn.agent.router.chat_json", return_value=reply) as fake,
+        ):
+            decision = classify_request(
+                "画一个串联电路示意图",
+                model="glm-5.3",
+                effort="medium",
+            )
+        self.assertEqual(decision.subject, "scene")
+        kwargs = fake.call_args.kwargs
+        self.assertEqual(kwargs["model"], "glm-5.3")
+        self.assertEqual(kwargs["effort"], "medium")
+        self.assertEqual(kwargs["kind"], "text")
+
+    def test_classify_uses_vision_model_for_images(self) -> None:
+        reply = LLMResult(
+            True,
+            provider="tokenhub",
+            model="hy-vision-2.0-instruct",
+            data={"subject": "scene", "confidence": 0.8, "reason": "读图"},
+        )
+        with (
+            patch("touchlearn.agent.router.llm_status", return_value={"configured": True}),
+            patch("touchlearn.agent.router.chat_json", return_value=reply) as fake,
+        ):
+            classify_request(
+                "把这张图做成触觉板",
+                images=["diagram.png"],
+                model="glm-5.3",
+                vision_model="hy-vision-2.0-instruct",
+                effort="low",
+            )
+        kwargs = fake.call_args.kwargs
+        self.assertEqual(kwargs["model"], "hy-vision-2.0-instruct")
+        self.assertEqual(kwargs["kind"], "vision")
+
+    def test_extract_function_passes_selection(self) -> None:
+        reply = LLMResult(
+            True,
+            provider="tokenhub",
+            model="glm-5.3",
+            data={"expression": "x^2-2x-3", "confidence": 0.9},
+        )
+        with (
+            patch("touchlearn.agent.router.llm_status", return_value={"configured": True}),
+            patch("touchlearn.agent.router.chat_json", return_value=reply) as fake,
+        ):
+            result = extract_function("画一个二次函数", model="glm-5.3", effort="high")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["model"], "glm-5.3")
+        kwargs = fake.call_args.kwargs
+        self.assertEqual(kwargs["model"], "glm-5.3")
+        self.assertEqual(kwargs["effort"], "high")
 
 
 if __name__ == "__main__":

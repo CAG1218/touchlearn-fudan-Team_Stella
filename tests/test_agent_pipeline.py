@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,23 @@ from unittest.mock import patch
 from tests import EXAMPLES  # noqa: F401  (ensures src is on sys.path)
 
 from touchlearn.agent.agent import TouchLearnAgent
+from touchlearn.agent.router import RouteDecision
+from touchlearn.agent.scene import SceneGeneration
 from touchlearn.schema import has_errors, validate_payload
+
+SELECTION_ENV = {
+    "TOUCHLEARN_LLM_PROVIDER": "tokenhub",
+    "TOUCHLEARN_LLM_URL": "",
+    "TOUCHLEARN_LLM_KEY": "sk-test",
+    "TOUCHLEARN_LLM_MODEL": "deepseek-v4.1-flash",
+    "TOUCHLEARN_VLM_PROVIDER": "",
+    "TOUCHLEARN_VLM_URL": "",
+    "TOUCHLEARN_VLM_KEY": "",
+    "TOUCHLEARN_VLM_MODEL": "",
+    "TOUCHLEARN_LLM_EFFORT": "",
+    "TOUCHLEARN_SCENE_MODEL": "",
+    "TOUCHLEARN_SCENE_EFFORT": "",
+}
 
 
 class AgentPipelineTests(unittest.TestCase):
@@ -127,6 +144,93 @@ class AgentPipelineTests(unittest.TestCase):
             (Path(self.temp.name) / "jobs" / result["job_id"] / "manifest.json").read_text(encoding="utf-8")
         )
         self.assertEqual(manifest["title"], "RIGHT TRIANGLE")
+
+    def test_analyze_threads_selection_and_records_llm(self) -> None:
+        decision = RouteDecision("function", 0.95, "test route")
+        candidate = {
+            "ok": True,
+            "expression": "X^2-2X-3",
+            "provider": "llm:tokenhub",
+            "model": "glm-5.3",
+            "confidence": 0.9,
+        }
+        with (
+            patch.dict(os.environ, SELECTION_ENV, clear=False),
+            patch("touchlearn.agent.agent.classify_request", return_value=decision) as classify,
+            patch("touchlearn.agent.agent.extract_function", return_value=candidate) as extract,
+        ):
+            draft = self.agent.analyze(
+                {
+                    "subject": "auto",
+                    "text": "画一个二次函数",
+                    "model": "glm-5.3",
+                    "effort": "high",
+                }
+            )
+        classify_kwargs = classify.call_args.kwargs
+        self.assertEqual(classify_kwargs["model"], "glm-5.3")
+        self.assertEqual(classify_kwargs["effort"], "high")
+        self.assertEqual(classify_kwargs["vision_model"], "deepseek/deepseek-flash")
+        extract_kwargs = extract.call_args.kwargs
+        self.assertEqual(extract_kwargs["model"], "glm-5.3")
+        self.assertEqual(extract_kwargs["effort"], "high")
+        self.assertEqual(draft["subject"], "function")
+        self.assertEqual(draft["fields"]["llm"]["model"], "glm-5.3")
+        self.assertEqual(draft["fields"]["llm"]["effort"], "high")
+        self.assertTrue(draft["fields"]["llm"]["requested"])
+
+    def test_analyze_records_the_initial_default(self) -> None:
+        decision = RouteDecision("function", 0.95, "test route")
+        candidate = {
+            "ok": True,
+            "expression": "sin(x)",
+            "provider": "llm:tokenhub",
+            "model": "deepseek-v4.1-flash",
+            "confidence": 0.8,
+        }
+        with (
+            patch.dict(os.environ, SELECTION_ENV, clear=False),
+            patch("touchlearn.agent.agent.classify_request", return_value=decision),
+            patch("touchlearn.agent.agent.extract_function", return_value=candidate),
+        ):
+            draft = self.agent.analyze({"subject": "auto", "text": "画一个正弦曲线"})
+        self.assertEqual(draft["fields"]["llm"]["model"], "deepseek-v4.1-flash")
+        self.assertEqual(draft["fields"]["llm"]["effort"], "low")
+        self.assertFalse(draft["fields"]["llm"]["requested"])
+
+    def test_analyze_rejects_an_unknown_model_before_calling_llm(self) -> None:
+        with patch.dict(os.environ, SELECTION_ENV, clear=False):
+            with self.assertRaisesRegex(ValueError, "不支持所选模型"):
+                self.agent.analyze(
+                    {
+                        "subject": "auto",
+                        "text": "画一个串联电路示意图",
+                        "model": "not-offered",
+                    }
+                )
+
+    def test_image_scene_uses_the_vision_model_from_the_selection(self) -> None:
+        decision = RouteDecision("scene", 0.9, "test route")
+        with (
+            patch.dict(os.environ, SELECTION_ENV, clear=False),
+            patch("touchlearn.agent.agent.classify_request", return_value=decision),
+            patch(
+                "touchlearn.agent.agent.generate_scene",
+                return_value=SceneGeneration(False, message="stop"),
+            ) as generate,
+        ):
+            self.agent.analyze(
+                {
+                    "subject": "auto",
+                    "text": "把这张图简化成触觉示意图",
+                    "files": [{"name": "drawing.png", "data": base64.b64encode(b"not-a-real-png").decode("ascii")}],
+                    "model": "glm-5.3",
+                    "effort": "medium",
+                }
+            )
+        kwargs = generate.call_args.kwargs
+        self.assertEqual(kwargs["model"], "deepseek/deepseek-flash")
+        self.assertEqual(kwargs["effort"], "medium")
 
 
 if __name__ == "__main__":

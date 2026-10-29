@@ -26,7 +26,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse, urlsplit
+from urllib.parse import quote, unquote, urlparse, urlsplit
 
 from . import __version__
 from .agent import TouchLearnAgent
@@ -41,6 +41,13 @@ BUILD_LOCK = threading.Lock()
 
 def running_in_container() -> bool:
     return os.environ.get("TOUCHLEARN_CONTAINER") == "1" or Path("/.dockerenv").exists()
+
+
+def content_disposition(filename: str) -> str:
+    """Build an RFC 6266 header that keeps the real filename on every browser."""
+    fallback = filename.encode("ascii", "ignore").decode("ascii").replace('"', "").replace("\\", "")
+    fallback = fallback or "download"
+    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
 
 
 MIME_OVERRIDES = {
@@ -154,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
         if download:
-            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+            self.send_header("Content-Disposition", content_disposition(path.name))
         self.end_headers()
         self.wfile.write(data)
 
@@ -402,7 +409,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/zip")
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Content-Disposition", f'attachment; filename="touchlearn-{job_id}.zip"')
+            self.send_header("Content-Disposition", content_disposition(f"touchlearn-{job_id}.zip"))
             self.end_headers()
             self.wfile.write(data)
             return

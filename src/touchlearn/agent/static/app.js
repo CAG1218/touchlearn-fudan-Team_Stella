@@ -44,10 +44,20 @@
     ["qr", "二维码"],
     ["print", "打印说明"],
   ];
+  const SELECTION_KEY = "touchlearn.llm.selection.v1";
+  const FALLBACK_EFFORTS = [
+    { id: "low", label: "低", note: "响应更快，适合大多数分类与结构化任务" },
+    { id: "medium", label: "中", note: "在速度与推理之间取平衡" },
+    { id: "high", label: "高", note: "复杂描述更稳，响应更慢" },
+  ];
 
   const state = {
     health: null,
     providers: null,
+    models: null,
+    selection: null,
+    popoverOpen: false,
+    popoverView: "models",
     templates: [],
     files: [],
     sending: false,
@@ -324,7 +334,10 @@
     } catch (error) {
       state.providers = null;
     }
+    state.models = state.providers && state.providers.models ? state.providers.models : null;
+    syncSelection();
     renderModelChip();
+    if (state.popoverOpen) renderModelPopover();
   }
 
   async function loadTemplates() {
@@ -337,26 +350,239 @@
     renderTemplateList();
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Model and thinking-strength picker                                  */
+  /* ------------------------------------------------------------------ */
+
+  function readStoredSelection() {
+    try {
+      const raw = window.localStorage.getItem(SELECTION_KEY);
+      const value = raw ? JSON.parse(raw) : null;
+      return value && typeof value === "object" ? value : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveSelection(selection) {
+    try {
+      window.localStorage.setItem(SELECTION_KEY, JSON.stringify(selection));
+    } catch (error) {
+      /* private mode or storage disabled: the in-memory choice still works */
+    }
+  }
+
+  function supportsEffort() {
+    return !(state.models && state.models.supports_effort === false);
+  }
+
+  function effortOptions() {
+    if (!supportsEffort()) return [];
+    const list = state.models && Array.isArray(state.models.efforts) ? state.models.efforts : [];
+    return list.length ? list : FALLBACK_EFFORTS;
+  }
+
+  function effortLabel(id) {
+    const entry = effortOptions().find((item) => item.id === id);
+    return entry ? entry.label : String(id || "");
+  }
+
+  function modelEntry(id) {
+    const list = state.models && Array.isArray(state.models.models) ? state.models.models : [];
+    return list.find((item) => String(item.id) === String(id)) || null;
+  }
+
+  function syncSelection() {
+    const models = state.models;
+    if (!models || !models.configured || !Array.isArray(models.models) || !models.models.length) {
+      state.selection = null;
+      return;
+    }
+    const stored = state.selection && state.selection.model ? state.selection : readStoredSelection();
+    const ids = new Set(models.models.map((item) => String(item.id)));
+    const defaultModel = String((models.default && models.default.model) || models.models[0].id || "");
+    const model = stored && ids.has(String(stored.model || "")) ? String(stored.model) : defaultModel;
+    const efforts = effortOptions();
+    const effortIds = new Set(efforts.map((item) => item.id));
+    const defaultEffort = String((models.default && models.default.effort) || "low");
+    const effort = !efforts.length
+      ? ""
+      : (stored && effortIds.has(String(stored.effort || ""))
+        ? String(stored.effort)
+        : (effortIds.has(defaultEffort) ? defaultEffort : "low"));
+    state.selection = { model, effort };
+    saveSelection(state.selection);
+  }
+
   function renderModelChip() {
     const chip = $("#modelChip");
+    if (!chip) return;
+    const text = $("#modelChipText");
+    const setText = (value, title) => {
+      if (text) text.textContent = value;
+      else chip.textContent = value;
+      chip.title = title || value;
+    };
     const llm = state.health && state.health.llm;
+    chip.classList.remove("active", "offline");
     if (!llm) {
-      chip.textContent = "离线规则";
-      chip.title = "尚未读取模型配置";
+      setText("离线规则", "尚未读取模型配置");
+      chip.classList.add("offline");
       return;
     }
     if (llm.mode === "locked") {
-      chip.textContent = "需要访问码";
-      chip.title = "登录后查看模型配置";
+      setText("需要访问码", "登录后选择模型与思考强度");
+      chip.classList.add("offline");
       return;
     }
-    if (!llm.configured) {
-      chip.textContent = "离线规则";
-      chip.title = llm.message || "未配置大模型：使用规则与离线模板";
+    const models = state.models;
+    if (!models || !models.configured || !state.selection) {
+      setText("离线规则", llm.message || "未配置大模型：使用规则与离线模板");
+      chip.classList.add("offline");
       return;
     }
-    chip.textContent = llm.model || llm.label || "大模型";
-    chip.title = `${llm.label || llm.provider || "已配置"} · ${llm.model || ""}`;
+    const entry = modelEntry(state.selection.model);
+    const effort = state.selection.effort ? effortLabel(state.selection.effort) : "";
+    const short = entry ? entry.short || entry.label : state.selection.model;
+    setText(
+      effort ? `${short} · 思考${effort}` : short,
+      `${models.label || models.provider || "已配置"} · ${entry ? entry.label : state.selection.model}${effort ? ` · 思考强度 ${effort}` : ""}`,
+    );
+    chip.classList.toggle("active", state.popoverOpen);
+  }
+
+  function renderModelPopover() {
+    const popover = $("#modelPopover");
+    if (!popover) return;
+    const models = state.models;
+    if (!models || !models.configured || !Array.isArray(models.models) || !models.models.length) {
+      popover.innerHTML = `
+        <div class="popover-head">
+          <div class="popover-title"><strong>模型</strong><small>当前实例没有配置可用模型</small></div>
+          <button class="popover-close" type="button" data-close-model aria-label="关闭">${icon("close")}</button>
+        </div>
+        <p class="popover-empty">智能体会使用规则解析与 8 个离线模板，仍然可以生成可打印的触觉板。配置服务端环境变量后，这里会出现可选模型。</p>
+        <div class="popover-actions"><button class="btn sm" type="button" data-model-settings>打开设置</button></div>
+      `;
+      return;
+    }
+    const selected = state.selection || {};
+    const current = modelEntry(selected.model);
+    const efforts = effortOptions();
+    const effortEntry = efforts.find((item) => item.id === selected.effort);
+    if (state.popoverView === "effort" && !supportsEffort()) state.popoverView = "models";
+
+    if (state.popoverView === "effort") {
+      popover.innerHTML = `
+        <div class="popover-head">
+          <button class="popover-icon-btn" type="button" data-model-view aria-label="返回模型列表">${icon("back")}</button>
+          <div class="popover-title"><strong>思考强度</strong><small>${escapeHtml(current ? current.label : "")}</small></div>
+          <button class="popover-close" type="button" data-close-model aria-label="关闭">${icon("close")}</button>
+        </div>
+        <div class="effort-list" role="listbox" aria-label="思考强度">
+          ${efforts.map((item) => {
+            const active = item.id === selected.effort;
+            return `
+              <button class="effort-row${active ? " selected" : ""}" type="button" role="option" aria-selected="${active}" data-effort="${escapeHtml(item.id)}">
+                <span class="effort-glyph${active ? " on" : ""}" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="effort-copy"><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.note || "")}</small></span>
+                <span class="model-check">${active ? icon("check") : ""}</span>
+              </button>
+            `;
+          }).join("")}
+        </div>
+        <p class="popover-foot">强度越高，复杂描述的处理越稳，但响应更慢。长 JSON 输出被截断时会自动关闭隐藏推理重试。</p>
+      `;
+      return;
+    }
+
+    popover.innerHTML = `
+      <div class="popover-head">
+        <div class="popover-title">
+          <strong>选择模型</strong>
+          <small>${escapeHtml(models.label || models.provider || "当前服务商")} · 切换只影响下一次请求</small>
+        </div>
+        <button class="popover-close" type="button" data-close-model aria-label="关闭">${icon("close")}</button>
+      </div>
+      <div class="model-list" role="listbox" aria-label="模型">
+        ${models.models.map((item) => {
+          const active = String(item.id) === String(selected.model);
+          return `
+            <button class="model-row${active ? " selected" : ""}" type="button" role="option" aria-selected="${active}" data-model="${escapeHtml(item.id)}">
+              <span class="model-row-head">
+                <span class="model-name">${escapeHtml(item.label)}</span>
+                ${item.tag ? `<span class="model-tag${item.vision ? " vision" : ""}">${escapeHtml(item.tag)}</span>` : ""}
+                ${item.default ? '<span class="model-tag subtle">初始默认</span>' : ""}
+              </span>
+              <span class="model-note">${escapeHtml(item.note || "")}</span>
+              <span class="model-check">${active ? icon("check") : ""}</span>
+            </button>
+          `;
+        }).join("")}
+      </div>
+      ${supportsEffort() ? `
+      <button class="effort-entry" type="button" data-effort-view>
+        <span class="effort-glyph${effortEntry && effortEntry.id !== "low" ? " on" : ""}" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="effort-entry-copy">
+          <strong>思考强度</strong>
+          <small>${escapeHtml(effortEntry ? `${effortEntry.label} · ${effortEntry.note}` : "低 · 响应更快")}</small>
+        </span>
+        <span class="effort-current">${escapeHtml(effortEntry ? effortEntry.label : "")}</span>
+        ${icon("chevron")}
+      </button>` : ""}
+      <p class="popover-foot">${escapeHtml(models.note || "")}</p>
+    `;
+  }
+
+  function openModelPopover(view = "models") {
+    const models = state.models;
+    if (!models || !models.configured || !state.selection) {
+      openSettings();
+      return;
+    }
+    state.popoverView = view === "effort" && supportsEffort() ? "effort" : "models";
+    state.popoverOpen = true;
+    renderModelPopover();
+    $("#modelPopover").classList.remove("hidden");
+    $("#modelChip").setAttribute("aria-expanded", "true");
+    renderModelChip();
+  }
+
+  function closeModelPopover() {
+    if (!state.popoverOpen) return;
+    state.popoverOpen = false;
+    const popover = $("#modelPopover");
+    if (popover) popover.classList.add("hidden");
+    const chip = $("#modelChip");
+    if (chip) chip.setAttribute("aria-expanded", "false");
+    renderModelChip();
+  }
+
+  function toggleModelPopover() {
+    if (state.popoverOpen) {
+      closeModelPopover();
+      return;
+    }
+    openModelPopover("models");
+  }
+
+  function chooseModel(id) {
+    const entry = modelEntry(id);
+    if (!entry || !state.selection) return;
+    state.selection = { ...state.selection, model: String(entry.id) };
+    saveSelection(state.selection);
+    closeModelPopover();
+    const visionHint = entry.vision ? "；读图请求也会优先用它" : "";
+    toast(`已切换到 ${entry.label}${visionHint}`);
+  }
+
+  function chooseEffort(id) {
+    const entry = effortOptions().find((item) => item.id === id);
+    if (!entry || !state.selection) return;
+    state.selection = { ...state.selection, effort: String(entry.id) };
+    saveSelection(state.selection);
+    closeModelPopover();
+    toast(`思考强度已设为「${entry.label}」`);
   }
 
   async function submitLogin(event) {
@@ -538,6 +764,13 @@
       const payload = { subject: "auto", text: request.text || "" };
       if (request.template) payload.template = request.template;
       if (request.scene) payload.scene = request.scene;
+      // The server validates these against its own catalog.  Only send them
+      // when a model is actually configured, so an offline instance sees the
+      // same request as before.
+      if (state.models && state.models.configured && state.selection) {
+        payload.model = state.selection.model;
+        if (state.selection.effort) payload.effort = state.selection.effort;
+      }
       payload.files = await Promise.all(files.map(async (file) => ({
         name: file.name,
         data: await base64FromFile(file),
@@ -560,6 +793,13 @@
       if (error instanceof AuthError) {
         agentText(body, "需要访问码才能继续。请在登录窗口输入部署者提供的访问码。", true);
         showLogin();
+      } else if (String(error.message || "").includes("不支持所选模型")) {
+        const stale = state.selection ? state.selection.model : "";
+        await loadProviders();
+        const entry = state.selection ? modelEntry(state.selection.model) : null;
+        const label = entry ? entry.label : ((state.selection && state.selection.model) || "初始默认");
+        agentText(body, `原先选择的模型 ${stale} 已不在当前实例的可用列表里，已回退到 ${label}。请重试。`, true);
+        retryRow(body, request, files);
       } else {
         agentText(body, `这次没有理解成功：${error.message || "未知错误"}`, true);
         retryRow(body, request, files);
@@ -761,6 +1001,10 @@
     const generationPill = generation && generation.provider
       ? `<span class="pill info">${escapeHtml(generation.provider)}${generation.model ? ` · ${escapeHtml(generation.model)}` : ""}</span>`
       : "";
+    const llm = draft.fields && draft.fields.llm;
+    const llmPill = llm && llm.model
+      ? `<span class="pill">${escapeHtml(llm.label || llm.model)}${llm.effort ? ` · 思考${escapeHtml(effortLabel(llm.effort))}` : ""}${llm.requested ? "" : " · 默认"}</span>`
+      : "";
     const subjectPill = `<span class="pill">${escapeHtml(SUBJECT_LABEL[draft.subject] || draft.subject)}</span>`;
     const modePill = draft.output_mode
       ? `<span class="pill info">${escapeHtml(MODE_LABEL[draft.output_mode] || draft.output_mode)}</span>`
@@ -791,7 +1035,7 @@
           <div class="confidence-bar"><i style="width:${percent}%"></i></div>
         </div>
       </div>
-      <div class="draft-summary">${subjectPill}${modePill}${readyPill}${filePill}${extraPills}${generationPill}</div>
+      <div class="draft-summary">${subjectPill}${modePill}${readyPill}${filePill}${extraPills}${llmPill}${generationPill}</div>
       ${routeLine}
       ${renderDraftFields(draft)}
       ${renderQuestions(draft)}
@@ -1140,13 +1384,14 @@
     return `
       <div class="preview-frame"><img src="${base}/preview.svg" alt="触觉产物预览"></div>
       <div class="action-row">
-        <a class="btn primary" href="${base}/model.stl?download=1">${icon("download")}下载 STL</a>
-        <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip">${icon("download")}下载整包 ZIP</a>
+        <a class="btn primary" href="${base}/model.stl?download=1" download="touchlearn-${ui.jobId}-model.stl">${icon("download")}下载 STL</a>
+        <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip" download="touchlearn-${ui.jobId}.zip">${icon("download")}下载整包 ZIP</a>
         <button class="btn" type="button" data-open-viewer>${icon("cube")}三维旋转查看</button>
         <a class="btn" href="${base}/compliance.md" target="_blank" rel="noopener">${icon("external")}打开合规报告</a>
       </div>
       <div data-viewer-slot></div>
       <p class="hint-line">${escapeHtml(hint)}</p>
+      <p class="hint-line">STL 是二进制网格文件，请用 Bambu Studio、PrusaSlicer 或 Cura 打开；ZIP 是标准压缩包。Word 和 VS Code 不是查看这两种文件的工具。</p>
     `;
   }
 
@@ -1235,8 +1480,8 @@
     return `
       ${player}
       <div class="action-row">
-        ${wavReady ? `<a class="btn" href="${base}/narration.wav?download=1">${icon("download")}下载 WAV</a>` : ""}
-        <a class="btn" href="${base}/audio_script.txt?download=1">${icon("download")}下载讲解稿</a>
+        ${wavReady ? `<a class="btn" href="${base}/narration.wav?download=1" download="touchlearn-${ui.jobId}-narration.wav">${icon("download")}下载 WAV</a>` : ""}
+        <a class="btn" href="${base}/audio_script.txt?download=1" download="touchlearn-${ui.jobId}-audio_script.txt">${icon("download")}下载讲解稿</a>
         <a class="btn" href="/audio/${encodeURIComponent(ui.jobId)}/" target="_blank" rel="noopener">${icon("external")}手机版音频页</a>
       </div>
       <pre class="script-box">${escapeHtml(script || "讲解稿尚未生成。")}</pre>
@@ -1257,8 +1502,8 @@
           <p class="hint-line">二维码地址取自本次访问的域名。用同一网络或同一公网地址打开即可；如果服务停止，链接会失效。</p>
           <span class="qr-url">${escapeHtml(payload)}</span>
           <div class="action-row">
-            <a class="btn" href="${base}/qr.png?download=1">${icon("download")}二维码 PNG</a>
-            <a class="btn" href="${base}/qr_card.svg?download=1">${icon("download")}二维码卡片</a>
+            <a class="btn" href="${base}/qr.png?download=1" download="touchlearn-${ui.jobId}-qr.png">${icon("download")}二维码 PNG</a>
+            <a class="btn" href="${base}/qr_card.svg?download=1" download="touchlearn-${ui.jobId}-qr_card.svg">${icon("download")}二维码卡片</a>
             <button class="btn" type="button" data-copy="${escapeHtml(payload)}">${icon("copy")}复制链接</button>
           </div>
         </div>
@@ -1303,7 +1548,7 @@
         <div class="callout warn">清单还没准备好。可以重新读取，或直接下载整包。</div>
         <div class="action-row">
           <button class="btn" type="button" data-reload-details>${icon("refresh")}重新读取</button>
-          <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip">下载整包 ZIP</a>
+          <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip" download="touchlearn-${ui.jobId}.zip">下载整包 ZIP</a>
         </div>
       `;
     }
@@ -1326,8 +1571,8 @@
       </div>
       <p class="hint-line">${escapeHtml(printNote(print.notes) || "请按切片软件预览确认摆放方向与支撑。")}</p>
       <div class="action-row">
-        <a class="btn" href="/files/${encodeURIComponent(ui.jobId)}/README.txt?download=1">${icon("download")}下载打印说明</a>
-        <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip">${icon("download")}下载整包 ZIP</a>
+        <a class="btn" href="/files/${encodeURIComponent(ui.jobId)}/README.txt?download=1" download="touchlearn-${ui.jobId}-README.txt">${icon("download")}下载打印说明</a>
+        <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip" download="touchlearn-${ui.jobId}.zip">${icon("download")}下载整包 ZIP</a>
       </div>
       <p class="hint-line">本智能体不直接控制打印机；STL 可导入 Bambu Studio、PrusaSlicer、Cura 等切片软件。若模型有悬垂，报告会标记为工艺提示而不是几何错误。</p>
     `;
@@ -1754,6 +1999,7 @@
   }
 
   function openTemplates() {
+    closeModelPopover();
     renderTemplateList();
     $("#templateSheet").classList.remove("hidden");
   }
@@ -1799,6 +2045,11 @@
     const privacy = providers.privacy || "密钥只从服务端环境变量读取，不会返回给浏览器，也不会写入产物。";
     const voiceText = voices.length ? voices.slice(0, 3).join("、") + (voices.length > 3 ? ` 等 ${voices.length} 个` : "") : "未检测到系统语音";
     const baseUrl = health.public_base_url || location.origin;
+    const models = state.models || providers.models || null;
+    const selectedModel = state.selection ? modelEntry(state.selection.model) : null;
+    const selectionText = models && models.configured && selectedModel
+      ? `${selectedModel.label} · 思考强度 ${effortLabel(state.selection.effort)}`
+      : "未配置（规则与离线模板）";
     $("#settingsBody").innerHTML = `
       <div class="setting-group">
         <h3>服务</h3>
@@ -1816,18 +2067,28 @@
       </div>
       <div class="setting-group">
         <h3>理解模型</h3>
+        ${settingRow("当前选择", selectionText)}
         ${settingRow("文本理解", providerText(llm))}
         ${settingRow("图像理解", providerText(vision))}
         <p class="setting-note">${escapeHtml((llm && llm.message) || "未配置大模型时，智能体会使用规则解析和 8 个离线模板，仍然可以生成可打印的触觉板。")}</p>
+        <p class="setting-note">环境变量只提供初始默认模型和初始思考强度；日常使用时，点底部模型按钮即可切换，选择会保存在本机浏览器，只影响之后的请求。</p>
+        <div class="action-row">
+          ${models && models.configured ? `<button class="btn sm" type="button" id="settingsModelPick">${icon("spark")}选择模型与思考强度</button>` : ""}
+        </div>
         <p class="setting-note">${escapeHtml(privacy)}</p>
-        <pre class="code-block">TOUCHLEARN_LLM_PROVIDER=deepseek
+        <pre class="code-block"># 这几项只决定“初始默认”，用户可在底部菜单里改选
+TOUCHLEARN_LLM_PROVIDER=tokenhub
 TOUCHLEARN_LLM_KEY=sk-...
-TOUCHLEARN_LLM_MODEL=deepseek-chat
+TOUCHLEARN_LLM_MODEL=deepseek-v4.1-flash
+TOUCHLEARN_LLM_EFFORT=low
 
-# 可选：读图与照片理解
-TOUCHLEARN_VLM_PROVIDER=dashscope
-TOUCHLEARN_VLM_KEY=sk-...
-TOUCHLEARN_VLM_MODEL=qwen-vl-max</pre>
+# 场景 JSON 的内部快速通道；用户选择优先
+TOUCHLEARN_SCENE_MODEL=deepseek-v4.1-flash
+TOUCHLEARN_SCENE_EFFORT=off
+
+# 读图与照片理解（同一 provider 自动复用上面的 KEY）
+TOUCHLEARN_VLM_PROVIDER=tokenhub
+TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
         <p class="setting-note">把变量写进服务端的 <code>.env</code> 或部署平台环境变量，然后重启服务。不要把密钥贴进聊天框。</p>
       </div>
       <div class="setting-group">
@@ -1846,6 +2107,7 @@ TOUCHLEARN_VLM_MODEL=qwen-vl-max</pre>
   }
 
   function openSettings() {
+    closeModelPopover();
     renderSettings();
     $("#settingsSheet").classList.remove("hidden");
   }
@@ -1887,7 +2149,43 @@ TOUCHLEARN_VLM_MODEL=qwen-vl-max</pre>
     $("#newChatBtn").addEventListener("click", newChat);
     $("#settingsBtn").addEventListener("click", openSettings);
     $("#templateBtn").addEventListener("click", openTemplates);
-    $("#modelChip").addEventListener("click", openSettings);
+    $("#modelChip").addEventListener("click", toggleModelPopover);
+
+    $("#modelPopover").addEventListener("click", (event) => {
+      if (event.target.closest("[data-close-model]")) {
+        closeModelPopover();
+        return;
+      }
+      const model = event.target.closest("[data-model]");
+      if (model) {
+        chooseModel(model.dataset.model);
+        return;
+      }
+      const effort = event.target.closest("[data-effort]");
+      if (effort) {
+        chooseEffort(effort.dataset.effort);
+        return;
+      }
+      if (event.target.closest("[data-effort-view]")) {
+        state.popoverView = "effort";
+        renderModelPopover();
+        return;
+      }
+      if (event.target.closest("[data-model-view]")) {
+        state.popoverView = "models";
+        renderModelPopover();
+        return;
+      }
+      if (event.target.closest("[data-model-settings]")) {
+        closeModelPopover();
+        openSettings();
+      }
+    });
+    document.addEventListener("click", (event) => {
+      if (!state.popoverOpen) return;
+      if (event.target.closest("#modelPopover") || event.target.closest("#modelChip")) return;
+      closeModelPopover();
+    });
 
     $("#composerForm").addEventListener("submit", handleSubmit);
     $("#attachBtn").addEventListener("click", () => $("#fileInput").click());
@@ -1970,17 +2268,28 @@ TOUCHLEARN_VLM_MODEL=qwen-vl-max</pre>
         return;
       }
       if (event.target.closest("#settingsRefresh")) {
-        refreshHealth().then(() => renderSettings());
+        refreshHealth().then(() => {
+          loadProviders().then(() => renderSettings());
+        });
         return;
       }
       if (event.target.closest("#settingsTemplates")) {
         closeSheets();
         openTemplates();
+        return;
+      }
+      if (event.target.closest("#settingsModelPick")) {
+        closeSheets();
+        openModelPopover("models");
       }
     });
 
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
+      if (state.popoverOpen) {
+        closeModelPopover();
+        return;
+      }
       if (!$("#settingsSheet").classList.contains("hidden") || !$("#templateSheet").classList.contains("hidden")) {
         closeSheets();
         return;

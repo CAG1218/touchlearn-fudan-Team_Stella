@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from tests import EXAMPLES  # noqa: F401  (ensures src is on sys.path)
 
+from touchlearn.agent.llm import LLMResult
 from touchlearn.agent.scene import (
     SceneError,
+    generate_scene,
     match_template,
     normalize_scene,
     scene_narration,
@@ -117,6 +120,43 @@ class SceneTemplateTests(unittest.TestCase):
         self.assertEqual(scene["blocks"][0]["id"], "blockone")
         self.assertEqual(len(scene["blocks"]), 1)
         self.assertTrue(warnings)
+
+    def test_generate_scene_honours_explicit_selection(self) -> None:
+        with patch(
+            "touchlearn.agent.scene.chat_json",
+            return_value=LLMResult(False, message="stop"),
+        ) as fake:
+            generate_scene("画一个串联电路", model="glm-5.3", effort="high")
+        kwargs = fake.call_args.kwargs
+        self.assertEqual(kwargs["model"], "glm-5.3")
+        self.assertEqual(kwargs["effort"], "high")
+
+    def test_generate_scene_retries_without_reasoning_on_truncation(self) -> None:
+        first = LLMResult(False, finish_reason="length", message="truncated")
+        second = LLMResult(False, message="stop")
+        with patch(
+            "touchlearn.agent.scene.chat_json",
+            side_effect=[first, second],
+        ) as fake:
+            generate_scene("画一个串联电路", model="glm-5.3", effort="high")
+        self.assertEqual(fake.call_count, 2)
+        self.assertEqual(fake.call_args_list[0].kwargs["effort"], "high")
+        self.assertEqual(fake.call_args_list[1].kwargs["effort"], "off")
+        self.assertEqual(fake.call_args_list[1].kwargs["model"], "glm-5.3")
+
+    def test_generate_scene_reports_the_reasoning_fallback(self) -> None:
+        scene = scene_templates()[0]["scene"]
+        first = LLMResult(False, finish_reason="length", message="truncated")
+        second = LLMResult(
+            True,
+            provider="tokenhub",
+            model="glm-5.3",
+            data={"scene": scene, "confidence": 0.8},
+        )
+        with patch("touchlearn.agent.scene.chat_json", side_effect=[first, second]):
+            result = generate_scene("画一个串联电路", model="glm-5.3", effort="high")
+        self.assertTrue(result.ok)
+        self.assertTrue(any("自动关闭隐藏推理重试" in item for item in result.notes))
 
 
 if __name__ == "__main__":

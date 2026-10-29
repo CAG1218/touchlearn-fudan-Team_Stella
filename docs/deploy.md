@@ -109,8 +109,9 @@ python scripts/run_public.py --access-code XXX   # 临时指定访问码
 docker build -t touchlearn .
 docker run --rm -p 8765:8765 \
   -e TOUCHLEARN_ACCESS_CODE=TL-XXXXXXXX \
-  -e TOUCHLEARN_LLM_PROVIDER=deepseek \
+  -e TOUCHLEARN_LLM_PROVIDER=tokenhub \
   -e TOUCHLEARN_LLM_KEY=sk-... \
+  -e TOUCHLEARN_LLM_MODEL=deepseek-v4.1-flash \
   -v touchlearn-outputs:/app/outputs \
   touchlearn
 ```
@@ -133,23 +134,36 @@ Railway/Heroku 一类平台可以使用 `Procfile`；平台会注入 `PORT`，�
 最少配置一个文本模型：
 
 ```dotenv
-TOUCHLEARN_LLM_PROVIDER=deepseek
+TOUCHLEARN_LLM_PROVIDER=tokenhub
 TOUCHLEARN_LLM_KEY=sk-...
-# 可选；留空用预置默认值
-TOUCHLEARN_LLM_MODEL=deepseek-chat
+# 可选；留空用预置默认值。这里只是初始默认，用户可在页面模型菜单里切换
+TOUCHLEARN_LLM_MODEL=deepseek-v4.1-flash
+# 可选：同一 provider 会复用上面的 KEY
+TOUCHLEARN_VLM_PROVIDER=tokenhub
+TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash
+# 可选：长场景 JSON 用更快的模型并关闭思考，避免被 max_tokens 截断
+TOUCHLEARN_SCENE_MODEL=deepseek-v4.1-flash
+TOUCHLEARN_LLM_EFFORT=low
+TOUCHLEARN_SCENE_EFFORT=off
 ```
+
+模型与思考强度是**用户可选项**，不是部署时锁死的配置：服务启动后，页面输入框上方的模型按钮会列出当前实例提供的模型，用户可以自行切换；`.env` 里的值只决定初始默认。选择保存在浏览器本地，下一次请求生效，不影响其他设备。
+
+也可以把 `TOUCHLEARN_LLM_PROVIDER` 换成 `deepseek`，模型改为 `deepseek-v4-pro` / `deepseek-flash`。
 
 图片理解需要视觉模型。预置里自带视觉模型的包括：
 
 | 预置 | 文本模型 | 视觉模型 |
 |---|---|---|
+| `tokenhub` | `deepseek-v4.1-flash` | `deepseek/deepseek-flash` |
+| `deepseek` | `deepseek-v4-pro` | `deepseek-flash` |
 | `openai` | `gpt-4o-mini` | `gpt-4o-mini` |
 | `dashscope` | `qwen-plus` | `qwen-vl-max` |
 | `moonshot` | `moonshot-v1-8k` | `moonshot-v1-8k-vision-preview` |
 | `zhipu` | `glm-4-flash` | `glm-4v-flash` |
 | `ollama` | `qwen2.5:7b` | `qwen2.5vl:7b` |
 
-DeepSeek 预置没有公开视觉模型；如果主要处理教材照片，建议文本用 DeepSeek、视觉单独用百炼或智谱：
+如果更偏好百炼的 Qwen-VL，也可以文本用 DeepSeek、视觉单独用百炼：
 
 ```dotenv
 TOUCHLEARN_LLM_PROVIDER=deepseek

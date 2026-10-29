@@ -32,7 +32,7 @@ from ..layout import (
     text_width,
 )
 from ..model import Diagram
-from .llm import chat_json
+from .llm import chat_json, scene_effort, scene_model
 from .parametric import _axis_arrow, _fit_text, _footer, _place_label, _qr_zone
 
 SCENE_VERSION = 1
@@ -619,18 +619,49 @@ def generate_scene(
     images: Sequence[str | Path] = (),
     hint: str = "",
     use_vision: bool = True,
+    model: str | None = None,
+    effort: str | None = None,
 ) -> SceneGeneration:
     request = (text or "").strip() or "一张二维示意图"
     prompt = SCENE_PROMPT.format(request=request[:4000], hint=(hint or "无")[:800])
     if images and use_vision:
         prompt += "\n\n" + SCENE_IMAGE_HINT
+    vision_call = bool(images and use_vision)
+    # A user-selected model wins; otherwise keep the preset's fast scene model
+    # for text and the dedicated vision model for images.
+    chosen_model = model or (None if vision_call else (scene_model() or None))
+    chosen_effort = effort if effort not in {None, ""} else (scene_effort() or None)
     result = chat_json(
         SCENE_SYSTEM,
         prompt,
         images=images if use_vision else (),
-        kind="vision" if images and use_vision else "text",
-        max_tokens=3200,
+        kind="vision" if vision_call else "text",
+        # Reasoning models count hidden reasoning tokens against max_tokens on
+        # some providers.  A full scene JSON is ~2-3k tokens, so keep a wide
+        # budget instead of silently returning an empty answer.
+        max_tokens=8192,
+        model=chosen_model,
+        # Hidden reasoning tokens count against max_tokens on some providers and
+        # can truncate the JSON.  Scene specs are formatting, not puzzles --
+        # this applies to image reconstruction too, which otherwise hit
+        # finish_reason=length at 8192 on TokenHub's vision model.
+        effort=chosen_effort,
     )
+    retried = False
+    if not result.ok and result.finish_reason == "length" and chosen_effort not in {None, "", "off"}:
+        # The user asked for a high thinking budget, but it consumed the whole
+        # output window.  One retry without hidden reasoning still honours the
+        # model choice and returns a complete scene instead of a hard failure.
+        result = chat_json(
+            SCENE_SYSTEM,
+            prompt,
+            images=images if use_vision else (),
+            kind="vision" if vision_call else "text",
+            max_tokens=8192,
+            model=chosen_model,
+            effort="off",
+        )
+        retried = True
     if not result.ok:
         return SceneGeneration(False, provider=result.provider, model=result.model, message=result.message)
     data = result.data if isinstance(result.data, dict) else None
@@ -655,6 +686,8 @@ def generate_scene(
     notes = [str(item).strip()[:180] for item in (data.get("notes") or []) if isinstance(item, str) and item.strip()][:5]
     questions = [str(item).strip()[:180] for item in (data.get("questions") or []) if isinstance(item, str) and item.strip()][:5]
     notes.extend(warnings[:4])
+    if retried:
+        notes.append("所选思考强度占满了输出预算，已自动关闭隐藏推理重试并完整生成。")
     return SceneGeneration(
         True,
         scene=scene,
@@ -673,8 +706,10 @@ def generate_scene_from_image(
     *,
     text: str = "",
     hint: str = "",
+    model: str | None = None,
+    effort: str | None = None,
 ) -> SceneGeneration:
-    return generate_scene(text, images=[path], hint=hint)
+    return generate_scene(text, images=[path], hint=hint, model=model, effort=effort)
 
 
 # ---------------------------------------------------------------------------

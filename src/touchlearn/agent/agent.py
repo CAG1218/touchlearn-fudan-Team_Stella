@@ -45,7 +45,7 @@ from .audio import (
 )
 from .documents import extract_document, scene_from_text
 from .expression import Expression, ExpressionError, parse_expression
-from .llm import llm_status
+from .llm import llm_status, resolve_selection
 from .parametric import (
     DEFAULT_ROBOT,
     RobotSpec,
@@ -320,6 +320,14 @@ class TouchLearnAgent:
         if subject not in {"", "auto", "function", "robot", "mesh", "scene", "unsupported"}:
             raise ValueError(f"unsupported subject: {subject}")
 
+        # Validate the browser's per-request choice before touching uploads or
+        # writing a draft.  An unknown model is a client error, not a reason to
+        # silently fall back and bill the default one.
+        selection = resolve_selection(
+            str(payload.get("model") or "").strip() or None,
+            str(payload.get("effort") or "").strip().lower() or None,
+        )
+
         draft_id = uuid.uuid4().hex[:12]
         draft_dir = self.root / "drafts" / draft_id
         uploads_dir = draft_dir / "uploads"
@@ -392,6 +400,9 @@ class TouchLearnAgent:
                     has_expression=bool(str(payload.get("expression") or "").strip()),
                     has_spec=bool(payload.get("spec")),
                     has_mesh=bool(mesh_files),
+                    model=selection.get("model") or None,
+                    effort=selection.get("effort") or None,
+                    vision_model=selection.get("vision_model") or None,
                 )
             subject = decision.subject
             route = decision.to_dict()
@@ -400,11 +411,11 @@ class TouchLearnAgent:
             payload["description"] = text
 
         if subject == "function":
-            draft = self._analyze_function(payload, draft_id, files)
+            draft = self._analyze_function(payload, draft_id, files, selection=selection)
         elif subject == "mesh":
             draft = self._analyze_mesh(payload, draft_id, files, mesh_files)
         elif subject == "scene":
-            draft = self._analyze_scene(payload, draft_id, files, images=images, route=route)
+            draft = self._analyze_scene(payload, draft_id, files, images=images, route=route, selection=selection)
         elif subject == "unsupported":
             draft = Draft(
                 id=draft_id,
@@ -418,8 +429,20 @@ class TouchLearnAgent:
                 files=files,
             )
         else:
-            draft = self._analyze_robot(payload, draft_id, files)
+            draft = self._analyze_robot(payload, draft_id, files, selection=selection)
 
+        if selection.get("provider"):
+            draft.fields["llm"] = {
+                "provider": selection.get("provider"),
+                "label": selection.get("label"),
+                "model": selection.get("model"),
+                "effort": selection.get("effort"),
+                "vision_model": selection.get("vision_model"),
+                "requested": bool(
+                    str(payload.get("model") or "").strip()
+                    or str(payload.get("effort") or "").strip()
+                ),
+            }
         for note in document_notes:
             if note not in draft.notes:
                 draft.notes.append(note)
@@ -442,11 +465,19 @@ class TouchLearnAgent:
         subject: str,
         *,
         hint: str = "",
+        selection: dict[str, Any] | None = None,
     ):
         path = self.root / "drafts" / draft_id / str(image_info.get("path") or "")
         if not path.is_file():
             return None
-        return interpret_image(path, subject, hint=hint)
+        selection = selection or {}
+        return interpret_image(
+            path,
+            subject,
+            hint=hint,
+            model=selection.get("vision_model") or None,
+            effort=selection.get("effort") or None,
+        )
 
     def _save_uploads(self, raw_files: Sequence[Any], uploads_dir: Path) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -485,7 +516,15 @@ class TouchLearnAgent:
             result.append(info)
         return result
 
-    def _analyze_function(self, payload: dict[str, Any], draft_id: str, files: list[dict[str, Any]]) -> Draft:
+    def _analyze_function(
+        self,
+        payload: dict[str, Any],
+        draft_id: str,
+        files: list[dict[str, Any]],
+        *,
+        selection: dict[str, Any] | None = None,
+    ) -> Draft:
+        selection = selection or {}
         notes: list[str] = []
         questions: list[str] = []
         explicit_expression = str(payload.get("expression") or "").strip()
@@ -500,13 +539,19 @@ class TouchLearnAgent:
                 expression_text = raw_text
                 fields["expression"] = expression_text
             except ExpressionError:
-                candidate = extract_function(raw_text)
+                candidate = extract_function(
+                    raw_text,
+                    model=selection.get("model") or None,
+                    effort=selection.get("effort") or None,
+                    vision_model=selection.get("vision_model") or None,
+                )
                 if candidate.get("ok") and candidate.get("expression"):
                     expression_text = str(candidate["expression"]).strip()
                     fields["expression"] = expression_text
                     fields["extraction"] = {
                         "provider": candidate.get("provider"),
                         "model": candidate.get("model"),
+                        "effort": selection.get("effort"),
                         "confidence": candidate.get("confidence"),
                     }
                     for item in candidate.get("notes") or []:
@@ -535,7 +580,7 @@ class TouchLearnAgent:
         images = [item for item in files if item["extension"] in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}]
         vision_confidence = 0.0
         if not expression_text and images:
-            candidate = self._vision_candidate(draft_id, images[0], "function")
+            candidate = self._vision_candidate(draft_id, images[0], "function", selection=selection)
             if candidate and candidate.ok:
                 proposed = str(candidate.data.get("expression") or "").strip()
                 if proposed:
@@ -544,6 +589,7 @@ class TouchLearnAgent:
                     vision_confidence = candidate.confidence or 0.6
                     fields["vision"] = {
                         "provider": candidate.provider,
+                        "model": selection.get("vision_model") or "",
                         "confidence": round(candidate.confidence, 3),
                     }
                     notes.append(f"视觉模型从图片提取到候选解析式：{proposed}。")
@@ -654,7 +700,15 @@ class TouchLearnAgent:
             files=files,
         )
 
-    def _analyze_robot(self, payload: dict[str, Any], draft_id: str, files: list[dict[str, Any]]) -> Draft:
+    def _analyze_robot(
+        self,
+        payload: dict[str, Any],
+        draft_id: str,
+        files: list[dict[str, Any]],
+        *,
+        selection: dict[str, Any] | None = None,
+    ) -> Draft:
+        selection = selection or {}
         notes: list[str] = []
         questions: list[str] = []
         mode = str(payload.get("output_mode") or "").strip().lower()
@@ -671,7 +725,7 @@ class TouchLearnAgent:
         description_text = str(payload.get("description") or "").strip()
         vision_confidence = 0.0
         if not spec_payload and not description_text and images:
-            candidate = self._vision_candidate(draft_id, images[0], "robot")
+            candidate = self._vision_candidate(draft_id, images[0], "robot", selection=selection)
             if candidate and candidate.ok:
                 data = candidate.data
                 proposed_description = str(data.get("description") or "").strip()
@@ -749,7 +803,11 @@ class TouchLearnAgent:
             "image_received": bool(images),
         }
         if vision_confidence:
-            fields["vision"] = {"confidence": round(vision_confidence, 3), "provider": "remote-vlm"}
+            fields["vision"] = {
+                "confidence": round(vision_confidence, 3),
+                "provider": "remote-vlm",
+                "model": selection.get("vision_model") or "",
+            }
         notes.append("板式示意图用侧视运动链表达关节顺序，不表示真实姿态和尺寸。")
         if output_mode == "volumetric_model":
             notes.append("体积模式会生成底座、连杆、关节和末端夹爪，并预留 34 mm 二维码平面。")
@@ -829,7 +887,9 @@ class TouchLearnAgent:
         *,
         images: Sequence[Path] = (),
         route: dict[str, Any] | None = None,
+        selection: dict[str, Any] | None = None,
     ) -> Draft:
+        selection = selection or {}
         notes: list[str] = []
         questions: list[str] = []
         text = str(
@@ -878,11 +938,22 @@ class TouchLearnAgent:
                 notes.append(f"已使用离线模板：{entry['label']}。")
 
         if scene is None and (text or images):
-            generation_result = generate_scene(text, images=images)
+            # The picker's vision choice drives image reconstruction; a text
+            # model never receives an image payload it cannot read.
+            chosen_model = (
+                selection.get("vision_model") if images else selection.get("model")
+            )
+            generation_result = generate_scene(
+                text,
+                images=images,
+                model=chosen_model or None,
+                effort=selection.get("effort") or None,
+            )
             generation = {
                 "ok": generation_result.ok,
                 "provider": generation_result.provider,
                 "model": generation_result.model,
+                "effort": selection.get("effort"),
                 "message": generation_result.message,
             }
             if generation_result.ok and generation_result.scene:

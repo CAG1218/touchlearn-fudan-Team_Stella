@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
+import os
+import struct
 import tempfile
 import threading
 import unittest
+import zipfile
 from http.cookiejar import CookieJar
 from unittest.mock import patch
 from pathlib import Path
@@ -13,7 +17,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 from tests import EXAMPLES  # noqa: F401  (ensures src is on sys.path)
 
-from touchlearn.agent.server import AppState, Server
+from touchlearn.agent.server import AppState, Server, content_disposition
 
 
 class AgentServerTests(unittest.TestCase):
@@ -62,6 +66,63 @@ class AgentServerTests(unittest.TestCase):
             self.assertIn("has_key", payload[kind])
         self.assertTrue(payload["presets"])
         self.assertIn("TOUCHLEARN_LLM_KEY", payload["environment"]["text"])
+        self.assertIn("models", payload)
+        self.assertIn("default", payload["models"])
+        self.assertEqual(
+            [item["id"] for item in payload["models"]["efforts"]],
+            ["low", "medium", "high"],
+        )
+        self.assertFalse(payload["models"]["configured"])
+        self.assertEqual(payload["models"]["models"], [])
+
+    def test_analyze_rejects_an_unknown_model(self) -> None:
+        env = {
+            "TOUCHLEARN_LLM_PROVIDER": "tokenhub",
+            "TOUCHLEARN_LLM_KEY": "sk-test",
+            "TOUCHLEARN_LLM_MODEL": "deepseek-v4.1-flash",
+            "TOUCHLEARN_VLM_PROVIDER": "",
+            "TOUCHLEARN_VLM_URL": "",
+            "TOUCHLEARN_VLM_KEY": "",
+            "TOUCHLEARN_VLM_MODEL": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(HTTPError) as caught:
+                self.post_json(
+                    "/api/analyze",
+                    {
+                        "subject": "auto",
+                        "text": "画一个串联电路示意图",
+                        "model": "not-offered",
+                    },
+                )
+        self.assertEqual(caught.exception.code, 400)
+        body = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertIn("不支持所选模型", body["error"])
+
+    def test_analyze_rejects_an_unknown_effort(self) -> None:
+        env = {
+            "TOUCHLEARN_LLM_PROVIDER": "tokenhub",
+            "TOUCHLEARN_LLM_KEY": "sk-test",
+            "TOUCHLEARN_LLM_MODEL": "deepseek-v4.1-flash",
+            "TOUCHLEARN_VLM_PROVIDER": "",
+            "TOUCHLEARN_VLM_URL": "",
+            "TOUCHLEARN_VLM_KEY": "",
+            "TOUCHLEARN_VLM_MODEL": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(HTTPError) as caught:
+                self.post_json(
+                    "/api/analyze",
+                    {
+                        "subject": "auto",
+                        "text": "画一个串联电路示意图",
+                        "model": "deepseek-v4.1-flash",
+                        "effort": "extreme",
+                    },
+                )
+        self.assertEqual(caught.exception.code, 400)
+        body = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertIn("思考强度只能是", body["error"])
 
     def test_scene_templates_endpoint(self) -> None:
         payload = self.get_json("/api/scene-templates")
@@ -80,6 +141,50 @@ class AgentServerTests(unittest.TestCase):
         self.assertEqual(draft["subject"], "scene")
         self.assertTrue(draft["ready"])
         self.assertEqual(draft["fields"]["template"], "circuit")
+
+    @staticmethod
+    def write_test_stl(job_dir: Path) -> None:
+        header = b"TouchLearn test binary STL".ljust(80, b" ")
+        triangle = struct.pack(
+            "<12fH",
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0,
+        )
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "model.stl").write_bytes(header + struct.pack("<I", 1) + triangle)
+
+    def test_stl_download_is_binary_stl_with_exact_filename(self) -> None:
+        job_dir = Path(self.temp.name) / "jobs" / "stlcheck"
+        self.write_test_stl(job_dir)
+        with urlopen(f"{self.base}/files/stlcheck/model.stl?download=1", timeout=10) as response:
+            body = response.read()
+            self.assertEqual(response.headers["Content-Type"], "model/stl")
+            disposition = response.headers["Content-Disposition"]
+        self.assertIn('filename="model.stl"', disposition)
+        self.assertIn("filename*=UTF-8''model.stl", disposition)
+        self.assertEqual(len(body), 84 + 50)
+        self.assertEqual(struct.unpack_from("<I", body, 80)[0], 1)
+
+    def test_bundle_download_is_a_real_zip(self) -> None:
+        job_dir = Path(self.temp.name) / "jobs" / "zipcheck"
+        self.write_test_stl(job_dir)
+        (job_dir / "README.txt").write_text("print me", encoding="utf-8")
+        with urlopen(f"{self.base}/api/jobs/zipcheck/bundle.zip", timeout=10) as response:
+            body = response.read()
+            self.assertEqual(response.headers["Content-Type"], "application/zip")
+            disposition = response.headers["Content-Disposition"]
+        self.assertIn('filename="touchlearn-zipcheck.zip"', disposition)
+        self.assertTrue(body.startswith(b"PK\x03\x04"))
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            self.assertEqual(sorted(archive.namelist()), ["zipcheck/README.txt", "zipcheck/model.stl"])
+
+    def test_content_disposition_encodes_unicode(self) -> None:
+        header = content_disposition("触觉模型.stl")
+        self.assertIn("filename*=UTF-8''", header)
+        self.assertIn("%E8%A7%A6", header)
 
 
 class AccessCodeServerTests(unittest.TestCase):

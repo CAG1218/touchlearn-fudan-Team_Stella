@@ -90,7 +90,14 @@ def _data_object(result: LLMResult) -> dict[str, Any] | None:
     return result.data if isinstance(result.data, dict) else None
 
 
-def interpret_image(path: Path, subject: str, *, hint: str = "") -> VisionResult:
+def interpret_image(
+    path: Path,
+    subject: str,
+    *,
+    hint: str = "",
+    model: str | None = None,
+    effort: str | None = None,
+) -> VisionResult:
     """Ask an optional vision endpoint to read one image."""
     status = vision_status()
     if not status["configured"]:
@@ -105,8 +112,24 @@ def interpret_image(path: Path, subject: str, *, hint: str = "") -> VisionResult
         _prompt(subject, hint),
         images=[path],
         kind="vision",
-        max_tokens=1400,
+        max_tokens=2400,
+        model=model,
+        effort=effort,
     )
+    retried = False
+    if not result.ok and result.finish_reason == "length" and effort not in {None, "", "off"}:
+        # High thinking can consume the whole output window before the model
+        # writes its JSON.  Retry once without hidden reasoning.
+        result = chat_json(
+            "你是严谨的触觉教材读图助手。",
+            _prompt(subject, hint),
+            images=[path],
+            kind="vision",
+            max_tokens=2400,
+            model=model,
+            effort="off",
+        )
+        retried = True
     provider = result.provider or str(status.get("provider"))
     if not result.ok:
         return VisionResult(True, False, message=result.message, provider=provider)
@@ -119,4 +142,7 @@ def interpret_image(path: Path, subject: str, *, hint: str = "") -> VisionResult
         confidence = max(0.0, min(1.0, float(confidence)))
     except (TypeError, ValueError):
         confidence = 0.0
-    return VisionResult(True, True, data=data, confidence=confidence, message="视觉模型已返回候选结构。", provider=provider)
+    message = "视觉模型已返回候选结构。"
+    if retried:
+        message += "（思考强度较高时输出被截断，已自动降低强度重试。）"
+    return VisionResult(True, True, data=data, confidence=confidence, message=message, provider=provider)

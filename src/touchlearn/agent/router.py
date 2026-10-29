@@ -223,6 +223,8 @@ def _llm_classify(
     has_expression: bool,
     has_spec: bool,
     has_mesh: bool,
+    model: str | None = None,
+    effort: str | None = None,
 ) -> RouteDecision | None:
     status = llm_status()
     if not status.get("configured"):
@@ -239,8 +241,25 @@ def _llm_classify(
         prompt,
         images=images if images else (),
         kind="vision" if images else "text",
-        max_tokens=900,
+        max_tokens=1200,
+        model=model,
+        effort=effort,
     )
+    retried = False
+    if not result.ok and result.finish_reason == "length" and effort not in {None, "", "off"}:
+        # A high thinking budget can consume the whole output window before the
+        # model writes its JSON.  One cheap retry without hidden reasoning is
+        # more useful than surfacing a truncated classification.
+        result = chat_json(
+            CLASSIFY_SYSTEM,
+            prompt,
+            images=images if images else (),
+            kind="vision" if images else "text",
+            max_tokens=1200,
+            model=model,
+            effort="off",
+        )
+        retried = True
     if not result.ok or not isinstance(result.data, dict):
         return None
     subject = str(result.data.get("subject") or "").strip().lower()
@@ -252,6 +271,8 @@ def _llm_classify(
         confidence = 0.5
     questions = [str(item).strip()[:180] for item in (result.data.get("questions") or []) if isinstance(item, str) and item.strip()][:5]
     notes = [str(item).strip()[:180] for item in (result.data.get("notes") or []) if isinstance(item, str) and item.strip()][:5]
+    if retried:
+        notes.insert(0, "高思考强度占满了输出预算，已自动降低强度重试。")
     return RouteDecision(
         subject=subject,
         confidence=confidence,
@@ -340,6 +361,9 @@ def classify_request(
     has_spec: bool = False,
     has_mesh: bool = False,
     use_llm: bool = True,
+    model: str | None = None,
+    effort: str | None = None,
+    vision_model: str | None = None,
 ) -> RouteDecision:
     heuristic = _heuristic(
         text,
@@ -350,6 +374,9 @@ def classify_request(
     )
     if not use_llm:
         return heuristic
+    # An image has to go to a vision-capable model; a text-only selection must
+    # not be forced onto the image request.
+    selected_model = (vision_model or model) if images else model
     model = _llm_classify(
         text,
         files=files,
@@ -357,6 +384,8 @@ def classify_request(
         has_expression=has_expression,
         has_spec=has_spec,
         has_mesh=has_mesh,
+        model=selected_model,
+        effort=effort,
     )
     if model is None:
         return heuristic
@@ -425,7 +454,14 @@ def _heuristic_question(candidate: dict[str, Any]) -> str:
     return "该表达式是按关键词推断的，请核对系数、振幅和定义域。"
 
 
-def extract_function(text: str, *, images: Sequence[str | Path] = ()) -> dict[str, Any]:
+def extract_function(
+    text: str,
+    *,
+    images: Sequence[str | Path] = (),
+    model: str | None = None,
+    effort: str | None = None,
+    vision_model: str | None = None,
+) -> dict[str, Any]:
     """Return a candidate expression and optional domain; never a final draft."""
     heuristic = _heuristic_function(text)
     status = llm_status()
@@ -445,13 +481,28 @@ def extract_function(text: str, *, images: Sequence[str | Path] = ()) -> dict[st
         return result
 
     prompt = FUNCTION_PROMPT.format(text=text[:3000])
+    selected_model = (vision_model or model) if images else model
     result = chat_json(
         FUNCTION_SYSTEM,
         prompt,
         images=images if images else (),
         kind="vision" if images else "text",
-        max_tokens=1000,
+        max_tokens=1400,
+        model=selected_model,
+        effort=effort,
     )
+    retried = False
+    if not result.ok and result.finish_reason == "length" and effort not in {None, "", "off"}:
+        result = chat_json(
+            FUNCTION_SYSTEM,
+            prompt,
+            images=images if images else (),
+            kind="vision" if images else "text",
+            max_tokens=1400,
+            model=selected_model,
+            effort="off",
+        )
+        retried = True
     if not result.ok or not isinstance(result.data, dict):
         if heuristic is not None:
             value = dict(heuristic)
@@ -485,13 +536,16 @@ def extract_function(text: str, *, images: Sequence[str | Path] = ()) -> dict[st
         confidence = max(0.0, min(1.0, float(confidence)))
     except (TypeError, ValueError):
         confidence = 0.6
+    notes = [str(item).strip()[:180] for item in (data.get("notes") or []) if isinstance(item, str) and item.strip()][:4]
+    if retried:
+        notes.insert(0, "高思考强度占满了输出预算，已自动降低强度重试。")
     payload: dict[str, Any] = {
         "ok": True,
         "expression": parsed.canonical,
         "confidence": confidence,
         "provider": f"llm:{result.provider}",
         "model": result.model,
-        "notes": [str(item).strip()[:180] for item in (data.get("notes") or []) if isinstance(item, str) and item.strip()][:4],
+        "notes": notes,
         "questions": [str(item).strip()[:180] for item in (data.get("questions") or []) if isinstance(item, str) and item.strip()][:4],
     }
     for key in ("x_min", "x_max"):

@@ -15,7 +15,6 @@ dependencies = ["qrcode[pil]>=7.4"]
 
 [project.optional-dependencies]
 dev = ["jsonschema>=4.22", "pytest>=8.0", "pypdf>=4.0"]
-ui = ["streamlit>=1.36"]
 qr = ["qrcode[pil]>=7.4"]
 docs-reader = ["pypdf>=4.0"]
 

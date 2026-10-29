@@ -75,7 +75,6 @@ python -m unittest discover -s tests -t .
 可选：
 
 ```bash
-pip install -e ".[ui]"           # Streamlit 预览
 pip install -e ".[qr]"           # 二维码生成
 pip install -e ".[docs-reader]"  # PDF 文字层读取（pypdf）
 ```
@@ -113,18 +112,17 @@ python -m unittest discover -s tests -t .
 
 `build` 和 `all` 的区别只是默认输出目录；两者都会在检查失败时返回非零退出码。
 
-## 4. 推荐前端与旧 Streamlit 预览
+## 4. 交互式前端
 
-推荐使用 `scripts/run_agent.py` 启动的交互式前端（支持任意需求、上传、草稿确认、构建、合规报告和二维码）。旧的 Streamlit 页面仍保留，只覆盖两个基准案例。在标准 Python 环境安装可选依赖后：
+使用 `scripts/run_agent.py` 启动的交互式前端（支持任意需求、上传、草稿确认、构建、合规报告和二维码）：
 
 ```bash
-pip install -e ".[ui]"
-streamlit run app/streamlit_app.py
+python scripts/run_agent.py --port 8765
 ```
 
-页面可以切换两个案例，查看 SVG 预览、检查指标、下载 STL 和音频脚本。它调用的是同一个编译器，不是另一套逻辑。
+首页的“串联电路 · 可编辑”会直接打开预置好的电路图：电池、开关、电阻、灯泡和闭合导线都已经摆好，可以拖动元件、改标签、切换开关状态，也可以输入一句话让智能体修改。上传电路图片会先识别元件，再进入同一个编辑器。编辑器由服务端确定性编译，导线按元件位置重新生成，不会出现悬空线。
 
-嵌入式 Python 没有 Streamlit，不要在那个环境里尝试；用标准 Python 虚拟环境。
+修改后端 Python 代码后必须重启服务；只刷新页面不会加载新的路由。
 
 ## 5. 常见问题
 

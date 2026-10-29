@@ -44,7 +44,8 @@ from .audio import (
     synthesize_windows_tts,
 )
 from .documents import extract_document, scene_from_text
-from .expression import Expression, ExpressionError, parse_expression
+from .expression import Expression, ExpressionError, parse_expression, strip_function_prefix
+from .circuit import CircuitError, circuit_from_scene, circuit_to_scene, normalize_circuit
 from .llm import llm_status, resolve_selection
 from .parametric import (
     DEFAULT_ROBOT,
@@ -62,10 +63,19 @@ from .scene import (
     generate_scene,
     match_template,
     normalize_scene,
+    scene_has_wires,
     scene_narration,
     scene_summary,
     scene_templates,
+    template_preview,
 )
+from .scene_edit import (
+    SceneEditError,
+    edit_scene as apply_scene_edit,
+    preview_scene as build_scene_preview,
+    recognize_circuit_image,
+)
+from .scene_svg import scene_to_svg
 from .standards import (
     STATUS_DEVIATION,
     STATUS_FAIL,
@@ -152,6 +162,21 @@ def _number(value: float) -> str:
     if abs(value - round(value)) < 1e-6:
         return str(int(round(value)))
     return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _optional_float(value: Any, label: str) -> float | None:
+    """Read an optional finite number; reject booleans and ``NaN``/``Inf``."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{label}必须是数字。")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label}必须是数字。") from error
+    if not math.isfinite(number):
+        raise ValueError(f"{label}必须是有限数字。")
+    return number
 
 
 def _spoken_expression(expression: str) -> str:
@@ -382,7 +407,12 @@ class TouchLearnAgent:
 
         route: dict[str, Any] | None = None
         if subject in {"", "auto"}:
-            has_scene = isinstance(payload.get("scene"), (dict, list)) or bool(str(payload.get("scene") or "").strip())
+            has_scene = (
+                isinstance(payload.get("scene"), (dict, list))
+                or isinstance(payload.get("circuit"), dict)
+                or bool(str(payload.get("scene") or "").strip())
+                or bool(str(payload.get("circuit") or "").strip())
+            )
             requested_template = str(payload.get("template") or "").strip()
             if has_scene or requested_template:
                 # 用户显式给出场景结构或选择了离线模板，这是硬证据，优先于文本意图判断。
@@ -449,6 +479,12 @@ class TouchLearnAgent:
         if route:
             draft.fields.setdefault("routing", route)
             for item in route.get("notes") or []:
+                # The router never sees image pixels and is told to say so.
+                # When the scene pipeline did read the image, replaying that
+                # disclaimer would contradict the recognition note right above
+                # it, so keep it only in fields.routing for debugging.
+                if images and "文件名" in str(item):
+                    continue
                 if item not in draft.notes:
                     draft.notes.append(item)
             for item in route.get("questions") or []:
@@ -515,6 +551,116 @@ class TouchLearnAgent:
                 info["mesh"] = _mesh_info(target)
             result.append(info)
         return result
+
+    @staticmethod
+    def _function_window(expression: Expression, payload: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a coherent x/y window from an expression and optional overrides.
+
+        The same helper powers the confirmation-card preview and the final
+        build, so the numbers a user reviews cannot drift from the numbers the
+        geometry engine uses.
+        """
+        x_min = _optional_float(payload.get("x_min"), "x 最小")
+        x_max = _optional_float(payload.get("x_max"), "x 最大")
+        y_min = _optional_float(payload.get("y_min"), "y 最小")
+        y_max = _optional_float(payload.get("y_max"), "y 最大")
+        if (x_min is None) != (x_max is None):
+            raise ValueError("x 最小和 x 最大需要同时填写，或都留空使用自动视窗。")
+        if (y_min is None) != (y_max is None):
+            raise ValueError("y 最小和 y 最大需要同时填写，或都留空使用自动视窗。")
+
+        requested_auto = payload.get("auto_window")
+        if isinstance(requested_auto, str):
+            requested_auto = requested_auto.strip().lower() not in {"", "0", "false", "no", "off"}
+        auto_window = (
+            x_min is None and y_min is None
+            if requested_auto is None
+            else bool(requested_auto)
+        )
+        if auto_window:
+            x_min, x_max, y_min, y_max = expression.suggest_window()
+            x_source = y_source = "auto"
+        else:
+            if x_min is None:
+                x_min, x_max, _auto_y_min, _auto_y_max = expression.suggest_window()
+                x_source = "auto"
+            else:
+                x_source = "manual"
+                if x_max <= x_min:
+                    raise ValueError("x 的上界必须大于下界。")
+            if y_min is None:
+                y_min, y_max = expression.auto_y_range(x_min, x_max)
+                y_source = "auto"
+            else:
+                y_source = "manual"
+                if y_max <= y_min:
+                    raise ValueError("y 的上界必须大于下界。")
+
+        if x_max <= x_min:
+            raise ValueError("x 的上界必须大于下界。")
+        if y_max <= y_min:
+            raise ValueError("y 的上界必须大于下界。")
+        return {
+            "x_min": float(x_min),
+            "x_max": float(x_max),
+            "y_min": float(y_min),
+            "y_max": float(y_max),
+            "auto_window": auto_window,
+            "auto_y": y_source == "auto",
+            "x_source": x_source,
+            "y_source": y_source,
+        }
+
+    @staticmethod
+    def _function_clip_warning(expression: Expression, window: dict[str, Any]) -> dict[str, Any]:
+        segments = expression.sample(window["x_min"], window["x_max"], 800)
+        values = [y for segment in segments for _, y in segment]
+        if not values:
+            return {"clipped": False, "clipped_ratio": 0.0}
+        span = max(window["y_max"] - window["y_min"], 1e-9)
+        outside = sum(
+            1
+            for y in values
+            if y < window["y_min"] - span * 0.02 or y > window["y_max"] + span * 0.02
+        )
+        ratio = outside / len(values)
+        return {"clipped": ratio > 0.02, "clipped_ratio": round(ratio, 4)}
+
+    def preview_function(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Deterministic preview used while the user edits a function draft."""
+        expression = parse_expression(str(payload.get("expression") or ""))
+        window = self._function_window(expression, payload)
+        points = expression.key_points(
+            window["x_min"],
+            window["x_max"],
+            window["y_min"],
+            window["y_max"],
+            max_points=6,
+        )
+        clip = self._function_clip_warning(expression, window)
+        warnings: list[str] = []
+        if clip["clipped"]:
+            ratio = clip["clipped_ratio"] * 100.0
+            if window["auto_window"]:
+                warnings.append(
+                    f"自动视窗按分位数避开极端值，约 {ratio:.1f}% 的远端采样点不在板面内；"
+                    "这是自动取景，如需完整曲线可取消自动视窗后手动扩大 y 范围。"
+                )
+            else:
+                warnings.append(
+                    f"当前 y 视窗会裁掉约 {ratio:.1f}% 的曲线采样点；"
+                    "可勾选自动视窗或手动增大 y 范围。"
+                )
+        if not points:
+            warnings.append("当前视窗内没有自动关键点；请检查解析式与范围。")
+        return {
+            "expression": expression.canonical,
+            "source": expression.source,
+            **window,
+            "key_points": [point.to_dict() for point in points],
+            "warnings": warnings,
+            **clip,
+        }
 
     def _analyze_function(
         self,
@@ -650,22 +796,32 @@ class TouchLearnAgent:
                 files=files,
             )
 
-        explicit_x = payload.get("x_min") is not None and payload.get("x_max") is not None
-        if explicit_x:
-            x_min, x_max = float(payload["x_min"]), float(payload["x_max"])
-            if x_max <= x_min:
-                questions.append("x 的上界必须大于下界。")
-                return Draft(draft_id, "function", "tactile_plate", 0.2, False, fields, questions, notes, files)
-            y_min, y_max = expression.auto_y_range(x_min, x_max)
-        else:
-            x_min, x_max, y_min, y_max = expression.suggest_window()
-        if payload.get("y_min") is not None and payload.get("y_max") is not None:
-            y_min, y_max = float(payload["y_min"]), float(payload["y_max"])
-        if y_max <= y_min:
-            questions.append("y 的上界必须大于下界。")
+        try:
+            window = self._function_window(expression, payload)
+        except ValueError as error:
+            questions.append(str(error))
+            fields["auto_window"] = False
+            fields["window_error"] = str(error)
             return Draft(draft_id, "function", "tactile_plate", 0.2, False, fields, questions, notes, files)
 
+        x_min = window["x_min"]
+        x_max = window["x_max"]
+        y_min = window["y_min"]
+        y_max = window["y_max"]
         points = expression.key_points(x_min, x_max, y_min, y_max, max_points=6)
+        clip = self._function_clip_warning(expression, window)
+        window_warnings: list[str] = []
+        if clip["clipped"]:
+            ratio = clip["clipped_ratio"] * 100.0
+            if window["auto_window"]:
+                window_warnings.append(
+                    f"自动视窗按分位数避开极端值，约 {ratio:.1f}% 的远端采样点不在板面内；"
+                    "如需完整曲线，可取消自动视窗后手动扩大 y 范围。"
+                )
+            else:
+                window_warnings.append(
+                    f"当前 y 视窗会裁掉约 {ratio:.1f}% 的曲线采样点，建议扩大 y 范围或改用自动视窗。"
+                )
         fields.update(
             {
                 "expression": expression.canonical,
@@ -674,13 +830,23 @@ class TouchLearnAgent:
                 "y_min": round(y_min, 4),
                 "y_max": round(y_max, 4),
                 "key_points": [point.to_dict() for point in points],
-                "auto_window": not explicit_x,
+                "auto_window": window["auto_window"],
+                "auto_y": window["auto_y"],
+                "x_source": window["x_source"],
+                "y_source": window["y_source"],
+                "window_warnings": window_warnings,
             }
         )
         notes.append(f"解析成功：{expression.canonical}；窗口 x∈[{_number(x_min)}, {_number(x_max)}]，y∈[{_number(y_min)}, {_number(y_max)}]。")
         notes.append(f"识别到 {len(points)} 个关键点。")
-        if not explicit_x:
-            questions.append("窗口是根据极值点和交点自动选择的；如需固定定义域，请在确认页修改 x 范围。")
+        if window["auto_window"]:
+            questions.append("窗口由解析式自动计算；修改解析式后会重新计算。如需固定定义域，请取消“自动视窗”后填写 x 范围。")
+        elif window["x_source"] == "auto":
+            questions.append("当前 x 范围为空，已临时按自动视窗计算；请在确认页补全 x 范围或勾选自动视窗。")
+        if window["auto_y"]:
+            notes.append("y 范围根据当前 x 区间的曲线与关键点自动计算。")
+        if clip["clipped"] and window_warnings:
+            notes.append(f"注意：{window_warnings[-1]}")
         questions.append("默认使用英文字母 + UEB 盲文、中文讲解音频；中文盲文模块尚未接入，报告会标记 NEEDS_REVIEW。")
         if images:
             notes.append("图片已保存为来源证据；本次几何使用你确认的解析式。")
@@ -691,7 +857,7 @@ class TouchLearnAgent:
             confidence=(
                 min(0.9, max(0.55, vision_confidence))
                 if vision_confidence
-                else (0.96 if explicit_x else 0.9)
+                else (0.96 if window["x_source"] == "manual" else 0.9)
             ),
             ready=True,
             fields=fields,
@@ -905,10 +1071,46 @@ class TouchLearnAgent:
             "image_received": bool(images),
         }
         scene: dict[str, Any] | None = None
+        circuit: dict[str, Any] | None = None
+        circuit_source = ""
         warnings: list[str] = []
         template_id = ""
         confidence = 0.0
         generation: dict[str, Any] = {}
+
+        # A circuit coming back from the visual editor is already a confirmed
+        # semantic model.  Compile it here so the build cannot drift from the
+        # geometry the user just saw.
+        explicit_circuit = payload.get("circuit")
+        if isinstance(explicit_circuit, str):
+            try:
+                explicit_circuit = json.loads(explicit_circuit)
+            except json.JSONDecodeError:
+                explicit_circuit = None
+        if isinstance(explicit_circuit, dict):
+            raw_components = explicit_circuit.get("components")
+            raw_blocks = explicit_circuit.get("blocks")
+            if (not isinstance(raw_components, list) or not raw_components) and not isinstance(raw_blocks, list):
+                # normalize_circuit would silently substitute the built-in
+                # four-component circuit; an explicit empty circuit means the
+                # editor sent nothing usable, not that four parts are expected.
+                questions.append("电路结构无法使用：电路至少需要 1 个元件；已忽略这份空电路。")
+                explicit_circuit = None
+        if isinstance(explicit_circuit, dict):
+            try:
+                circuit, circuit_warnings = normalize_circuit(explicit_circuit)
+                scene, scene_warnings = normalize_scene(
+                    circuit_to_scene(circuit),
+                    fallback_title=text[:32],
+                )
+                warnings.extend(circuit_warnings)
+                warnings.extend(scene_warnings)
+                confidence = 0.9
+                circuit_source = "editor"
+                notes.append("已使用你在图形编辑器里确认的电路；导线按元件位置重新生成。")
+            except (CircuitError, SceneError) as error:
+                circuit = None
+                questions.append(f"电路结构无法使用：{error}")
 
         explicit = payload.get("scene")
         if isinstance(explicit, str):
@@ -916,7 +1118,7 @@ class TouchLearnAgent:
                 explicit = json.loads(explicit)
             except json.JSONDecodeError:
                 explicit = None
-        if isinstance(explicit, dict):
+        if scene is None and isinstance(explicit, dict):
             try:
                 scene, warnings = normalize_scene(explicit, fallback_title=text[:32])
                 confidence = 0.8
@@ -935,7 +1137,16 @@ class TouchLearnAgent:
                 template_id = entry["id"]
                 warnings = []
                 confidence = 0.6
+                if isinstance(entry.get("circuit"), dict):
+                    try:
+                        circuit, circuit_warnings = normalize_circuit(entry["circuit"])
+                        warnings.extend(circuit_warnings)
+                        circuit_source = "template"
+                    except CircuitError:
+                        circuit = None
                 notes.append(f"已使用离线模板：{entry['label']}。")
+                if circuit is not None:
+                    notes.append("这个模板带可编辑电路，可在图形编辑器里移动元件或输入一句话修改。")
 
         if scene is None and (text or images):
             # The picker's vision choice drives image reconstruction; a text
@@ -961,6 +1172,16 @@ class TouchLearnAgent:
                 confidence = max(0.35, min(0.9, generation_result.confidence))
                 notes.extend(generation_result.notes)
                 questions.extend(generation_result.questions)
+                if generation_result.circuit:
+                    try:
+                        circuit, circuit_warnings = normalize_circuit(generation_result.circuit)
+                        warnings.extend(circuit_warnings)
+                        circuit_source = "image" if images else "generated"
+                        notes.append(
+                            "从图片识别出可编辑电路。" if images else "已整理成可编辑的串联电路。"
+                        )
+                    except CircuitError:
+                        circuit = None
             else:
                 notes.append(generation_result.message or "大模型未能生成场景候选。")
                 for item in generation_result.questions:
@@ -973,7 +1194,17 @@ class TouchLearnAgent:
                 template_id, scene, score = matched
                 confidence = 0.5
                 warnings = []
+                preview = template_preview(template_id)
+                if preview and isinstance(preview.get("circuit"), dict):
+                    try:
+                        circuit, circuit_warnings = normalize_circuit(preview["circuit"])
+                        warnings.extend(circuit_warnings)
+                        circuit_source = "template"
+                    except CircuitError:
+                        circuit = None
                 notes.append(f"大模型不可用或未生成结果，已匹配离线模板 {template_id}（命中 {score} 个关键词）。")
+                if circuit is not None:
+                    notes.append("该模板带可编辑电路，可在图形编辑器里移动元件或输入一句话修改。")
                 questions.append("离线模板只覆盖常见示意结构；请核对图形、标签和阅读顺序是否符合你的教材。")
 
         fields["generation"] = generation
@@ -982,10 +1213,12 @@ class TouchLearnAgent:
 
         if scene is None:
             fields["suggested_templates"] = [
-                {"id": entry["id"], "label": entry["label"], "description": entry["description"], "summary": entry["summary"]}
+                {"id": entry["id"], "label": entry["label"], "description": entry["description"], "summary": entry["summary"], "thumbnail": entry.get("thumbnail", ""), "editor": entry.get("editor", "scene")}
                 for entry in templates.values()
             ]
             fields["scene"] = None
+            fields["circuit"] = None
+            fields["editor"] = "scene"
             if images:
                 notes.append("图片已保存为来源证据；配置视觉模型后会据此重建结构示意图。")
             questions.append("请补充图块组成和连接关系，或选择一个离线模板；智能体不会凭空编造结构。")
@@ -1005,8 +1238,10 @@ class TouchLearnAgent:
             scene, extra_warnings = normalize_scene(scene, fallback_title=text[:32])
         except SceneError as error:
             fields["scene"] = None
+            fields["circuit"] = None
+            fields["editor"] = "scene"
             fields["suggested_templates"] = [
-                {"id": entry["id"], "label": entry["label"], "description": entry["description"], "summary": entry["summary"]}
+                {"id": entry["id"], "label": entry["label"], "description": entry["description"], "summary": entry["summary"], "thumbnail": entry.get("thumbnail", ""), "editor": entry.get("editor", "scene")}
                 for entry in templates.values()
             ]
             questions.append(f"场景无法排版：{error}")
@@ -1022,14 +1257,45 @@ class TouchLearnAgent:
                 files=files,
             )
         warnings.extend(extra_warnings)
+
+        # Any scene that carries standard electrical symbols plus wires can be
+        # promoted into the semantic circuit model, so the browser editor and
+        # the printed plate stay in sync.  Without wires we refuse: a random
+        # diagram that happens to contain two labelled boxes is not a circuit.
+        if circuit is None and scene_has_wires(scene):
+            try:
+                recovered = circuit_from_scene(scene)
+                if recovered is not None:
+                    recovered_circuit, circuit_warnings = normalize_circuit(recovered)
+                    compiled, compile_warnings = normalize_scene(
+                        circuit_to_scene(recovered_circuit),
+                        fallback_title=text[:32],
+                    )
+                    circuit = recovered_circuit
+                    scene = compiled
+                    warnings.extend(circuit_warnings)
+                    warnings.extend(compile_warnings)
+                    circuit_source = "recovered"
+                    notes.append("已把图中的电气元件整理成可编辑回路，导线由编译器重新生成。")
+            except (CircuitError, SceneError):
+                circuit = None
+
         fields.update(
             {
                 "scene": scene,
                 "summary": scene_summary(scene),
                 "template": template_id,
                 "warnings": warnings,
+                "circuit": circuit,
+                "editor": "circuit" if circuit is not None else "scene",
+                "circuit_source": circuit_source,
+                # Inline preview so the chat card is visual immediately; the
+                # editable version is fetched separately when the editor opens.
+                "scene_svg": scene_to_svg(scene, show_names=False),
             }
         )
+        if circuit is not None:
+            questions.append("可以在图形编辑器里拖动元件、切换开关状态，或输入一句话让智能体改电路。")
         for warning in warnings[:6]:
             notes.append(f"排版提示：{warning}")
         notes.append(
@@ -1050,6 +1316,50 @@ class TouchLearnAgent:
             notes=notes,
             files=files,
         )
+
+    # ------------------------------------------------------------------
+    # Visual scene editor
+    # ------------------------------------------------------------------
+
+    def preview_scene(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Compile a circuit/scene into the editor preview the browser renders."""
+        try:
+            return build_scene_preview(payload)
+        except (SceneEditError, ValueError) as error:
+            raise ValueError(str(error)) from error
+
+    def edit_scene(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Apply a semantic operation or a natural-language edit to a circuit."""
+        try:
+            return apply_scene_edit(payload)
+        except (SceneEditError, ValueError) as error:
+            raise ValueError(str(error)) from error
+
+    def recognize_scene(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Recognize an uploaded circuit image and open it in the editor."""
+        recogn_dir = self.root / "edits" / uuid.uuid4().hex[:12]
+        uploads_dir = recogn_dir / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        files = self._save_uploads(payload.get("files") or [], uploads_dir)
+        images = [
+            uploads_dir.parent / str(item["path"])
+            for item in files
+            if item["extension"] in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        ]
+        if not images:
+            raise ValueError("请先上传一张电路图图片（PNG/JPG/WebP）。")
+        text = str(payload.get("text") or "").strip()
+        try:
+            result = recognize_circuit_image(
+                images,
+                text=text,
+                model=str(payload.get("model") or "").strip() or None,
+                effort=str(payload.get("effort") or "").strip().lower() or None,
+            )
+        except (SceneEditError, ValueError) as error:
+            raise ValueError(str(error)) from error
+        result["file"] = files[0] if files else None
+        return result
 
     # ------------------------------------------------------------------
     # Build
@@ -1205,20 +1515,14 @@ class TouchLearnAgent:
         progress(10, "解析函数与关键点")
         expression_text = str(fields.get("expression") or "").strip()
         expression = parse_expression(expression_text)
-        auto_x_min, auto_x_max, _auto_y_min, _auto_y_max = expression.suggest_window()
-        x_min = float(fields.get("x_min") if fields.get("x_min") is not None else auto_x_min)
-        x_max = float(fields.get("x_max") if fields.get("x_max") is not None else auto_x_max)
-        y_min_field = fields.get("y_min")
-        y_max_field = fields.get("y_max")
-        if y_min_field is None or y_max_field is None:
-            auto_y_min, auto_y_max = expression.auto_y_range(x_min, x_max)
-            y_min = float(y_min_field if y_min_field is not None else auto_y_min)
-            y_max = float(y_max_field if y_max_field is not None else auto_y_max)
-        else:
-            y_min = float(y_min_field)
-            y_max = float(y_max_field)
-        if x_max <= x_min or y_max <= y_min:
-            raise ValueError("函数窗口无效：上界必须大于下界")
+        # The build runs the same window resolver as the confirmation preview.
+        # In auto mode this deliberately ignores any x/y values carried over
+        # from an older expression, so stale numbers can never reach geometry.
+        window = self._function_window(expression, fields)
+        x_min = window["x_min"]
+        x_max = window["x_max"]
+        y_min = window["y_min"]
+        y_max = window["y_max"]
         points = expression.key_points(x_min, x_max, y_min, y_max, max_points=6)
         letters = _letter_map(points)
         title = "QUADRATIC FUNCTION" if "^2" in expression.canonical else "FUNCTION GRAPH"
@@ -1283,6 +1587,9 @@ class TouchLearnAgent:
                     "x_max": x_max,
                     "y_min": y_min,
                     "y_max": y_max,
+                    "auto_window": window["auto_window"],
+                    "x_source": window["x_source"],
+                    "y_source": window["y_source"],
                 },
             },
             "constraints": DEFAULT_CONSTRAINTS,
@@ -1317,10 +1624,30 @@ class TouchLearnAgent:
 
     def _build_scene(self, job_dir: Path, fields: dict[str, Any], progress: Progress) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         progress(10, "读取并校验场景")
+        # The semantic circuit is the source of truth when present: recompiling
+        # here guarantees the printed plate matches what the editor showed,
+        # even if an older scene snapshot was passed in overrides.
+        circuit: dict[str, Any] | None = None
+        circuit_warnings: list[str] = []
+        raw_circuit = fields.get("circuit")
+        if isinstance(raw_circuit, str):
+            try:
+                raw_circuit = json.loads(raw_circuit)
+            except json.JSONDecodeError:
+                raw_circuit = None
+        if isinstance(raw_circuit, dict):
+            try:
+                circuit, circuit_warnings = normalize_circuit(raw_circuit)
+                fields = {**fields, "scene": circuit_to_scene(circuit)}
+            except CircuitError as error:
+                raise ValueError(f"电路无效：{error}") from error
         try:
             scene, warnings = normalize_scene(fields.get("scene"))
         except SceneError as error:
             raise ValueError(f"场景无效：{error}") from error
+        warnings = [*circuit_warnings, *warnings]
+        if circuit is not None:
+            _write_json(job_dir / "circuit.json", circuit)
 
         elements: list[dict[str, Any]] = []
         relations: list[dict[str, Any]] = []
@@ -1386,6 +1713,7 @@ class TouchLearnAgent:
             "geometry": {
                 "kind": "tactile_plate",
                 "diagram": payload,
+                "circuit": circuit,
                 "scene_summary": scene_summary(scene),
                 "layout_summary": layout.summary(),
                 "mesh": mesh.stats(),

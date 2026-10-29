@@ -12,6 +12,9 @@
 <body>
   <svg class="icon-sprite" aria-hidden="true" focusable="false">
     <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="icon-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="icon-expand" viewBox="0 0 24 24"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M20 15v5h-5"/></symbol>
+    <symbol id="icon-contract" viewBox="0 0 24 24"><path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/></symbol>
     <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.14.37.35.72.6 1 .3.3.68.44 1.1.44H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></symbol>
     <symbol id="icon-paperclip" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></symbol>
     <symbol id="icon-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
@@ -65,23 +68,45 @@
         <p class="welcome-copy">上传一张图、一段文字或一个三维文件。触见会先理解它，再生成可直接打印的 STL、触觉预览、合规报告和讲解音频。</p>
 
         <div class="suggestion-grid">
-          <button class="suggestion" type="button" data-prompt="把函数 y=x^2-2x-3 做成 A5 触觉板，标出零点和顶点。">
-            <span class="suggestion-icon teal"><svg class="icon"><use href="#icon-function"/></svg></span>
-            <span class="suggestion-copy"><strong>函数图像</strong><small>解析式或图片 → 触觉曲线</small></span>
+          <button class="suggestion visual" type="button" data-prompt="把函数 y=@@ 做成 A5 触觉板，标出零点和顶点。">
+            <span class="suggestion-visual">
+              <svg viewBox="0 0 120 62" aria-hidden="true" class="suggestion-art">
+                <path d="M8 8v46h104" class="art-axis"/>
+                <path d="M16 50c18-54 70-54 88 0" class="art-curve"/>
+                <circle cx="60" cy="23" r="2.6" class="art-dot"/>
+                <path d="M60 23v21" class="art-guide"/>
+              </svg>
+            </span>
+            <span class="suggestion-copy"><strong>函数图像</strong><small>点开后填写解析式 → 触觉曲线</small></span>
           </button>
-          <button class="suggestion" type="button" data-prompt="把六轴机械臂做成 A5 浮雕触觉板：六个关节，末端是两指夹爪。">
-            <span class="suggestion-icon amber"><svg class="icon"><use href="#icon-robot"/></svg></span>
+          <button class="suggestion visual" type="button" data-prompt="把六轴机械臂做成 A5 浮雕触觉板：六个关节，末端是两指夹爪。">
+            <span class="suggestion-visual">
+              <svg viewBox="0 0 120 62" aria-hidden="true" class="suggestion-art">
+                <path d="M18 54h24M22 54V40l18-14 16 10 20-12" class="art-link"/>
+                <circle cx="22" cy="38" r="4" class="art-joint"/>
+                <circle cx="40" cy="26" r="3.4" class="art-joint"/>
+                <circle cx="56" cy="36" r="3.4" class="art-joint"/>
+                <circle cx="76" cy="24" r="3.2" class="art-joint"/>
+                <path d="M76 24l12-6m-4 2 4 5" class="art-link"/>
+              </svg>
+            </span>
             <span class="suggestion-copy"><strong>机械臂结构</strong><small>照片、工程图或文字 → 立体 / 浮雕</small></span>
           </button>
-          <button class="suggestion" type="button" data-prompt="画一个串联电路示意图：电池、开关、电阻和灯泡依次连接成回路。">
-            <span class="suggestion-icon blue"><svg class="icon"><use href="#icon-diagram"/></svg></span>
-            <span class="suggestion-copy"><strong>二维示意图</strong><small>电路、流程、几何、细胞 → A5 板</small></span>
+          <button class="suggestion visual" type="button" data-action="scene-editor" data-template="circuit" data-prompt="画一个串联电路示意图：电池、开关、电阻和灯泡依次连接成回路。">
+            <span class="suggestion-visual">
+              <img class="suggestion-thumb" src="/api/templates/circuit/thumbnail.svg?crop=loop" alt="预置的串联电路：电池、开关、电阻和灯泡" loading="lazy">
+            </span>
+            <span class="suggestion-copy"><strong>串联电路 · 可编辑</strong><small>预置元件与导线，拖动或说一句话修改</small></span>
           </button>
-          <button class="suggestion" type="button" data-action="upload">
-            <span class="suggestion-icon gray"><svg class="icon"><use href="#icon-upload"/></svg></span>
-            <span class="suggestion-copy"><strong>上传教材</strong><small>图片、PDF、STL/OBJ、TXT/JSON</small></span>
+          <button class="suggestion visual" type="button" data-action="upload">
+            <span class="suggestion-visual upload-visual">
+              <span class="suggestion-icon gray"><svg class="icon"><use href="#icon-upload"/></svg></span>
+              <span class="upload-caption">从教材图片开始</span>
+            </span>
+            <span class="suggestion-copy"><strong>上传教材</strong><small>电路图会进入编辑器；也支持 PDF / STL / JSON</small></span>
           </button>
         </div>
+        <p class="suggestion-hint">函数与机械臂示例只填入输入框；电路示例直接打开可编辑图形，元件位置和导线都已预置。</p>
 
         <div class="welcome-foot">
           <span>支持</span>
@@ -166,6 +191,50 @@
       </div>
     </section>
   </div>
+
+  <div class="scene-editor hidden" id="sceneEditor" role="dialog" aria-modal="true" aria-labelledby="sceneEditorTitle">
+    <header class="scene-editor-head">
+      <button class="icon-btn" id="sceneEditorClose" type="button" aria-label="关闭图形编辑器">
+        <svg class="icon"><use href="#icon-back"/></svg>
+      </button>
+      <div class="scene-editor-heading">
+        <span class="eyebrow">STEP 02 · 图形编辑器</span>
+        <h2 id="sceneEditorTitle">串联电路</h2>
+      </div>
+      <button class="btn primary sm" id="sceneEditorApply" type="button">应用到草稿</button>
+    </header>
+    <div class="scene-editor-body">
+      <section class="scene-stage-column">
+        <div class="scene-stage" id="sceneStage">
+          <div class="scene-loading">正在编译可编辑图形…</div>
+        </div>
+        <p class="scene-stage-status" id="sceneEditorStatus">拖动元件可沿回路移动；导线会自动重画。</p>
+        <div class="scene-stage-actions">
+          <button class="btn sm" type="button" id="sceneUploadBtn">识别电路图</button>
+          <button class="btn sm ghost" type="button" id="sceneResetBtn">恢复默认电路</button>
+        </div>
+      </section>
+      <aside class="scene-side">
+        <div class="scene-side-block">
+          <h3>选中的元件</h3>
+          <div id="sceneInspector" class="scene-inspector"></div>
+        </div>
+        <div class="scene-side-block">
+          <h3>添加元件</h3>
+          <div class="scene-palette" id="scenePalette"></div>
+        </div>
+        <div class="scene-side-block">
+          <h3>用一句话修改</h3>
+          <div class="scene-instruction-row">
+            <input class="input" id="sceneInstruction" type="text" maxlength="300" placeholder="例如：把开关闭合，把灯泡换到上边">
+            <button class="btn primary sm" type="button" id="sceneInstructionBtn">发送</button>
+          </div>
+          <p class="scene-hint" id="sceneEditHint">导线会跟着元件重新生成，不需要手动补线。</p>
+        </div>
+      </aside>
+    </div>
+  </div>
+  <input type="file" id="sceneImageInput" accept="image/*" hidden>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 

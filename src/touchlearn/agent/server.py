@@ -32,11 +32,12 @@ from . import __version__
 from .agent import TouchLearnAgent
 from .audio import available_voices
 from .llm import llm_status, providers_payload
-from .scene import scene_templates
+from .scene import scene_templates, template_preview
+from .scene_svg import scene_to_svg
 from .vision import vision_status
 
 STATIC_DIR = Path(__file__).with_name("static")
-MAX_BODY_BYTES = 96 * 1024 * 1024
+MAX_BODY_BYTES = 128 * 1024 * 1024
 BUILD_LOCK = threading.Lock()
 
 def running_in_container() -> bool:
@@ -336,6 +337,43 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if path.startswith("/api/templates/") and path.endswith("/thumbnail.svg"):
+            if not self._require_auth():
+                return
+            template_id = path[len("/api/templates/") : -len("/thumbnail.svg")].strip("/")
+            preview = template_preview(template_id)
+            if preview is None or not isinstance(preview.get("scene"), dict):
+                self._send_error_json(HTTPStatus.NOT_FOUND, "模板不存在")
+                return
+            svg = scene_to_svg(preview["scene"], show_names=False)
+            query = parsed.query or ""
+            if "crop=loop" in query:
+                # Tight crop around the component loop: used by the welcome
+                # card where the symbols must stay legible at ~100 px.
+                svg = svg.replace(
+                    'viewBox="0 0 148 210"',
+                    'viewBox="24 54 100 96" preserveAspectRatio="xMidYMid meet"',
+                    1,
+                )
+            elif "crop=content" in query:
+                # Template tiles need the whole diagram area but not the
+                # footer and QR block.
+                svg = svg.replace(
+                    'viewBox="0 0 148 210"',
+                    'viewBox="2 18 144 152" preserveAspectRatio="xMidYMid meet"',
+                    1,
+                )
+            data = svg.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            # Templates are immutable until the server restarts, so a short
+            # public cache keeps the welcome screen instant on phones.
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path.startswith("/api/drafts/"):
             if not self._require_auth():
                 return
@@ -490,6 +528,62 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"分析失败：{error}")
                 return
             self._send_json({"ok": True, "draft": draft})
+            return
+        if path == "/api/function-preview":
+            payload = self._read_json()
+            if payload is None:
+                return
+            try:
+                preview = self.state.agent.preview_function(payload)
+            except ValueError as error:
+                self._send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception as error:  # pragma: no cover - defensive
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"预览失败：{error}")
+                return
+            self._send_json({"ok": True, **preview})
+            return
+        if path == "/api/scene-preview":
+            payload = self._read_json()
+            if payload is None:
+                return
+            try:
+                preview = self.state.agent.preview_scene(payload)
+            except ValueError as error:
+                self._send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception as error:  # pragma: no cover - defensive
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"预览失败：{error}")
+                return
+            self._send_json({"ok": True, **preview})
+            return
+        if path == "/api/scene-edit":
+            payload = self._read_json()
+            if payload is None:
+                return
+            try:
+                preview = self.state.agent.edit_scene(payload)
+            except ValueError as error:
+                self._send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception as error:  # pragma: no cover - defensive
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"编辑失败：{error}")
+                return
+            self._send_json({"ok": True, **preview})
+            return
+        if path == "/api/scene-recognize":
+            payload = self._read_json()
+            if payload is None:
+                return
+            try:
+                result = self.state.agent.recognize_scene(payload)
+            except ValueError as error:
+                self._send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except Exception as error:  # pragma: no cover - defensive
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"图片识别失败：{error}")
+                return
+            self._send_json({"ok": True, **result})
             return
         if path == "/api/build":
             payload = self._read_json()

@@ -32,6 +32,13 @@ from ..layout import (
     text_width,
 )
 from ..model import Diagram
+from .circuit import (
+    CircuitError,
+    circuit_from_scene,
+    circuit_to_scene,
+    default_circuit,
+    normalize_circuit,
+)
 from .llm import chat_json, scene_effort, scene_model
 from .parametric import _axis_arrow, _fit_text, _footer, _place_label, _qr_zone
 
@@ -69,6 +76,7 @@ class SceneError(ValueError):
 class SceneGeneration:
     ok: bool
     scene: dict[str, Any] = field(default_factory=dict)
+    circuit: dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.0
     provider: str = ""
     model: str = ""
@@ -87,6 +95,7 @@ class SceneGeneration:
             "notes": self.notes,
             "questions": self.questions,
             "block_count": len(self.scene.get("blocks") or []),
+            "editor": "circuit" if self.circuit else "scene",
         }
 
 
@@ -574,6 +583,16 @@ SCENE_PROMPT = """请把下面的需求转成触觉场景 JSON。
   "title_zh": "中文标题",
   "subtitle": "不超过 40 个字符的英文副标题，可空",
   "confidence": 0.0,
+  "circuit": {{
+    "title": "ELECTRIC CIRCUIT",
+    "title_zh": "串联电路",
+    "loop": [15, 25, 85, 85],
+    "components": [
+      {{"id": "battery", "type": "battery", "side": "bottom", "offset": 0.5, "state": ""}},
+      {{"id": "switch", "type": "switch", "side": "left", "offset": 0.5, "state": "open"}}
+    ],
+    "notes": ["电流从电池正极出发，依次经过开关、电阻和灯泡，再回到负极。"]
+  }},
   "blocks": [
     {{
       "id": "battery",
@@ -605,12 +624,61 @@ SCENE_PROMPT = """请把下面的需求转成触觉场景 JSON。
 6. 如果需求无法用二维线条/形状可靠表达（例如照片美化、写文章、生成任意三维物体），返回 {{"supported": false, "unsupported_reason": "原因", "confidence": 0.0}}。
 7. 如果用户给了尺寸，只能把它转换成相对比例，并在 notes 中说明实际尺寸需在打印设置中确认。
 8. 最多 10 个图块；不要为了凑数拆散一个学习单元。
+9. 如果是串联电路，优先填写 circuit 并省略 blocks。type 只能是 battery、switch、resistor、lamp、ammeter、voltmeter、motor；side 只能是 top、right、bottom、left，表示元件所在的回路边；offset 是 0 到 1 的位置，0.5 表示该边中点；不要输出导线，编译器会根据元件自动生成闭合导线。只有并联或非串联电路才用 blocks 自己画导线。
+10. circuit 和 blocks 二选一：有 circuit 时 blocks 可以为空；不要同时给出两套互相矛盾的几何。
 """
 
 SCENE_IMAGE_HINT = (
-    "用户上传了图片。请把图片重建成简化的触觉示意图：只保留可辨认的主要轮廓、部件和标注，"
+    "用户上传了图片。请先判断图片类型：如果是电路原理图或接线图，用 circuit 字段记录每个元件的类型、"
+    "所在回路边和顺序；如果是其他示意图，再用 blocks 重建主要轮廓、部件和标注。"
     "不要逐像素描摹，不要还原照片纹理；看不清的文字不要猜，放到 questions 中。"
 )
+
+CIRCUIT_HINTS = (
+    "电路",
+    "回路",
+    "串联",
+    "电池",
+    "电阻",
+    "灯泡",
+    "开关",
+    "电流表",
+    "电压表",
+    "电动机",
+    "circuit",
+    "battery",
+    "resistor",
+    "lamp",
+    "switch",
+)
+
+
+def _wants_circuit(text: str, data: dict[str, Any]) -> bool:
+    """Only convert a generated scene when the request clearly means a circuit.
+
+    A parallel circuit is deliberately excluded: the semantic model describes
+    one closed loop, and silently flattening a parallel network would change
+    the physics being taught.
+    """
+    kind = str(data.get("kind") or data.get("scene_type") or "").strip().lower()
+    if kind == "circuit":
+        return True
+    lowered = (text or "").lower()
+    if "并联" in lowered or "parallel" in lowered:
+        return False
+    return any(hint in lowered for hint in CIRCUIT_HINTS)
+
+
+def scene_has_wires(scene: dict[str, Any]) -> bool:
+    for block in scene.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        block_id = str(block.get("id") or "").strip().lower()
+        kind = str(block.get("kind") or "").strip().lower()
+        label = str(block.get("label") or "").strip().upper()
+        if block_id in {"wire", "wires"} or kind in {"wire", "wires"} or label in {"WIRE", "WIRES"}:
+            return True
+    return False
 
 
 def generate_scene(
@@ -672,12 +740,6 @@ def generate_scene(
         reason = _chinese(data.get("unsupported_reason"), 240) or "模型判断该需求不适合转成二维触觉图。"
         return SceneGeneration(False, provider=result.provider, model=result.model, message=reason, raw=data)
 
-    raw_scene = data.get("scene") if isinstance(data.get("scene"), dict) else data
-    try:
-        scene, warnings = normalize_scene(raw_scene, fallback_title=request[:28])
-    except SceneError as error:
-        return SceneGeneration(False, provider=result.provider, model=result.model, message=str(error), raw=data)
-
     confidence = data.get("confidence", 0.55)
     try:
         confidence = max(0.0, min(1.0, float(confidence)))
@@ -685,12 +747,65 @@ def generate_scene(
         confidence = 0.55
     notes = [str(item).strip()[:180] for item in (data.get("notes") or []) if isinstance(item, str) and item.strip()][:5]
     questions = [str(item).strip()[:180] for item in (data.get("questions") or []) if isinstance(item, str) and item.strip()][:5]
+
+    circuit: dict[str, Any] = {}
+    warnings: list[str] = []
+    raw_circuit = data.get("circuit")
+    if isinstance(raw_circuit, dict):
+        # An empty component list must not be normalized into the built-in
+        # series circuit: that would silently invent four components the model
+        # never saw, especially dangerous when the source is an uploaded image.
+        raw_components = raw_circuit.get("components")
+        raw_blocks = raw_circuit.get("blocks")
+        if (not isinstance(raw_components, list) or not raw_components) and not isinstance(raw_blocks, list):
+            notes.append("模型返回的电路没有任何元件，已忽略这套电路结构。")
+            # Must be None, not {}: normalize_circuit accepts any dict and fills
+            # an empty component list with the built-in four-component circuit.
+            raw_circuit = None
+    if isinstance(raw_circuit, dict):
+        try:
+            circuit, circuit_warnings = normalize_circuit(raw_circuit)
+            compiled = circuit_to_scene(circuit)
+            if isinstance(data.get("title"), str) and data["title"].strip():
+                compiled["title"] = data["title"]
+            if isinstance(data.get("title_zh"), str) and data["title_zh"].strip():
+                compiled["title_zh"] = data["title_zh"]
+            scene, warnings = normalize_scene(compiled, fallback_title=request[:28])
+            warnings.extend(circuit_warnings)
+            notes.append("电路元件已转成可编辑的串联回路，导线由编译器自动生成。")
+        except (CircuitError, SceneError) as error:
+            circuit = {}
+            notes.append(f"模型返回的电路结构无法使用（{error}），已尝试按普通图块排版。")
+
+    if not circuit:
+        raw_scene = data.get("scene") if isinstance(data.get("scene"), dict) else data
+        if not isinstance(raw_scene.get("blocks"), list) or not raw_scene.get("blocks"):
+            if not warnings:
+                return SceneGeneration(False, provider=result.provider, model=result.model, message="模型没有返回可排版的图块或电路。", raw=data)
+        try:
+            scene, warnings = normalize_scene(raw_scene, fallback_title=request[:28])
+        except SceneError as error:
+            return SceneGeneration(False, provider=result.provider, model=result.model, message=str(error), raw=data)
+        recovered = None
+        if _wants_circuit(request, data) or scene_has_wires(raw_scene):
+            recovered = circuit_from_scene(scene)
+        if recovered is not None:
+            try:
+                circuit, circuit_warnings = normalize_circuit(recovered)
+                scene, extra_warnings = normalize_scene(circuit_to_scene(circuit), fallback_title=request[:28])
+                warnings.extend(circuit_warnings)
+                warnings.extend(extra_warnings)
+                notes.append("已把图中的电气元件整理成可编辑的串联回路，导线由编译器重新连接。")
+            except (CircuitError, SceneError) as error:
+                circuit = {}
+                notes.append(f"图中的电气元件无法整理成可编辑回路（{error}）；保留普通示意图。")
     notes.extend(warnings[:4])
     if retried:
         notes.append("所选思考强度占满了输出预算，已自动关闭隐藏推理重试并完整生成。")
     return SceneGeneration(
         True,
         scene=scene,
+        circuit=circuit,
         confidence=confidence,
         provider=result.provider,
         model=result.model,
@@ -797,73 +912,13 @@ def _pythagorean_scene() -> dict[str, Any]:
 
 
 def _circuit_scene() -> dict[str, Any]:
-    return _template_scene(
-        "ELECTRIC CIRCUIT",
-        "串联电路",
-        "PHYSICS / BATTERY SWITCH RESISTOR LAMP",
-        [
-            {
-                "id": "wires",
-                "label": "WIRES",
-                "label_zh": "导线",
-                "note": "其余线条是把电池、开关、电阻和灯泡连成一圈的导线。",
-                "marker": [30, 68],
-                "primitives": [
-                    {"type": "polyline", "points": [[15, 25], [85, 25], [85, 85], [15, 85], [15, 25]], "width": 2.0},
-                ],
-            },
-            {
-                "id": "battery",
-                "label": "BATTERY",
-                "label_zh": "电池",
-                "note": "长线是正极，短线是负极。",
-                "marker": [50, 92],
-                "primitives": [
-                    {"type": "line", "points": [[44, 80], [44, 90]], "width": 2.6},
-                    {"type": "line", "points": [[49, 82], [49, 88]], "width": 2.6},
-                    {"type": "line", "points": [[55, 80], [55, 90]], "width": 2.6},
-                    {"type": "line", "points": [[60, 82], [60, 88]], "width": 2.6},
-                ],
-            },
-            {
-                "id": "switch",
-                "label": "SWITCH",
-                "label_zh": "开关",
-                "note": "斜线表示开关处于断开位置；合上后电路才接通。",
-                "marker": [6, 50],
-                "primitives": [
-                    {"type": "line", "points": [[15, 38], [15, 46]], "width": 2.4},
-                    {"type": "line", "points": [[15, 54], [15, 62]], "width": 2.4},
-                    {"type": "line", "points": [[15, 46], [24, 42]], "width": 2.2},
-                ],
-            },
-            {
-                "id": "resistor",
-                "label": "RESISTOR",
-                "label_zh": "电阻",
-                "note": "折线表示电阻。",
-                "marker": [50, 12],
-                "primitives": [
-                    {"type": "polyline", "points": [[34, 25], [38, 20], [42, 30], [46, 20], [50, 30], [54, 20], [58, 30], [62, 20], [66, 25]], "width": 2.2},
-                ],
-            },
-            {
-                "id": "lamp",
-                "label": "LAMP",
-                "label_zh": "灯泡",
-                "note": "圆内画叉表示灯泡。",
-                "marker": [92, 55],
-                "primitives": [
-                    {"type": "circle", "cx": 85, "cy": 55, "r": 7.5, "width": 2.2},
-                    {"type": "line", "points": [[80, 50], [90, 60]], "width": 1.8},
-                    {"type": "line", "points": [[90, 50], [80, 60]], "width": 1.8},
-                ],
-            },
-        ],
-        ["battery", "switch", "resistor", "lamp", "wires"],
-        ["电流从电池正极出发，依次经过开关、电阻和灯泡，再回到负极。"],
-        ["PHYSICS / SERIES CIRCUIT", "SCHEMATIC / NOT TO SCALE"],
-    )
+    """The built-in circuit is compiled from the semantic model.
+
+    The editor and the printer must agree on component positions and wire
+    routing; producing both from the same circuit description removes the old
+    static drawing that could not follow an edited component.
+    """
+    return circuit_to_scene(default_circuit())
 
 
 def _flowchart_scene() -> dict[str, Any]:
@@ -1185,9 +1240,11 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "circuit": {
         "label": "串联电路",
-        "description": "电池、开关、电阻和灯泡组成的回路。",
+        "description": "电池、开关、电阻和灯泡组成的回路，可在图形编辑器里移动和替换。",
         "keywords": ["电路", "电池", "电阻", "开关", "灯泡", "串联", "并联", "circuit", "battery", "resistor", "lamp"],
         "scene": _circuit_scene,
+        "circuit": default_circuit,
+        "editor": "circuit",
     },
     "flowchart": {
         "label": "流程图",
@@ -1222,17 +1279,48 @@ TEMPLATES: dict[str, dict[str, Any]] = {
 }
 
 
+def template_preview(template_id: str) -> dict[str, Any] | None:
+    """Return a normalized template scene and its editable circuit, if any."""
+    entry = TEMPLATES.get((template_id or "").strip().lower())
+    if entry is None:
+        return None
+    try:
+        scene, _ = normalize_scene(entry["scene"]())
+    except SceneError:
+        return None
+    circuit = None
+    factory = entry.get("circuit")
+    if callable(factory):
+        try:
+            circuit, _ = normalize_circuit(factory())
+        except CircuitError:
+            circuit = None
+    return {
+        "id": str(template_id).strip().lower(),
+        "label": entry["label"],
+        "description": entry["description"],
+        "scene": scene,
+        "circuit": circuit,
+        "editor": "circuit" if circuit else "scene",
+    }
+
+
 def scene_templates() -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for template_id, entry in TEMPLATES.items():
-        scene = entry["scene"]()
+        preview = template_preview(template_id)
+        if preview is None:
+            continue
         result.append(
             {
                 "id": template_id,
                 "label": entry["label"],
                 "description": entry["description"],
-                "scene": scene,
-                "summary": scene_summary(scene),
+                "scene": preview["scene"],
+                "circuit": preview["circuit"],
+                "editor": preview["editor"],
+                "thumbnail": f"/api/templates/{template_id}/thumbnail.svg",
+                "summary": scene_summary(preview["scene"]),
             }
         )
     return result

@@ -186,6 +186,43 @@ class AgentServerTests(unittest.TestCase):
         self.assertIn("filename*=UTF-8''", header)
         self.assertIn("%E8%A7%A6", header)
 
+    def test_function_preview_recomputes_auto_window(self) -> None:
+        payload = self.post_json(
+            "/api/function-preview",
+            {
+                "expression": "x^2-2x-4",
+                "auto_window": True,
+                "x_min": -1.5,
+                "x_max": 4.4,
+                "y_min": -5.8,
+                "y_max": 1.2,
+            },
+        )
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["auto_window"])
+        self.assertLess(payload["x_min"], -1.2)
+        self.assertGreater(payload["x_max"], 3.2)
+        self.assertLessEqual(payload["y_min"], -5.0)
+        self.assertFalse(payload["clipped"])
+
+    def test_function_preview_rejects_a_partial_window(self) -> None:
+        with self.assertRaises(HTTPError) as caught:
+            self.post_json(
+                "/api/function-preview",
+                {"expression": "x^2-2x-4", "auto_window": False, "x_min": -1.0},
+            )
+        self.assertEqual(caught.exception.code, 400)
+        body = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertIn("同时填写", body["error"])
+
+    def test_function_preview_rejects_an_invalid_expression(self) -> None:
+        with self.assertRaises(HTTPError) as caught:
+            self.post_json(
+                "/api/function-preview",
+                {"expression": "x^2+", "auto_window": True},
+            )
+        self.assertEqual(caught.exception.code, 400)
+
 
 class AccessCodeServerTests(unittest.TestCase):
     @classmethod

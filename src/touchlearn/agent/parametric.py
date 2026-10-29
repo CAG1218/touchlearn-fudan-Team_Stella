@@ -228,6 +228,12 @@ def _indices(expression: Expression, x_min: float, x_max: float, count: int = 90
 def _clip_segment(point_a: tuple[float, float], point_b: tuple[float, float], low: float, high: float) -> list[tuple[float, float]]:
     x0, y0 = point_a
     x1, y1 = point_b
+    # Keep the original vertices when the whole segment is inside.  Computing
+    # t = 0/1 and rebuilding the points perturbs the last bits of a float; the
+    # caller then sees a different point and starts a spurious new run, which
+    # used to leave a 0.1 mm sliver at the vertex of a parabola.
+    if low <= y0 <= high and low <= y1 <= high:
+        return [point_a, point_b]
     if y1 == y0:
         return [] if y0 < low or y0 > high else [point_a, point_b]
     t_low = (low - y0) / (y1 - y0)
@@ -258,7 +264,7 @@ def _clip_runs(
                     runs.append(current)
                 current = []
                 continue
-            if not current or current[-1] != clipped[0]:
+            if not current or math.dist(current[-1], clipped[0]) > 1e-9:
                 if len(current) >= 2:
                     runs.append(current)
                 current = [clipped[0]]
@@ -292,8 +298,16 @@ def _simplify_canvas_points(points: Sequence[Point], minimum: float = 0.8) -> li
     for point in points[1:-1]:
         if math.dist(point, result[-1]) >= minimum:
             result.append(point)
-    if len(result) == 1 or math.dist(points[-1], result[-1]) > 1e-9:
+    if len(result) == 1:
         result.append(points[-1])
+    elif math.dist(points[-1], result[-1]) > 1e-9:
+        # Snap the run's last sample instead of adding a short tail; a retained
+        # penultimate point a fraction of a millimetre away would otherwise
+        # create a sliver triangle that fails the mesh sanity check.
+        if math.dist(points[-1], result[-1]) < minimum and len(result) >= 2:
+            result[-1] = points[-1]
+        else:
+            result.append(points[-1])
     return result
 
 
@@ -518,8 +532,9 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
     title = builder.feature("title", "title")
     builder.text(title, (width - font.text_width(title_text, title_height)) / 2.0, margin + 2.0, title_text, title_height)
 
+    equation_label = expression.display()
     equation_text, equation_height = _fit_text(
-        expression.canonical if expression.canonical.startswith("Y=") else f"Y={expression.canonical}",
+        equation_label if equation_label.startswith("Y=") else f"Y={equation_label}",
         width - 2 * margin,
         4.8,
         3.5,
@@ -763,6 +778,12 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
     )
 
     _redraw_grid(builder, grid, grid_x_lines, grid_y_lines, data_left, data_right, data_top, data_bottom)
+    if not grid.primitives:
+        # Every candidate line can be suppressed near key points (sin/cos place
+        # ticks and extrema on the same spots).  An empty feature would raise
+        # when the layout later asks for its bounding box.
+        builder.features.remove(grid)
+        builder.warnings.append("刻度线都与关键点重叠，已省略网格；关键点与坐标轴仍然可触摸。")
 
     footer_lines = [
         "   ".join(legend_parts[:6]),

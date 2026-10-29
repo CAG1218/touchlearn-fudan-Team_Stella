@@ -2152,6 +2152,9 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
     $("#modelChip").addEventListener("click", toggleModelPopover);
 
     $("#modelPopover").addEventListener("click", (event) => {
+      /* Inner clicks can re-render the popover; stop here so the document-level
+         outside-click handler never sees the now-detached original target. */
+      event.stopPropagation();
       if (event.target.closest("[data-close-model]")) {
         closeModelPopover();
         return;

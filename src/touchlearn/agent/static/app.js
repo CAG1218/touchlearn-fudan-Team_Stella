@@ -297,10 +297,34 @@
     $("#loginError").classList.add("hidden");
   }
 
+  function fillIcpNode(node, value) {
+    if (!node) return;
+    if (!value) {
+      node.classList.add("hidden");
+      node.textContent = "";
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = "https://beian.miit.gov.cn/";
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = value;
+    node.textContent = "";
+    node.append(link);
+    node.classList.remove("hidden");
+  }
+
+  function renderIcp(health) {
+    const value = health && health.icp ? String(health.icp).trim() : "";
+    fillIcpNode($("#loginIcp"), value);
+    fillIcpNode($("#siteIcp"), value);
+  }
+
   async function refreshHealth() {
     try {
       const health = await fetchJSON("/api/health");
       state.health = health;
+      renderIcp(health);
       let host = "";
       try {
         host = new URL(health.public_base_url).host;
@@ -3556,6 +3580,7 @@
         ${settingRow("二维码基础地址", baseUrl, true)}
         ${settingRow("局域网 IP", health.lan_ip || "—", true)}
         ${settingRow("访问控制", health.access_required ? "已启用访问码" : "未设置访问码")}
+        ${health.icp ? `<div class="setting-row"><span class="k">ICP备案号</span><span class="v"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">${escapeHtml(health.icp)}</a></span></div>` : ""}
         <p class="setting-note">公网临时隧道地址会变化；如果换了地址，请回到本页重新复制二维码基础地址。正式部署见 docs/deploy.md。</p>
         <div class="action-row">
           <button class="btn sm" type="button" id="settingsRefresh">${icon("refresh")}重新检查服务</button>

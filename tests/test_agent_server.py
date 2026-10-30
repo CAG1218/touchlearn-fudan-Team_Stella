@@ -58,6 +58,11 @@ class AgentServerTests(unittest.TestCase):
         self.assertIn("llm", payload)
         self.assertIn("vision", payload)
         self.assertIn("configured", payload["llm"])
+        self.assertEqual(payload["icp"], "")
+
+    def test_app_state_keeps_icp_number(self) -> None:
+        state = AppState(Path(self.temp.name), icp=" 京ICP备12345678号-1 ")
+        self.assertEqual(state.icp, "京ICP备12345678号-1")
 
     def test_providers_never_return_keys(self) -> None:
         payload = self.get_json("/api/providers")

@@ -79,11 +79,18 @@ def detect_lan_ip() -> str:
 
 
 class AppState:
-    def __init__(self, output_root: Path, public_base_url: str = "", access_code: str = "") -> None:
+    def __init__(
+        self,
+        output_root: Path,
+        public_base_url: str = "",
+        access_code: str = "",
+        icp: str = "",
+    ) -> None:
         self.agent = TouchLearnAgent(output_root=output_root)
         self.public_base_url = public_base_url.rstrip("/")
         self.output_root = output_root
         self.access_code = access_code.strip()
+        self.icp = icp.strip()
         self.access_token = (
             hashlib.sha256(f"touchlearn-access:{self.access_code}".encode("utf-8")).hexdigest()
             if self.access_code
@@ -295,6 +302,7 @@ class Handler(BaseHTTPRequestHandler):
                     "lan_ip": detect_lan_ip(),
                     "access_required": self.state.auth_required,
                     "authenticated": authorized,
+                    "icp": self.state.icp,
                     "voices": self.state.voices() if authorized else [],
                     "vision": vision_status() if authorized else locked,
                     "llm": llm_status() if authorized else locked,
@@ -705,6 +713,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("TOUCHLEARN_ACCESS_CODE", ""),
         help="可选访问码；设置后分析、生成和作业查询需要登录",
     )
+    parser.add_argument(
+        "--icp",
+        default=os.environ.get("TOUCHLEARN_ICP_BEIAN", ""),
+        help="ICP备案号；设置后展示在登录页和设置页",
+    )
     parser.add_argument("--no-browser", action="store_true", help="启动后不自动打开浏览器")
     return parser
 
@@ -715,7 +728,12 @@ def main(argv: list[str] | None = None) -> int:
     port = int(args.port)
     public_base_url = args.public_url.rstrip("/") if args.public_url else ""
     access_code = args.access_code.strip()
-    state = AppState(output_root=output_root, public_base_url=public_base_url, access_code=access_code)
+    state = AppState(
+        output_root=output_root,
+        public_base_url=public_base_url,
+        access_code=access_code,
+        icp=args.icp.strip(),
+    )
     server = Server((args.host, port), state)
     local_url = f"http://127.0.0.1:{port}"
     lan_url = f"http://{detect_lan_ip()}:{port}"

@@ -80,7 +80,7 @@ python scripts/run_public.py --access-code XXX   # 临时指定访问码
 
 ## 三、固定公网（Render + Docker）
 
-> 如果你已经有自己的云服务器，直接看 [deploy/README.md](../deploy/README.md)：里面包含 ECS/VPS 选型、配置建议、备案说明、一键 Compose、Caddy 自动 HTTPS、备份与排障。本节是托管平台路线，适合不想维护服务器的场景。
+> 如果你已经有自己的云服务器，直接看 [deploy/README.md](../deploy/README.md)：里面包含 ECS/VPS 选型、配置建议、备案说明、一键 Compose、Caddy 自动 HTTPS、备份与排障。目标是“中国大陆任意网络都能打开”时，看 [deploy/mainland.md](../deploy/mainland.md)，按大陆服务器 + 备案域名 + 443 的路径走。本节是托管平台路线，适合不想维护服务器的场景。
 
 仓库已经包含 `Dockerfile`、`.dockerignore`、`render.yaml` 和 `Procfile`。Render 可以直接读取 Blueprint。
 

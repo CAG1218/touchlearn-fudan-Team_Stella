@@ -225,6 +225,7 @@ fabrication/                    盲测材料与打印说明
 - [产品蓝图](docs/product/blueprint.md)
 - [相对通用多模态大模型的差异](docs/positioning.md)
 - [固定托管与 ECS/VPS 选型](deploy/README.md)
+- [中国大陆正式上线：服务器、备案与 443](deploy/mainland.md)
 - [部署与多设备访问](docs/deploy.md)
 - [大模型接入](docs/providers.md)
 - [标准证据表与合规矩阵](docs/standards/evidence.md)

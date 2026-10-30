@@ -1960,6 +1960,23 @@ body.viewer-lock { overflow: hidden; }
   font-size: 9.5px;
 }
 
+.login-icp { margin-top: 6px; }
+
+.login-icp a,
+.site-icp a,
+.setting-row a {
+  color: var(--brand);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.site-icp {
+  margin: 20px 0 4px;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: center;
+}
+
 .toast {
   position: fixed;
   left: 50%;

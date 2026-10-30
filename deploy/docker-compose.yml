@@ -5,6 +5,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     image: touchlearn:0.2.0
     restart: unless-stopped
     env_file:

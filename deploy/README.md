@@ -26,10 +26,10 @@
 
 ### 地区与备案
 
-- **大陆节点**：访问最快，但域名走 80/443 必须完成 ICP 备案，否则会被拦截。用 IP 直接访问可以临时绕过，但不适合正式展示，也没有可信 HTTPS。
-- **香港 / 新加坡节点**：不需要备案，绑定域名即可签发证书；大陆访问延迟略高，但比赛演示足够。
+- **大陆节点**：访问最快，但域名走 80/443 必须完成 ICP 备案，否则会被拦截。没有域名时可以用 IP + 8765 端口做演示（`DEPLOY_MODE=ip`），但没有 HTTPS，且对公众提供网站服务的备案义务仍然存在。
+- **香港 / 新加坡节点**：不需要备案，绑定域名即可签发证书；大陆访问延迟略高，个别网络不保证可达。
 - **如果学校能提供已备案域名**：优先大陆节点 + 备案域名，体验最好。
-- **如果没有备案**：选香港轻量服务器，不要为了省钱买大陆节点再想办法绕备案。
+- **如果没有备案**：短期演示用大陆 IP 模式或香港节点；长期公开访问，大陆节点 + 备案域名最稳。
 
 ### 费用量级
 
@@ -57,12 +57,40 @@ touchlearn 容器（Python HTTP 服务）
 命名卷 touchlearn-outputs → /app/outputs
 ```
 
-- 只有 Caddy 暴露 80/443；应用端口 8765 不对外。
+- 域名模式下只有 Caddy 暴露 80/443；应用端口 8765 不对外。
+- IP 模式下不启动 Caddy，宿主机 8765 直接映射到应用容器，见下一节。
 - `outputs/` 放在 Docker 命名卷里，重新部署容器不会丢作业。
 - 健康检查走 `/api/health`，Caddy 等应用健康后才启动。
 - 访问码由 `TOUCHLEARN_ACCESS_CODE` 控制；作业产物按不可猜测的 12 位 ID 公开，方便扫码。
 
-## 三、从零部署
+## 三、无域名 IP 模式（可选）
+
+不买域名、只租一台大陆 ECS 时使用。`deploy/.env`：
+
+```dotenv
+DEPLOY_MODE=ip
+TOUCHLEARN_PUBLIC_URL=http://1.2.3.4:8765
+TOUCHLEARN_ACCESS_CODE=TL-换成你自己的强随机码
+```
+
+然后 `bash deploy.sh`。脚本会使用 `docker-compose.ip.yml`，安全组只放行 22 和 8765。
+
+限制：
+
+- 没有 HTTPS，浏览器会提示“不安全”；剪贴板 API 降级，核心上传、生成、下载不受影响。
+- 校园网、公司网络可能拦非标准端口；手机蜂窝网络通常正常。
+- 公网 IP 变更后二维码和分享链接失效，保留实例或绑定弹性公网 IP。
+- 大陆服务器对公众提供网站服务仍需 ICP 备案；短期比赛演示风险较低，长期公开使用建议补备案并切回域名模式。
+
+`deploy.sh` 带 `--remove-orphans`，切换模式时会自动停掉旧模式的容器。如需手动清理，可先执行：
+
+```bash
+docker compose --env-file .env -f docker-compose.yml down
+```
+
+再执行 `bash deploy.sh`。
+
+## 四、从零部署
 
 ### 1. 准备
 
@@ -110,13 +138,16 @@ cd deploy
 cp .env.example .env
 ```
 
-编辑 `.env`，至少改这三项：
+编辑 `.env`。域名模式至少改这三项：
 
 ```dotenv
+DEPLOY_MODE=domain
 SITE_ADDRESS=touch.example.com
 TOUCHLEARN_PUBLIC_URL=https://touch.example.com
 TOUCHLEARN_ACCESS_CODE=TL-换成你自己的强随机码
 ```
+
+IP 模式见上一节，`SITE_ADDRESS` 可以保留示例值，不会使用。
 
 生成访问码：
 
@@ -132,7 +163,7 @@ python3 -c "import secrets; print('TL-'+secrets.token_hex(4).upper())"
 bash deploy.sh
 ```
 
-脚本会检查 Docker、拒绝占位符配置、构建镜像、启动应用和 Caddy，并打印健康检查结果。首次启动需要几分钟构建。
+脚本会检查 Docker、拒绝占位符配置、构建镜像、启动应用和 Caddy（IP 模式只启动应用），并打印健康检查结果。首次启动需要几分钟构建。
 
 ### 7. 验证
 
@@ -144,7 +175,7 @@ curl -fsS https://touch.example.com/api/health
 
 证书首次签发通常需要几十秒；如果失败，先确认 DNS 已生效、80/443 没有被占用、云防火墙已放行。
 
-## 四、日常运维
+## 五、日常运维
 
 ### 更新版本
 
@@ -197,10 +228,10 @@ docker compose --env-file .env down -v       # 连卷一起删，慎用
 
 `down -v` 会删除全部作业产物，执行前先备份。
 
-## 五、安全清单
+## 六、安全清单
 
 - [ ] `TOUCHLEARN_ACCESS_CODE` 是强随机值，不是 `TL-XXXXXXXX`。
-- [ ] 安全组只开放 22、80、443；8765 不暴露。
+- [ ] 域名模式安全组只开放 22、80、443；IP 模式只开放 22、8765。
 - [ ] SSH 使用密钥登录，禁用密码登录（`/etc/ssh/sshd_config` 中 `PasswordAuthentication no`）。
 - [ ] 定期 `apt upgrade`，Docker 镜像随代码更新重建。
 - [ ] `.env` 权限设为 `chmod 600`，不提交、不截图、不发群。
@@ -208,7 +239,7 @@ docker compose --env-file .env down -v       # 连卷一起删，慎用
 - [ ] 公开实例建议在 Caddy 或云 WAF 层再加请求频率限制；当前应用只做访问码和上传大小限制。
 - [ ] 作业产物链接是“不可猜测”而不是“有权限”，不要上传敏感教材或个人信息。
 
-## 六、排障
+## 七、排障
 
 ### 80 端口被占用，Caddy 起不来
 
@@ -226,6 +257,8 @@ sudo ss -lntp | grep ':80'
 - Let's Encrypt 是否有速率限制，看 Caddy 日志里的具体错误。
 
 ### 页面 502
+
+IP 模式下把下面的 `docker-compose.yml` 换成 `docker-compose.ip.yml`，或直接用 `docker compose -f docker-compose.ip.yml logs ...`。
 
 应用没起来或健康检查未通过：
 
@@ -253,10 +286,10 @@ docker system df
 
 清理无用镜像和构建缓存；作业产物按需归档，不要在生产机上无限保留。
 
-## 七、验收清单
+## 八、验收清单
 
-- [ ] `https://你的域名/api/health` 返回 `ok: true`；
-- [ ] 浏览器地址栏是锁标识，证书由 Let's Encrypt 签发；
+- [ ] `https://你的域名/api/health` 返回 `ok: true`；IP 模式为 `http://IP:8765/api/health`；
+- [ ] 浏览器地址栏是锁标识，证书由 Let's Encrypt 签发；IP 模式会提示“不安全”，属于预期；
 - [ ] 输入访问码后能完成一次函数图像构建；
 - [ ] 作业页“制造证据”卡片显示 STL SHA-256 和合规判定；
 - [ ] 点“校验产物完整性”返回全部一致；
@@ -264,6 +297,6 @@ docker system df
 - [ ] 重启容器后历史作业仍在；
 - [ ] `deploy/backup.sh` 能产出归档。
 
-## 八、和通用大模型的差异在哪
+## 九、和通用大模型的差异在哪
 
 托管只是把服务放到公网。触见相对通用多模态大模型的差异、答辩口径和当前缺口，见 [../docs/positioning.md](../docs/positioning.md)。一句话：大模型负责理解，确定性内核负责毫米级几何，标准检查负责放行，清单与哈希负责复核。

@@ -1,0 +1,42 @@
+name: touchlearn
+
+# 无域名模式：直接用服务器公网 IP + 端口访问，不经过 Caddy、不启用 HTTPS。
+# 在 deploy/.env 里设置 DEPLOY_MODE=ip、TOUCHLEARN_PUBLIC_URL=http://<公网IP>:8765，
+# 然后执行 bash deploy.sh。适合比赛演示和短期小范围使用。
+services:
+  touchlearn:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: touchlearn:0.2.0
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TOUCHLEARN_OUTPUTS: /app/outputs
+      TOUCHLEARN_PUBLIC_URL: ${TOUCHLEARN_PUBLIC_URL:-}
+    ports:
+      - "${TOUCHLEARN_HOST_PORT:-8765}:8765"
+    volumes:
+      - touchlearn-outputs:/app/outputs
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  touchlearn-outputs:
+    name: touchlearn-outputs

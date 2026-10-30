@@ -6,7 +6,7 @@
 |---|---|---|---|
 | 同一 Wi-Fi | `http://<电脑局域网 IP>:8765` | 比赛现场、手机扫码 | 电脑必须开着，手机和电脑同一网络 |
 | 临时公网 | `https://*.trycloudflare.com` | 异地演示、发给评委快速体验 | 地址随进程变化，电脑休眠即失效 |
-| 固定公网（推荐） | `deploy/` + Docker Compose + Caddy + 自己的服务器 | 长期展示、随时访问、自动 HTTPS | 需要一台云服务器和域名；ECS/VPS 选型见 [deploy/README.md](../deploy/README.md) |
+| 固定公网（推荐） | `deploy/` + Docker Compose + Caddy + 自己的服务器 | 长期展示、随时访问、自动 HTTPS | 需要一台云服务器；域名可选，无域名可用 IP + 端口模式；选型见 [deploy/README.md](../deploy/README.md) |
 | 固定公网（托管平台） | Render / Railway | 不想管服务器、先看效果 | 免费实例会休眠，产物盘可能不持久 |
 
 > 无论走哪条路，公网暴露时都必须设置 `TOUCHLEARN_ACCESS_CODE`。分析和生成接口需要登录；已经生成的产物链接按不可猜测的作业 ID 公开，方便手机扫码，不需要登录。
@@ -80,7 +80,7 @@ python scripts/run_public.py --access-code XXX   # 临时指定访问码
 
 ## 三、固定公网（Render + Docker）
 
-> 如果你已经有自己的云服务器，直接看 [deploy/README.md](../deploy/README.md)：里面包含 ECS/VPS 选型、配置建议、备案说明、一键 Compose、Caddy 自动 HTTPS、备份与排障。目标是“中国大陆任意网络都能打开”时，看 [deploy/mainland.md](../deploy/mainland.md)，按大陆服务器 + 备案域名 + 443 的路径走。本节是托管平台路线，适合不想维护服务器的场景。
+> 如果你已经有自己的云服务器，直接看 [deploy/README.md](../deploy/README.md)：里面包含 ECS/VPS 选型、配置建议、备案说明、一键 Compose、Caddy 自动 HTTPS、备份与排障。目标是“中国大陆任意网络都能打开”时，看 [deploy/mainland.md](../deploy/mainland.md)，按大陆服务器 + 备案域名 + 443 的路径走；暂时不买域名可以用 `DEPLOY_MODE=ip` 走公网 IP + 8765。本节是托管平台路线，适合不想维护服务器的场景。
 
 仓库已经包含 `Dockerfile`、`.dockerignore`、`render.yaml` 和 `Procfile`。Render 可以直接读取 Blueprint。
 

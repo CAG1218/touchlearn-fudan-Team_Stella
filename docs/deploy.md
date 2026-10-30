@@ -6,7 +6,8 @@
 |---|---|---|---|
 | 同一 Wi-Fi | `http://<电脑局域网 IP>:8765` | 比赛现场、手机扫码 | 电脑必须开着，手机和电脑同一网络 |
 | 临时公网 | `https://*.trycloudflare.com` | 异地演示、发给评委快速体验 | 地址随进程变化，电脑休眠即失效 |
-| 固定公网 | Render / Railway / 自己的 VPS + Docker | 长期展示、随时访问 | 需要账号；免费实例会休眠，产物盘可能不持久 |
+| 固定公网（推荐） | `deploy/` + Docker Compose + Caddy + 自己的服务器 | 长期展示、随时访问、自动 HTTPS | 需要一台云服务器和域名；ECS/VPS 选型见 [deploy/README.md](../deploy/README.md) |
+| 固定公网（托管平台） | Render / Railway | 不想管服务器、先看效果 | 免费实例会休眠，产物盘可能不持久 |
 
 > 无论走哪条路，公网暴露时都必须设置 `TOUCHLEARN_ACCESS_CODE`。分析和生成接口需要登录；已经生成的产物链接按不可猜测的作业 ID 公开，方便手机扫码，不需要登录。
 
@@ -79,6 +80,8 @@ python scripts/run_public.py --access-code XXX   # 临时指定访问码
 
 ## 三、固定公网（Render + Docker）
 
+> 如果你已经有自己的云服务器，直接看 [deploy/README.md](../deploy/README.md)：里面包含 ECS/VPS 选型、配置建议、备案说明、一键 Compose、Caddy 自动 HTTPS、备份与排障。本节是托管平台路线，适合不想维护服务器的场景。
+
 仓库已经包含 `Dockerfile`、`.dockerignore`、`render.yaml` 和 `Procfile`。Render 可以直接读取 Blueprint。
 
 ### 3.1 前置条件
@@ -116,7 +119,7 @@ docker run --rm -p 8765:8765 \
   touchlearn
 ```
 
-浏览器打开 `http://127.0.0.1:8765`。前面放 Nginx/Caddy 时，记得转发 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`，否则二维码可能指回内网地址。
+浏览器打开 `http://127.0.0.1:8765`。前面放 Nginx 时，记得转发 `Host` 和 `X-Forwarded-Proto`，否则二维码可能指回内网地址；Caddy 的 `reverse_proxy` 默认会保留 Host 并补全转发头，仓库里的 Caddyfile 已验证。
 
 Railway/Heroku 一类平台可以使用 `Procfile`；平台会注入 `PORT`，服务已适配。
 
@@ -206,6 +209,6 @@ Render 免费实例会休眠。升级实例，或改用常驻 VPS；不建议用
 ## 七、当前还需要人来做的事
 
 1. **大模型 API Key**：没有也能离线演示；要演示照片/复杂教材理解，需要至少一个文本模型，最好再加一个视觉模型。
-2. **固定托管账号**：Render / Railway / VPS 任选其一。仓库侧配置已经准备好，部署动作需要账号授权。
+2. **固定托管环境**：渲染平台或自有服务器任选其一。仓库侧配置已经准备好，账号、域名和备案需要人来完成；自有服务器的完整步骤见 [deploy/README.md](../deploy/README.md)。
 3. **自定义域名（可选）**：没有域名也能用 `onrender.com` 子域；有域名时在平台绑定后设置 `TOUCHLEARN_PUBLIC_URL`。
 4. **实体打印与盲人用户测试**：仍未完成。内部 PASS 只代表几何和工艺检查通过，不等于国家标准认证，也不等于真实触觉可用性验证。

@@ -47,7 +47,7 @@ python scripts/run_agent.py --port 8765 --no-browser
 
 - **同一 Wi-Fi**：启动后直接用 `http://<电脑局域网 IP>:8765` 打开；默认监听 `0.0.0.0`，不需要额外配置。
 - **临时公网**：`python scripts/run_public.py` 会启动 Cloudflare Quick Tunnel，生成一个 `https://*.trycloudflare.com` 地址和访问码，任何设备都能打开。电脑休眠或进程停止后地址失效。
-- **固定公网**：仓库包含 `Dockerfile`、`render.yaml` 和 `Procfile`，可以部署到 Render/Railway/VPS。访问码、持久化、二维码域名和 TTS 平台差异见 [docs/deploy.md](docs/deploy.md)。
+- **固定公网**：仓库包含 `deploy/`（Docker Compose + Caddy 自动 HTTPS）、`Dockerfile`、`render.yaml` 和 `Procfile`。自有服务器的 ECS/VPS 选型、配置、备案、部署、备份和排障见 [deploy/README.md](deploy/README.md)；Render/Railway 路线与平台差异见 [docs/deploy.md](docs/deploy.md)。
 
 公网暴露时必须设置 `TOUCHLEARN_ACCESS_CODE`；分析和生成接口需要登录。已经生成的产物链接按不可猜测的作业 ID 公开，方便手机扫码听讲解。
 
@@ -223,6 +223,9 @@ fabrication/                    盲测材料与打印说明
 ## 文档
 
 - [产品蓝图](docs/product/blueprint.md)
+- [相对通用多模态大模型的差异](docs/positioning.md)
+- [固定托管与 ECS/VPS 选型](deploy/README.md)
+- [部署与多设备访问](docs/deploy.md)
 - [大模型接入](docs/providers.md)
 - [标准证据表与合规矩阵](docs/standards/evidence.md)
 - [架构与数据契约](docs/architecture.md)

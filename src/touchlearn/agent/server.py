@@ -433,6 +433,56 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(json.loads(target.read_text(encoding="utf-8")))
             return
+        if parts[1] == "verify":
+            job_dir = self._safe_under(self.state.agent.root / "jobs", job_id)
+            if job_dir is None or not job_dir.is_dir():
+                self._send_error_json(HTTPStatus.NOT_FOUND, "作业不存在")
+                return
+            manifest_path = job_dir / "manifest.json"
+            if not manifest_path.is_file():
+                self._send_error_json(HTTPStatus.NOT_FOUND, "清单尚未生成")
+                return
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, "清单无法读取")
+                return
+            artifacts = manifest.get("artifacts") if isinstance(manifest, dict) else None
+            artifacts = artifacts if isinstance(artifacts, list) else []
+            checked = 0
+            mismatches: list[dict[str, Any]] = []
+            for item in artifacts:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "")
+                expected = str(item.get("sha256") or "")
+                if not name or not expected:
+                    continue
+                target = self._safe_under(job_dir, name)
+                if target is None or not target.is_file():
+                    mismatches.append({"name": name, "reason": "missing"})
+                    continue
+                actual = hashlib.sha256(target.read_bytes()).hexdigest()
+                checked += 1
+                if actual != expected:
+                    mismatches.append(
+                        {
+                            "name": name,
+                            "reason": "sha256",
+                            "expected": expected,
+                            "actual": actual,
+                        }
+                    )
+            self._send_json(
+                {
+                    "ok": not mismatches,
+                    "checked": checked,
+                    "total": len(artifacts),
+                    "mismatches": mismatches,
+                    "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                }
+            )
+            return
         if parts[1] == "bundle.zip":
             job_dir = self._safe_under(self.state.agent.root / "jobs", job_id)
             if job_dir is None or not job_dir.is_dir():

@@ -1834,6 +1834,46 @@
     return `<div class="building-note">${escapeHtml(text || "正在读取作业文件…")}</div><div class="skeleton"></div>`;
   }
 
+  function evidencePanel(ui) {
+    const manifest = ui.details && ui.details.manifest;
+    if (!manifest) return "";
+    const artifacts = Array.isArray(manifest.artifacts) ? manifest.artifacts : [];
+    const stl = artifacts.find((item) => item && item.name === "model.stl")
+      || artifacts.find((item) => item && /\.stl$/i.test(item.name));
+    const software = manifest.software || {};
+    const fields = (manifest.input && manifest.input.fields) || {};
+    const extraction = fields.extraction || {};
+    const sourceParts = [];
+    if (extraction.provider) sourceParts.push(extraction.provider);
+    if (extraction.model) sourceParts.push(extraction.model);
+    const source = sourceParts.length ? sourceParts.join(" / ") : "本地解析或图形编辑器";
+    const report = ui.details.report || {};
+    const verdict = report.standards_clear
+      ? "完全合规"
+      : report.printable
+        ? "可打印，存在偏离项"
+        : "未通过";
+    const hash = (stl && stl.sha256) || "";
+    return `
+      <section class="evidence-card">
+        <div class="evidence-head">
+          <span class="eyebrow">MANUFACTURING EVIDENCE</span>
+          <strong>这块板不是大模型画出来的 mesh</strong>
+        </div>
+        <p class="evidence-note">大模型只负责理解与结构化；毫米坐标、网格和 PASS/FAIL 由本地确定性内核计算。下面这些值可以复核。</p>
+        <div class="evidence-grid">
+          <div><span>语义来源</span><b>${escapeHtml(source)}</b></div>
+          <div><span>几何内核</span><b>TouchLearn ${escapeHtml(software.agent_version || "—")} · Python ${escapeHtml(software.python || "—")}</b></div>
+          <div><span>STL SHA-256</span><b class="mono" title="${escapeHtml(hash)}">${escapeHtml(hash ? `${hash.slice(0, 16)}…` : "未找到")}</b></div>
+          <div><span>合规判定</span><b>${escapeHtml(verdict)}</b></div>
+        </div>
+        <div class="evidence-actions">
+          <button class="btn ghost" type="button" data-verify-artifacts>${icon("check")}校验产物完整性</button>
+          <span class="hint-line" data-verify-result>对照 manifest.json 的 SHA-256 检查文件是否被截断或篡改。</span>
+        </div>
+      </section>`;
+  }
+
   function previewPanel(ui) {
     const base = `/files/${encodeURIComponent(ui.jobId)}`;
     const mode = ui.job.mode;
@@ -1848,6 +1888,7 @@
         <button class="btn" type="button" data-open-viewer>${icon("cube")}三维旋转查看</button>
         <a class="btn" href="${base}/compliance.md" target="_blank" rel="noopener">${icon("external")}打开合规报告</a>
       </div>
+      ${evidencePanel(ui)}
       <div data-viewer-slot></div>
       <p class="hint-line">${escapeHtml(hint)}</p>
       <p class="hint-line">STL 是二进制网格文件，请用 Bambu Studio、PrusaSlicer 或 Cura 打开；ZIP 是标准压缩包。Word 和 VS Code 不是查看这两种文件的工具。</p>
@@ -2066,6 +2107,11 @@
       openViewer(ui);
       return;
     }
+    const verify = event.target.closest("[data-verify-artifacts]");
+    if (verify) {
+      verifyArtifacts(ui, verify);
+      return;
+    }
     if (event.target.closest("[data-close-viewer]")) {
       closeViewer(ui);
       return;
@@ -2083,6 +2129,27 @@
       ui.detailsPromise = null;
       ensureJobDetails(ui);
       renderJobPanel(ui);
+    }
+  }
+
+  async function verifyArtifacts(ui, button) {
+    const result = button.parentElement.querySelector("[data-verify-result]");
+    button.disabled = true;
+    if (result) result.textContent = "正在核对 manifest.json 里的 SHA-256…";
+    try {
+      const data = await fetchJSON(`/api/jobs/${encodeURIComponent(ui.jobId)}/verify`);
+      if (result) {
+        if (data.ok) {
+          result.textContent = `${data.checked} 个文件哈希一致，产物未被截断或篡改。`;
+        } else {
+          const names = (data.mismatches || []).map((item) => item.name).filter(Boolean);
+          result.textContent = `校验失败：${names.length ? names.join("、") : "有文件缺失"}。建议重新生成。`;
+        }
+      }
+    } catch (error) {
+      if (result) result.textContent = `校验失败：${error.message || "网络错误"}`;
+    } finally {
+      button.disabled = false;
     }
   }
 

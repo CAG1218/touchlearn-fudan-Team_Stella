@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -180,6 +181,48 @@ class AgentServerTests(unittest.TestCase):
         self.assertTrue(body.startswith(b"PK\x03\x04"))
         with zipfile.ZipFile(io.BytesIO(body)) as archive:
             self.assertEqual(sorted(archive.namelist()), ["zipcheck/README.txt", "zipcheck/model.stl"])
+
+    def test_job_verify_checks_manifest_hashes(self) -> None:
+        job_dir = Path(self.temp.name) / "jobs" / "verifyjob"
+        self.write_test_stl(job_dir)
+        readme = job_dir / "README.txt"
+        readme.write_text("print me", encoding="utf-8")
+        manifest = {
+            "artifacts": [
+                {
+                    "name": "model.stl",
+                    "sha256": hashlib.sha256((job_dir / "model.stl").read_bytes()).hexdigest(),
+                },
+                {
+                    "name": "README.txt",
+                    "sha256": hashlib.sha256(readme.read_bytes()).hexdigest(),
+                },
+            ]
+        }
+        (job_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        payload = self.get_json("/api/jobs/verifyjob/verify")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["checked"], 2)
+        self.assertEqual(payload["mismatches"], [])
+        self.assertIn("manifest_sha256", payload)
+
+        readme.write_text("tampered", encoding="utf-8")
+        payload = self.get_json("/api/jobs/verifyjob/verify")
+        self.assertFalse(payload["ok"])
+        self.assertEqual([item["name"] for item in payload["mismatches"]], ["README.txt"])
+        self.assertEqual(payload["mismatches"][0]["reason"], "sha256")
+
+    def test_job_verify_reports_missing_artifact(self) -> None:
+        job_dir = Path(self.temp.name) / "jobs" / "verifymissing"
+        job_dir.mkdir(parents=True)
+        manifest = {"artifacts": [{"name": "model.stl", "sha256": "0" * 64}]}
+        (job_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        payload = self.get_json("/api/jobs/verifymissing/verify")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["checked"], 0)
+        self.assertEqual(payload["mismatches"][0]["reason"], "missing")
 
     def test_content_disposition_encodes_unicode(self) -> None:
         header = content_disposition("触觉模型.stl")

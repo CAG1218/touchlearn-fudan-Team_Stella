@@ -1,0 +1,63 @@
+name: touchlearn
+
+services:
+  touchlearn:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: touchlearn:0.2.0
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TOUCHLEARN_OUTPUTS: /app/outputs
+      TOUCHLEARN_PUBLIC_URL: ${TOUCHLEARN_PUBLIC_URL:-}
+    volumes:
+      - touchlearn-outputs:/app/outputs
+    expose:
+      - "8765"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      touchlearn:
+        condition: service_healthy
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?请在 deploy/.env 里设置 SITE_ADDRESS}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  touchlearn-outputs:
+    name: touchlearn-outputs
+  caddy-data:
+    name: touchlearn-caddy-data
+  caddy-config:
+    name: touchlearn-caddy-config

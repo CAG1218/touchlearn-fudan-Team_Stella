@@ -18,6 +18,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 from tests import EXAMPLES  # noqa: F401  (ensures src is on sys.path)
 
+from touchlearn.agent.accounts import AccountStore, AuthSettings
 from touchlearn.agent.server import AppState, Server, content_disposition
 
 
@@ -272,11 +273,11 @@ class AgentServerTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 400)
 
 
-class AccessCodeServerTests(unittest.TestCase):
+class AccountServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temp = tempfile.TemporaryDirectory()
-        state = AppState(Path(cls.temp.name), access_code="test-code")
+        state = AppState(Path(cls.temp.name))
         cls.server = Server(("127.0.0.1", 0), state)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
@@ -298,28 +299,6 @@ class AccessCodeServerTests(unittest.TestCase):
         )
         with opener.open(request, timeout=15) as response:
             return json.loads(response.read().decode("utf-8"))
-
-    def test_health_is_public_but_redacted(self) -> None:
-        with urlopen(f"{self.base}/api/health", timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        self.assertTrue(payload["access_required"])
-        self.assertFalse(payload["authenticated"])
-        self.assertEqual(payload["llm"]["mode"], "locked")
-        self.assertEqual(payload["vision"]["mode"], "locked")
-        self.assertEqual(payload["voices"], [])
-
-    def test_login_cookie_unlocks_protected_routes(self) -> None:
-        opener = build_opener(HTTPCookieProcessor(CookieJar()))
-        with self.assertRaises(HTTPError) as wrong:
-            self.open_json(opener, "/api/login", payload={"code": "nope"})
-        self.assertEqual(wrong.exception.code, 401)
-
-        payload = self.open_json(opener, "/api/login", payload={"code": "test-code"})
-        self.assertTrue(payload["ok"])
-        providers = self.open_json(opener, "/api/providers")
-        self.assertIn("llm", providers)
-        health = self.open_json(opener, "/api/health")
-        self.assertTrue(health["authenticated"])
 
     def test_request_host_drives_public_base_url(self) -> None:
         headers = {"Host": "touchlearn.example.com", "X-Forwarded-Proto": "https"}
@@ -350,6 +329,178 @@ class AccessCodeServerTests(unittest.TestCase):
         parsed = urlsplit(payload["public_base_url"])
         self.assertEqual(parsed.hostname, "127.0.0.1")
         self.assertEqual(parsed.port, 9999)
+
+
+class AccountAuthServerTests(unittest.TestCase):
+    email_login = "alice@example.com"
+    phone_login = "13800000001"
+    other_phone = "13900000002"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temp = tempfile.TemporaryDirectory()
+        auth = AccountStore(
+            AuthSettings(
+                db_path=Path(cls.temp.name) / "accounts.sqlite3",
+                dev_mode=True,
+                resend_after=0,
+            )
+        )
+        state = AppState(Path(cls.temp.name), auth=auth)
+        cls.server = Server(("127.0.0.1", 0), state)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+        cls.temp.cleanup()
+
+    def open_json(self, opener, path: str, *, payload: dict | None = None, headers: dict | None = None) -> dict:
+        request = Request(
+            f"{self.base}{path}",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None,
+            headers={"Content-Type": "application/json", **(headers or {})},
+            method="POST" if payload is not None else "GET",
+        )
+        with opener.open(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def opener(self):
+        return build_opener(HTTPCookieProcessor(CookieJar()))
+
+    def request_code(self, opener, kind: str, value: str) -> dict:
+        return self.open_json(
+            opener,
+            "/api/auth/request-code",
+            payload={"kind": kind, "value": value},
+        )
+
+    def login(self, opener, kind: str, value: str) -> dict:
+        payload = self.request_code(opener, kind, value)
+        self.assertIn("dev_code", payload)
+        return self.open_json(
+            opener,
+            "/api/auth/login",
+            payload={"kind": kind, "value": value, "code": payload["dev_code"]},
+        )
+
+    def test_health_is_public_but_redacted(self) -> None:
+        with urlopen(f"{self.base}/api/health", timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(payload["auth_required"])
+        self.assertFalse(payload["authenticated"])
+        self.assertIsNone(payload["user"])
+        self.assertTrue(payload["auth"]["phone"])
+        self.assertTrue(payload["auth"]["email"])
+        self.assertTrue(payload["auth"]["dev_mode"])
+        self.assertEqual(payload["llm"]["mode"], "locked")
+        self.assertEqual(payload["vision"]["mode"], "locked")
+        self.assertEqual(payload["voices"], [])
+
+    def test_login_cookie_unlocks_protected_routes(self) -> None:
+        opener = self.opener()
+        with self.assertRaises(HTTPError) as locked:
+            self.open_json(opener, "/api/providers")
+        self.assertEqual(locked.exception.code, 401)
+
+        logged_in = self.login(opener, "email", "bob@example.com")
+        self.assertEqual(logged_in["user"]["identities"][0]["kind"], "email")
+        providers = self.open_json(opener, "/api/providers")
+        self.assertIn("llm", providers)
+        health = self.open_json(opener, "/api/health")
+        self.assertTrue(health["authenticated"])
+        self.assertEqual(health["user"]["id"], logged_in["user"]["id"])
+
+        self.open_json(opener, "/api/auth/logout", payload={})
+        with self.assertRaises(HTTPError) as after_logout:
+            self.open_json(opener, "/api/providers")
+        self.assertEqual(after_logout.exception.code, 401)
+
+    def test_phone_and_email_share_one_account_after_linking(self) -> None:
+        opener = self.opener()
+        logged_in = self.login(opener, "email", self.email_login)
+        user_id = logged_in["user"]["id"]
+        self.assertEqual(len(logged_in["user"]["identities"]), 1)
+
+        sent = self.open_json(
+            opener,
+            "/api/auth/link-code",
+            payload={"kind": "phone", "value": self.phone_login},
+        )
+        self.assertIn("dev_code", sent)
+        linked = self.open_json(
+            opener,
+            "/api/auth/link",
+            payload={"kind": "phone", "value": self.phone_login, "code": sent["dev_code"]},
+        )
+        self.assertEqual(len(linked["user"]["identities"]), 2)
+        self.assertTrue(linked["user"]["can_unlink"])
+
+        self.open_json(opener, "/api/auth/logout", payload={})
+        second = self.login(opener, "phone", self.phone_login)
+        self.assertEqual(second["user"]["id"], user_id)
+        self.assertEqual(
+            sorted(item["kind"] for item in second["user"]["identities"]),
+            ["email", "phone"],
+        )
+
+    def test_wrong_code_is_rejected_then_correct_code_works(self) -> None:
+        opener = self.opener()
+        sent = self.request_code(opener, "phone", "13700000003")
+        with self.assertRaises(HTTPError) as wrong:
+            self.open_json(
+                opener,
+                "/api/auth/login",
+                payload={"kind": "phone", "value": "13700000003", "code": "000000"},
+            )
+        self.assertEqual(wrong.exception.code, 401)
+        correct = self.open_json(
+            opener,
+            "/api/auth/login",
+            payload={"kind": "phone", "value": "13700000003", "code": sent["dev_code"]},
+        )
+        self.assertEqual(correct["user"]["identities"][0]["masked"], "137****0003")
+
+    def test_identity_cannot_be_linked_to_a_second_account(self) -> None:
+        first = self.login(self.opener(), "phone", self.other_phone)
+        self.assertTrue(first["user"]["id"])
+        second_opener = self.opener()
+        self.login(second_opener, "phone", "13600000004")
+        with self.assertRaises(HTTPError) as taken:
+            self.open_json(
+                second_opener,
+                "/api/auth/link-code",
+                payload={"kind": "phone", "value": self.other_phone},
+            )
+        self.assertEqual(taken.exception.code, 409)
+
+    def test_last_login_identity_cannot_be_unlinked(self) -> None:
+        opener = self.opener()
+        logged_in = self.login(opener, "phone", "13500000005")
+        identity_id = logged_in["user"]["identities"][0]["id"]
+        with self.assertRaises(HTTPError) as blocked:
+            self.open_json(
+                opener,
+                "/api/auth/unlink",
+                payload={"identity_id": identity_id},
+            )
+        self.assertEqual(blocked.exception.code, 409)
+
+    def test_cross_site_post_is_rejected(self) -> None:
+        opener = self.opener()
+        self.login(opener, "phone", "13400000006")
+        with self.assertRaises(HTTPError) as blocked:
+            self.open_json(
+                opener,
+                "/api/auth/profile",
+                payload={"display_name": "攻击者"},
+                headers={"Origin": "https://evil.example"},
+            )
+        self.assertEqual(blocked.exception.code, 403)
 
 
 if __name__ == "__main__":

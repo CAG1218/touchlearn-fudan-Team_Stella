@@ -45,6 +45,14 @@
     ["print", "打印说明"],
   ];
   const SELECTION_KEY = "touchlearn.llm.selection.v1";
+  const AUTH_TAB_KEY = "touchlearn.auth.tab.v1";
+  const savedAuthTab = (() => {
+    try {
+      return window.localStorage.getItem(AUTH_TAB_KEY) === "email" ? "email" : "phone";
+    } catch (error) {
+      return "phone";
+    }
+  })();
   const FALLBACK_EFFORTS = [
     { id: "low", label: "低", note: "响应更快，适合大多数分类与结构化任务" },
     { id: "medium", label: "中", note: "在速度与推理之间取平衡" },
@@ -69,6 +77,18 @@
     speaking: null,
     bootstrapped: false,
     sceneEditor: null,
+    user: null,
+    auth: null,
+    authTab: savedAuthTab,
+    authBusy: false,
+    authCooldownUntil: 0,
+    authTimer: null,
+    devCode: "",
+    linkKind: "",
+    linkValue: "",
+    linkBusy: false,
+    linkCooldownUntil: 0,
+    linkTimer: null,
   };
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -132,10 +152,17 @@
       payload = null;
     }
     if (response.status === 401) {
-      throw new AuthError((payload && payload.error) || "需要访问码。");
+      const error = new AuthError((payload && payload.error) || "请先登录。");
+      error.status = 401;
+      error.code = payload && payload.code;
+      throw error;
     }
     if (!response.ok) {
-      throw new Error((payload && payload.error) || `请求失败（${response.status}）`);
+      const error = new Error((payload && payload.error) || `请求失败（${response.status}）`);
+      error.status = response.status;
+      error.code = payload && payload.code;
+      error.retryAfter = payload && payload.retry_after;
+      throw error;
     }
     return payload;
   }
@@ -288,13 +315,190 @@
   }
 
   function showLogin() {
-    $("#loginOverlay").classList.remove("hidden");
-    setTimeout(() => $("#accessCode").focus(), 60);
+    const overlay = $("#loginOverlay");
+    if (!overlay.classList.contains("hidden")) return;
+    overlay.classList.remove("hidden");
+    applyAuthConfig();
+    setTimeout(() => {
+      const input = state.authTab === "email" ? $("#loginEmail") : $("#loginPhone");
+      if (input) input.focus();
+    }, 80);
   }
 
   function hideLogin() {
     $("#loginOverlay").classList.add("hidden");
     $("#loginError").classList.add("hidden");
+  }
+
+  function authConfig() {
+    return (state.health && state.health.auth) || {
+      phone: false,
+      email: false,
+      dev_mode: false,
+      code_ttl: 600,
+      resend_after: 60,
+      session_days: 30,
+    };
+  }
+
+  function normalizePhoneInput(raw) {
+    let digits = String(raw || "").replace(/\D/g, "");
+    if (digits.startsWith("0086")) digits = digits.slice(4);
+    if (digits.length === 13 && digits.startsWith("86")) digits = digits.slice(2);
+    return digits.slice(0, 11);
+  }
+
+  function authValue(kind) {
+    return kind === "email" ? $("#loginEmail").value.trim() : normalizePhoneInput($("#loginPhone").value);
+  }
+
+  function authValid(kind, value) {
+    if (kind === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254;
+    return /^1[3-9]\d{9}$/.test(value);
+  }
+
+  function setAuthTab(kind, options = {}) {
+    const config = authConfig();
+    let next = kind === "email" ? "email" : "phone";
+    if (!config[next]) {
+      if (config.phone) next = "phone";
+      else if (config.email) next = "email";
+    }
+    state.authTab = next;
+    try {
+      window.localStorage.setItem(AUTH_TAB_KEY, next);
+    } catch (error) {
+      /* storage disabled: the in-memory tab still works */
+    }
+    $$("[data-auth-tab]").forEach((tab) => {
+      const active = tab.dataset.authTab === next;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+      tab.tabIndex = active ? 0 : -1;
+    });
+    $("#loginPhoneField").classList.toggle("hidden", next !== "phone");
+    $("#loginEmailField").classList.toggle("hidden", next !== "email");
+    const hint = $("#loginHint");
+    if (hint) {
+      if (!config.phone && !config.email) {
+        hint.textContent = "部署者尚未配置短信或邮件通道，暂时无法接收验证码。";
+      } else if (config.dev_mode) {
+        hint.textContent = "当前是开发模式：验证码会直接显示在页面上，不会真的发送短信或邮件。";
+      } else {
+        hint.textContent = "未注册的手机号或邮箱，验证通过后会自动创建账号。";
+      }
+    }
+    if (options.focus) {
+      setTimeout(() => {
+        const input = next === "email" ? $("#loginEmail") : $("#loginPhone");
+        if (input) input.focus();
+      }, 40);
+    }
+  }
+
+  function applyAuthConfig(config) {
+    const cfg = config || authConfig();
+    $$("[data-auth-tab]").forEach((tab) => {
+      const kind = tab.dataset.authTab;
+      const ready = Boolean(cfg[kind]);
+      tab.disabled = !ready;
+      tab.title = ready ? "" : (kind === "phone" ? "手机号登录尚未配置" : "邮箱登录尚未配置");
+    });
+    setAuthTab(state.authTab);
+  }
+
+  function showLoginError(message) {
+    const error = $("#loginError");
+    if (!error) return;
+    error.textContent = message;
+    error.classList.remove("hidden");
+  }
+
+  function showDevCode(code) {
+    state.devCode = String(code || "");
+    const box = $("#loginDev");
+    if (!box) return;
+    if (!state.devCode) {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+      return;
+    }
+    box.innerHTML = `${icon("key")}<span>开发模式验证码：<strong>${escapeHtml(state.devCode)}</strong></span><button class="btn sm ghost" type="button" data-use-dev>填入</button>`;
+    box.classList.remove("hidden");
+    const input = $("#loginCode");
+    if (input) input.value = state.devCode;
+  }
+
+  function startLoginCooldown(seconds) {
+    const button = $("#loginSendCode");
+    const total = Math.max(0, Math.round(Number(seconds) || 0));
+    if (state.authTimer) {
+      clearInterval(state.authTimer);
+      state.authTimer = null;
+    }
+    if (!total) {
+      state.authCooldownUntil = 0;
+      if (button) {
+        button.disabled = false;
+        button.textContent = "获取验证码";
+      }
+      return;
+    }
+    state.authCooldownUntil = Date.now() + total * 1000;
+    const tick = () => {
+      if (!button) return;
+      const left = Math.ceil((state.authCooldownUntil - Date.now()) / 1000);
+      if (left <= 0) {
+        clearInterval(state.authTimer);
+        state.authTimer = null;
+        state.authCooldownUntil = 0;
+        button.disabled = false;
+        button.textContent = "获取验证码";
+        return;
+      }
+      button.disabled = true;
+      button.textContent = `${left}s 后重发`;
+    };
+    tick();
+    state.authTimer = setInterval(tick, 1000);
+  }
+
+  async function sendLoginCode() {
+    if (state.authBusy) return;
+    const kind = state.authTab;
+    const value = authValue(kind);
+    const button = $("#loginSendCode");
+    $("#loginError").classList.add("hidden");
+    if (!authValid(kind, value)) {
+      showLoginError(kind === "email" ? "请输入有效的邮箱地址。" : "请输入 11 位手机号。");
+      return;
+    }
+    state.authBusy = true;
+    button.disabled = true;
+    button.textContent = "发送中…";
+    try {
+      const payload = await fetchJSON("/api/auth/request-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, value }),
+      });
+      toast(`验证码已发送至 ${payload.masked || value}`);
+      if (payload.dev_code) showDevCode(payload.dev_code);
+      startLoginCooldown(payload.resend_after || authConfig().resend_after || 60);
+    } catch (error) {
+      showLoginError(error.message || "验证码发送失败，请稍后再试。");
+      if (error.retryAfter) startLoginCooldown(Number(error.retryAfter));
+      else {
+        button.disabled = false;
+        button.textContent = "获取验证码";
+      }
+    } finally {
+      state.authBusy = false;
+      if (!state.authCooldownUntil && button) {
+        button.disabled = false;
+        button.textContent = "获取验证码";
+      }
+    }
   }
 
   function fillIcpNode(node, value) {
@@ -324,6 +528,8 @@
     try {
       const health = await fetchJSON("/api/health");
       state.health = health;
+      state.auth = health.auth || null;
+      state.user = health.user || null;
       renderIcp(health);
       let host = "";
       try {
@@ -333,7 +539,9 @@
       }
       setStatus("ok", health.authenticated ? "在线" : "待登录", `二维码地址：${health.public_base_url}`);
       renderModelChip();
-      if (health.access_required && !health.authenticated) {
+      renderAccountButton();
+      applyAuthConfig(health.auth);
+      if (health.auth_required && !health.authenticated) {
         showLogin();
         return false;
       }
@@ -456,7 +664,7 @@
       return;
     }
     if (llm.mode === "locked") {
-      setText("需要访问码", "登录后选择模型与思考强度");
+      setText("待登录", "登录后选择模型与思考强度");
       chip.classList.add("offline");
       return;
     }
@@ -612,43 +820,55 @@
 
   async function submitLogin(event) {
     event.preventDefault();
-    const input = $("#accessCode");
+    if (state.authBusy) return;
     const error = $("#loginError");
     const button = $("#loginBtn");
-    const code = input.value.trim();
-    if (!code) {
-      error.textContent = "请输入访问码。";
-      error.classList.remove("hidden");
+    const kind = state.authTab;
+    const value = authValue(kind);
+    const code = $("#loginCode").value.replace(/\D/g, "").slice(0, 6);
+    error.classList.add("hidden");
+    if (!authValid(kind, value)) {
+      showLoginError(kind === "email" ? "请输入有效的邮箱地址。" : "请输入 11 位手机号。");
       return;
     }
+    if (code.length !== 6) {
+      showLoginError("请输入 6 位验证码；没有收到可以先点「获取验证码」。");
+      return;
+    }
+    state.authBusy = true;
     button.disabled = true;
     button.textContent = "验证中…";
-    error.classList.add("hidden");
     try {
-      await fetchJSON("/api/login", {
+      const payload = await fetchJSON("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ kind, value, code }),
       });
+      state.user = payload.user || null;
+      state.devCode = "";
+      showDevCode("");
+      $("#loginCode").value = "";
       hideLogin();
-      toast("已进入工作台");
+      renderAccountButton();
+      toast(`欢迎，${(state.user && state.user.display_name) || "朋友"}`);
       state.bootstrapped = false;
       await refreshHealth();
     } catch (err) {
-      error.textContent = err.message || "访问码不正确。";
-      error.classList.remove("hidden");
+      showLoginError(err.message || "验证码不正确。");
     } finally {
+      state.authBusy = false;
       button.disabled = false;
-      button.textContent = "进入工作台";
+      button.textContent = "登录 / 注册";
     }
   }
 
   async function logout() {
     try {
-      await fetchJSON("/api/logout", { method: "POST" });
+      await fetchJSON("/api/auth/logout", { method: "POST" });
     } catch (error) {
       /* the reload below still clears the UI */
     }
+    state.user = null;
     closeSheets();
     location.reload();
   }
@@ -842,7 +1062,7 @@
     } catch (error) {
       wait.remove();
       if (error instanceof AuthError) {
-        agentText(body, "需要访问码才能继续。请在登录窗口输入部署者提供的访问码。", true);
+        agentText(body, "登录状态已失效。请在登录窗口用手机号或邮箱验证码重新登录。", true);
         showLogin();
       } else if (String(error.message || "").includes("不支持所选模型")) {
         const stale = state.selection ? state.selection.model : "";
@@ -2979,7 +3199,7 @@
     const list = $("#templateList");
     if (!list) return;
     if (!state.templates.length) {
-      list.innerHTML = '<p class="sheet-lead">模板尚未加载。请检查服务连接或访问码。</p>';
+      list.innerHTML = '<p class="sheet-lead">模板尚未加载。请检查服务连接或登录状态。</p>';
       return;
     }
     list.innerHTML = state.templates.map((entry) => `
@@ -3046,7 +3266,7 @@
   function sceneError(error) {
     if (error instanceof AuthError) {
       showLogin();
-      return "需要访问码才能使用图形编辑器。";
+      return "登录后才能使用图形编辑器。";
     }
     return error.message || "图形编辑器请求失败。";
   }
@@ -3547,7 +3767,7 @@
 
   function providerText(status) {
     if (!status) return "未读取";
-    if (status.mode === "locked") return "需要访问码";
+    if (status.mode === "locked") return "登录后可查看";
     if (status.configured) {
       return `${status.label || status.provider || "已配置"} · ${status.model || ""}`.trim();
     }
@@ -3579,13 +3799,13 @@
         ${settingRow("当前地址", location.origin, true)}
         ${settingRow("二维码基础地址", baseUrl, true)}
         ${settingRow("局域网 IP", health.lan_ip || "—", true)}
-        ${settingRow("访问控制", health.access_required ? "已启用访问码" : "未设置访问码")}
+        ${settingRow("登录账号", health.authenticated && state.user ? state.user.display_name : "未登录")}
         ${health.icp ? `<div class="setting-row"><span class="k">ICP备案号</span><span class="v"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">${escapeHtml(health.icp)}</a></span></div>` : ""}
         <p class="setting-note">公网临时隧道地址会变化；如果换了地址，请回到本页重新复制二维码基础地址。正式部署见 docs/deploy.md。</p>
         <div class="action-row">
           <button class="btn sm" type="button" id="settingsRefresh">${icon("refresh")}重新检查服务</button>
           <button class="btn sm" type="button" data-copy="${escapeHtml(baseUrl)}">${icon("copy")}复制链接</button>
-          ${health.access_required ? `<button class="btn sm ghost" type="button" id="settingsLogout">退出访问码</button>` : ""}
+          ${health.auth_required ? `<button class="btn sm ghost" type="button" id="settingsAccount">${icon("user")}账户中心</button>` : ""}
         </div>
       </div>
       <div class="setting-group">
@@ -3638,6 +3858,346 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
   function closeSheets() {
     $("#settingsSheet").classList.add("hidden");
     $("#templateSheet").classList.add("hidden");
+    $("#accountSheet").classList.add("hidden");
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Account center                                                      */
+  /* ------------------------------------------------------------------ */
+
+  function userInitial(user) {
+    const name = String((user && user.display_name) || "").trim();
+    if (!name) return "我";
+    return Array.from(name)[0].toUpperCase();
+  }
+
+  function identityOf(user, kind) {
+    const list = Array.isArray(user && user.identities) ? user.identities : [];
+    return list.find((item) => item.kind === kind) || null;
+  }
+
+  function formatJoinDate(seconds) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value) || value <= 0) return "";
+    try {
+      return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" }).format(new Date(value * 1000));
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function renderAccountButton() {
+    const button = $("#accountBtn");
+    if (!button) return;
+    const user = state.user;
+    if (user) {
+      button.classList.add("is-signed-in");
+      button.textContent = userInitial(user);
+      button.title = `${user.display_name || "账户"} · 账户中心`;
+      button.setAttribute("aria-label", "账户中心");
+    } else {
+      button.classList.remove("is-signed-in");
+      button.innerHTML = icon("user");
+      button.title = "登录 / 账户中心";
+      button.setAttribute("aria-label", "登录或创建账号");
+    }
+  }
+
+  function openAccount() {
+    closeModelPopover();
+    closeSheets();
+    state.linkKind = "";
+    renderAccount();
+    $("#accountSheet").classList.remove("hidden");
+  }
+
+  function identityRow(kind, identity, user, config) {
+    const label = kind === "phone" ? "手机号" : "邮箱";
+    const channelReady = Boolean(config && config[kind]);
+    const actions = [];
+    if (identity) {
+      if (user.can_unlink) {
+        actions.push(`<button class="btn sm ghost" type="button" data-account-unlink="${identity.id}" data-kind="${kind}">解绑</button>`);
+      } else {
+        actions.push(`<span class="account-badge">唯一登录方式</span>`);
+      }
+    } else if (!channelReady) {
+      actions.push(`<span class="account-badge">未开通</span>`);
+    } else {
+      actions.push(`<button class="btn sm" type="button" data-account-link="${kind}">绑定</button>`);
+    }
+    return `
+      <div class="identity-row">
+        <span class="identity-icon">${icon(kind === "phone" ? "user" : "mail")}</span>
+        <span class="identity-copy">
+          <strong>${label}</strong>
+          <small>${identity ? escapeHtml(identity.masked) : `未绑定${label}`}</small>
+        </span>
+        <span class="identity-actions">${actions.join("")}</span>
+      </div>
+    `;
+  }
+
+  function linkForm(kind) {
+    const label = kind === "phone" ? "手机号" : "邮箱";
+    const isPhone = kind === "phone";
+    return `
+      <form class="account-link-form" id="linkForm" data-kind="${kind}" novalidate>
+        <div class="account-link-head">
+          <strong>绑定${label}</strong>
+          <button class="btn sm ghost" type="button" data-link-cancel>取消</button>
+        </div>
+        <input class="input" id="linkValue" type="${isPhone ? "tel" : "email"}" inputmode="${isPhone ? "numeric" : "email"}" maxlength="${isPhone ? 16 : 254}" placeholder="${isPhone ? "请输入要绑定的手机号" : "请输入要绑定的邮箱"}" aria-label="要绑定的${label}">
+        <div class="auth-code-row">
+          <input class="input" id="linkCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位验证码" aria-label="验证码">
+          <button class="btn sm ghost auth-code-btn" id="linkSendCode" type="button">获取验证码</button>
+        </div>
+        <button class="btn primary" type="submit" id="linkSubmit">确认绑定</button>
+        <p class="setting-note">绑定后，${label}也能登录同一个账号；每个${label}只能属于一个账号。</p>
+      </form>
+    `;
+  }
+
+  function renderAccount() {
+    const body = $("#accountBody");
+    if (!body) return;
+    const user = state.user;
+    if (!user) {
+      body.innerHTML = `
+        <div class="setting-group">
+          <h3>还没有登录</h3>
+          <p class="setting-note">用手机号或邮箱验证码登录；第一次验证会自动创建账号。</p>
+          <button class="btn primary block" type="button" id="accountLogin">去登录</button>
+        </div>
+      `;
+      return;
+    }
+    const config = authConfig();
+    const phone = identityOf(user, "phone");
+    const email = identityOf(user, "email");
+    const joined = formatJoinDate(user.created_at);
+    const primary = (phone && phone.masked) || (email && email.masked) || "—";
+    body.innerHTML = `
+      <div class="account-hero">
+        <span class="account-avatar" aria-hidden="true">${escapeHtml(userInitial(user))}</span>
+        <div class="account-hero-copy">
+          <strong>${escapeHtml(user.display_name || "未命名账号")}</strong>
+          <span>${escapeHtml(primary)}</span>
+          <small>${joined ? `注册于 ${escapeHtml(joined)}` : "已登录"}${config.dev_mode ? ' · <span class="account-badge">开发模式</span>' : ""}</small>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <h3>昵称</h3>
+        <form class="account-name-form" id="accountNameForm">
+          <input class="input" id="accountName" maxlength="24" value="${escapeHtml(user.display_name || "")}" aria-label="昵称">
+          <button class="btn sm" type="submit">保存</button>
+        </form>
+      </div>
+
+      <div class="setting-group">
+        <h3>登录方式</h3>
+        ${identityRow("phone", phone, user, config)}
+        ${identityRow("email", email, user, config)}
+        ${state.linkKind ? linkForm(state.linkKind) : ""}
+        <p class="setting-note">手机号和邮箱可以绑定到同一个账号，绑定后任意一种都能登录。至少保留一种登录方式。</p>
+        ${(!config.phone || !config.email) ? `<p class="setting-note">${!config.phone ? "手机号登录尚未配置。" : ""}${!config.email ? "邮箱登录尚未配置。" : ""}请联系部署者。</p>` : ""}
+      </div>
+
+      <div class="setting-group">
+        <h3>账号</h3>
+        ${settingRow("账号编号", String(user.id || "").slice(0, 8), true)}
+        ${joined ? settingRow("注册时间", joined) : ""}
+        <div class="account-actions">
+          <button class="btn sm" type="button" id="accountSettings">${icon("settings")}应用设置</button>
+          <button class="btn sm ghost" type="button" id="accountLogout">退出登录</button>
+        </div>
+      </div>
+    `;
+    updateLinkCooldown();
+  }
+
+  function updateLinkCooldown() {
+    const button = $("#linkSendCode");
+    if (!button) {
+      if (state.linkTimer) {
+        clearInterval(state.linkTimer);
+        state.linkTimer = null;
+      }
+      return;
+    }
+    const left = Math.ceil((state.linkCooldownUntil - Date.now()) / 1000);
+    if (left > 0) {
+      button.disabled = true;
+      button.textContent = `${left}s 后重发`;
+    } else {
+      button.disabled = false;
+      button.textContent = "获取验证码";
+    }
+  }
+
+  function startLinkCooldown(seconds) {
+    if (state.linkTimer) {
+      clearInterval(state.linkTimer);
+      state.linkTimer = null;
+    }
+    const total = Math.max(0, Math.round(Number(seconds) || 0));
+    state.linkCooldownUntil = total ? Date.now() + total * 1000 : 0;
+    if (!total) {
+      updateLinkCooldown();
+      return;
+    }
+    const tick = () => {
+      const button = $("#linkSendCode");
+      if (!button) {
+        clearInterval(state.linkTimer);
+        state.linkTimer = null;
+        return;
+      }
+      const left = Math.ceil((state.linkCooldownUntil - Date.now()) / 1000);
+      if (left <= 0) {
+        clearInterval(state.linkTimer);
+        state.linkTimer = null;
+        state.linkCooldownUntil = 0;
+        button.disabled = false;
+        button.textContent = "获取验证码";
+        return;
+      }
+      button.disabled = true;
+      button.textContent = `${left}s 后重发`;
+    };
+    tick();
+    state.linkTimer = setInterval(tick, 1000);
+  }
+
+  async function sendLinkCode() {
+    if (state.linkBusy || !state.linkKind) return;
+    const kind = state.linkKind;
+    const value = kind === "email" ? $("#linkValue").value.trim() : normalizePhoneInput($("#linkValue").value);
+    if (!authValid(kind, value)) {
+      toast(kind === "email" ? "请输入有效的邮箱地址。" : "请输入 11 位手机号。", true);
+      return;
+    }
+    const button = $("#linkSendCode");
+    state.linkBusy = true;
+    button.disabled = true;
+    button.textContent = "发送中…";
+    try {
+      const payload = await fetchJSON("/api/auth/link-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, value }),
+      });
+      state.linkValue = value;
+      toast(`验证码已发送至 ${payload.masked || value}`);
+      if (payload.dev_code) {
+        state.devCode = String(payload.dev_code);
+        const input = $("#linkCode");
+        if (input) input.value = payload.dev_code;
+        toast(`开发模式验证码：${payload.dev_code}`);
+      }
+      startLinkCooldown(payload.resend_after || authConfig().resend_after || 60);
+    } catch (error) {
+      toast(error.message || "验证码发送失败，请稍后再试。", true);
+      if (error.retryAfter) startLinkCooldown(Number(error.retryAfter));
+      else {
+        button.disabled = false;
+        button.textContent = "获取验证码";
+      }
+    } finally {
+      state.linkBusy = false;
+      if (!state.linkCooldownUntil) {
+        button.disabled = false;
+        button.textContent = "获取验证码";
+      }
+    }
+  }
+
+  async function submitAccountLink(event) {
+    event.preventDefault();
+    if (state.linkBusy || !state.linkKind) return;
+    const kind = state.linkKind;
+    const value = kind === "email" ? $("#linkValue").value.trim() : normalizePhoneInput($("#linkValue").value);
+    const code = $("#linkCode").value.replace(/\D/g, "").slice(0, 6);
+    if (!authValid(kind, value)) {
+      toast(kind === "email" ? "请输入有效的邮箱地址。" : "请输入 11 位手机号。", true);
+      return;
+    }
+    if (code.length !== 6) {
+      toast("请输入 6 位验证码。", true);
+      return;
+    }
+    const button = $("#linkSubmit");
+    state.linkBusy = true;
+    button.disabled = true;
+    button.textContent = "绑定中…";
+    try {
+      const payload = await fetchJSON("/api/auth/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, value, code }),
+      });
+      state.user = payload.user || state.user;
+      state.linkKind = "";
+      state.linkCooldownUntil = 0;
+      if (state.linkTimer) {
+        clearInterval(state.linkTimer);
+        state.linkTimer = null;
+      }
+      renderAccountButton();
+      renderAccount();
+      toast("绑定成功，两种方式都可以登录这个账号了。");
+    } catch (error) {
+      toast(error.message || "绑定失败，请稍后再试。", true);
+    } finally {
+      state.linkBusy = false;
+      const still = $("#linkSubmit");
+      if (still) {
+        still.disabled = false;
+        still.textContent = "确认绑定";
+      }
+    }
+  }
+
+  async function submitAccountName(event) {
+    event.preventDefault();
+    const input = $("#accountName");
+    const name = input.value.trim();
+    if (!name) {
+      toast("昵称不能为空。", true);
+      return;
+    }
+    try {
+      const payload = await fetchJSON("/api/auth/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ display_name: name }),
+      });
+      state.user = payload.user || state.user;
+      renderAccountButton();
+      renderAccount();
+      toast("昵称已更新");
+    } catch (error) {
+      toast(error.message || "昵称保存失败。", true);
+    }
+  }
+
+  async function unlinkIdentity(identityId, kind) {
+    const label = kind === "phone" ? "手机号" : "邮箱";
+    if (!window.confirm(`解绑后，这个${label}将不能再登录当前账号。确定解绑？`)) return;
+    try {
+      const payload = await fetchJSON("/api/auth/unlink", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identity_id: identityId }),
+      });
+      state.user = payload.user || state.user;
+      renderAccountButton();
+      renderAccount();
+      toast(`${label}已解绑`);
+    } catch (error) {
+      toast(error.message || "解绑失败。", true);
+    }
   }
 
   function newChat() {
@@ -3831,14 +4391,104 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
     });
 
     $("#loginForm").addEventListener("submit", submitLogin);
+    $("#loginSendCode").addEventListener("click", sendLoginCode);
+    $$("[data-auth-tab]").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        if (tab.disabled) return;
+        $("#loginError").classList.add("hidden");
+        showDevCode("");
+        setAuthTab(tab.dataset.authTab, { focus: true });
+      });
+    });
+    $("#loginPhone").addEventListener("input", (event) => {
+      const digits = normalizePhoneInput(event.target.value);
+      if (digits !== event.target.value) event.target.value = digits;
+    });
+    $("#loginCode").addEventListener("input", (event) => {
+      const digits = event.target.value.replace(/\D/g, "").slice(0, 6);
+      if (digits !== event.target.value) event.target.value = digits;
+    });
+    $("#loginDev").addEventListener("click", (event) => {
+      if (!event.target.closest("[data-use-dev]") || !state.devCode) return;
+      $("#loginCode").value = state.devCode;
+      $("#loginCode").focus();
+    });
+    $("#accountBtn").addEventListener("click", () => {
+      if (!state.user) {
+        showLogin();
+        return;
+      }
+      openAccount();
+    });
 
     $$("[data-close-sheet]").forEach((button) => {
       button.addEventListener("click", closeSheets);
     });
-    [$("#settingsSheet"), $("#templateSheet")].forEach((backdrop) => {
+    [$("#settingsSheet"), $("#templateSheet"), $("#accountSheet")].forEach((backdrop) => {
       backdrop.addEventListener("click", (event) => {
         if (event.target === backdrop) closeSheets();
       });
+    });
+
+    $("#accountBody").addEventListener("click", (event) => {
+      if (event.target.closest("#accountLogin")) {
+        closeSheets();
+        showLogin();
+        return;
+      }
+      const link = event.target.closest("[data-account-link]");
+      if (link) {
+        state.linkKind = link.dataset.accountLink;
+        renderAccount();
+        setTimeout(() => {
+          const input = $("#linkValue");
+          if (input) input.focus();
+        }, 40);
+        return;
+      }
+      if (event.target.closest("[data-link-cancel]")) {
+        state.linkKind = "";
+        renderAccount();
+        return;
+      }
+      if (event.target.closest("#linkSendCode")) {
+        sendLinkCode();
+        return;
+      }
+      const unlink = event.target.closest("[data-account-unlink]");
+      if (unlink) {
+        unlinkIdentity(Number(unlink.dataset.accountUnlink), unlink.dataset.kind || "");
+        return;
+      }
+      if (event.target.closest("#accountSettings")) {
+        closeSheets();
+        openSettings();
+        return;
+      }
+      if (event.target.closest("#accountLogout")) {
+        logout();
+      }
+    });
+    $("#accountBody").addEventListener("submit", (event) => {
+      if (event.target.id === "accountNameForm") {
+        event.preventDefault();
+        submitAccountName(event);
+        return;
+      }
+      if (event.target.id === "linkForm") {
+        event.preventDefault();
+        submitAccountLink(event);
+      }
+    });
+    $("#accountBody").addEventListener("input", (event) => {
+      if (event.target.id === "linkValue" && state.linkKind === "phone") {
+        const digits = normalizePhoneInput(event.target.value);
+        if (digits !== event.target.value) event.target.value = digits;
+      }
+      if (event.target.id === "linkCode") {
+        const digits = event.target.value.replace(/\D/g, "").slice(0, 6);
+        if (digits !== event.target.value) event.target.value = digits;
+      }
     });
 
     $("#templateList").addEventListener("click", (event) => {
@@ -3852,8 +4502,9 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
         copyText(copy.dataset.copy || "");
         return;
       }
-      if (event.target.closest("#settingsLogout")) {
-        logout();
+      if (event.target.closest("#settingsAccount")) {
+        closeSheets();
+        openAccount();
         return;
       }
       if (event.target.closest("#settingsRefresh")) {
@@ -3883,7 +4534,7 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
         closeSceneEditor();
         return;
       }
-      if (!$("#settingsSheet").classList.contains("hidden") || !$("#templateSheet").classList.contains("hidden")) {
+      if (!$("#settingsSheet").classList.contains("hidden") || !$("#templateSheet").classList.contains("hidden") || !$("#accountSheet").classList.contains("hidden")) {
         closeSheets();
         return;
       }

@@ -15,7 +15,7 @@ python scripts/run_agent.py --port 8765
 手机或其他设备访问：
 
 - 同一 Wi-Fi：打开终端打印的 `http://<局域网 IP>:8765`；
-- 临时公网：`python scripts/run_public.py`，会生成 `trycloudflare.com` 地址和访问码；
+- 临时公网：`python scripts/run_public.py`，会生成 `trycloudflare.com` 地址；首次打开用手机号或邮箱验证码登录（未配置 SMTP/短信时进入开发模式，验证码直接显示在页面上）；
 - 固定部署：见 [deploy.md](deploy.md)。
 
 命令行构建两个基准案例：

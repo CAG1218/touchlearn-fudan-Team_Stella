@@ -8,10 +8,35 @@ services:
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
-      - key: TOUCHLEARN_ACCESS_CODE
-        sync: false
+      # 免费实例没有持久磁盘，重新部署会丢账号和产物；正式使用请挂载磁盘。
       - key: TOUCHLEARN_OUTPUTS
         value: /app/outputs
+      - key: TOUCHLEARN_AUTH_DB
+        value: /app/outputs/accounts.sqlite3
+      - key: TOUCHLEARN_AUTH_DEV_MODE
+        value: "false"
+      - key: TOUCHLEARN_SMTP_HOST
+        sync: false
+      - key: TOUCHLEARN_SMTP_PORT
+        sync: false
+      - key: TOUCHLEARN_SMTP_USER
+        sync: false
+      - key: TOUCHLEARN_SMTP_PASSWORD
+        sync: false
+      - key: TOUCHLEARN_SMTP_FROM
+        sync: false
+      - key: TOUCHLEARN_SMTP_TLS
+        sync: false
+      - key: TOUCHLEARN_SMS_PROVIDER
+        sync: false
+      - key: TOUCHLEARN_ALIYUN_SMS_KEY_ID
+        sync: false
+      - key: TOUCHLEARN_ALIYUN_SMS_KEY_SECRET
+        sync: false
+      - key: TOUCHLEARN_ALIYUN_SMS_SIGN_NAME
+        sync: false
+      - key: TOUCHLEARN_ALIYUN_SMS_TEMPLATE_CODE
+        sync: false
       - key: TOUCHLEARN_LLM_PROVIDER
         sync: false
       - key: TOUCHLEARN_LLM_KEY

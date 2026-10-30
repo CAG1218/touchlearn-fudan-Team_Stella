@@ -40,6 +40,7 @@ from touchlearn.agent.scene_edit import (
     recognize_circuit_image,
 )
 from touchlearn.agent.scene_svg import scene_to_svg
+from touchlearn.agent.accounts import AccountStore, AuthSettings
 from touchlearn.agent.server import AppState, Server
 
 # A 1x1 transparent PNG.  The recognizer never decodes pixels in these tests
@@ -724,7 +725,14 @@ class SceneAuthTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temp = tempfile.TemporaryDirectory()
-        state = AppState(Path(cls.temp.name), access_code="test-code")
+        auth = AccountStore(
+            AuthSettings(
+                db_path=Path(cls.temp.name) / "accounts.sqlite3",
+                dev_mode=True,
+                resend_after=0,
+            )
+        )
+        state = AppState(Path(cls.temp.name), auth=auth)
         cls.server = Server(("127.0.0.1", 0), state)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
@@ -737,15 +745,36 @@ class SceneAuthTests(unittest.TestCase):
         cls.thread.join(timeout=5)
         cls.temp.cleanup()
 
-    def test_thumbnails_and_edits_require_the_access_cookie(self) -> None:
-        with self.assertRaises(HTTPError) as thumbnail:
-            urlopen(f"{self.base}/api/templates/circuit/thumbnail.svg", timeout=10)
-        self.assertEqual(thumbnail.exception.code, 401)
+    def test_thumbnails_are_public_but_edits_require_a_session(self) -> None:
+        # Welcome-card artwork stays public so the login screen can render it.
+        with urlopen(f"{self.base}/api/templates/circuit/thumbnail.svg", timeout=10) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("svg", response.headers.get("Content-Type", ""))
+
+        edit = Request(
+            f"{self.base}/api/scene-edit",
+            data=json.dumps({"instruction": "把开关闭合"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as denied:
+            urlopen(edit, timeout=10)
+        self.assertEqual(denied.exception.code, 401)
 
         opener = build_opener(HTTPCookieProcessor(CookieJar()))
+        request_code = Request(
+            f"{self.base}/api/auth/request-code",
+            data=json.dumps({"kind": "email", "value": "scene@example.com"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with opener.open(request_code, timeout=10) as response:
+            dev_code = json.loads(response.read().decode("utf-8"))["dev_code"]
         login = Request(
-            f"{self.base}/api/login",
-            data=json.dumps({"code": "test-code"}).encode("utf-8"),
+            f"{self.base}/api/auth/login",
+            data=json.dumps(
+                {"kind": "email", "value": "scene@example.com", "code": dev_code}
+            ).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )

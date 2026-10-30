@@ -6,9 +6,12 @@ checking the phone layout from another network; the address changes every
 time the process restarts.  For an always-on deployment use Docker/Render,
 see ``docs/deploy.md``.
 
+Login uses phone/e-mail verification codes.  A public demo without SMTP or
+SMS credentials falls back to development mode, where the code is shown on
+the page; configure a channel before using this for a real event.
+
 Usage:
     python scripts/run_public.py
-    python scripts/run_public.py --new-code
     python scripts/run_public.py --no-tunnel
 """
 
@@ -19,7 +22,6 @@ import json
 import os
 import queue
 import re
-import secrets
 import shutil
 import socket
 import subprocess
@@ -37,32 +39,7 @@ except AttributeError:  # pragma: no cover - very old Python
     pass
 
 ROOT = Path(__file__).resolve().parents[1]
-ACCESS_FILE = ROOT / ".touchlearn_access"
-ACCESS_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
-
-
-def new_code() -> str:
-    return "TL-" + "".join(secrets.choice(ACCESS_ALPHABET) for _ in range(8))
-
-
-def load_access_code(force_new: bool, override: str) -> str:
-    if override.strip():
-        return override.strip()
-    env_code = os.environ.get("TOUCHLEARN_ACCESS_CODE", "").strip()
-    if env_code and not force_new:
-        return env_code
-    if ACCESS_FILE.is_file() and not force_new:
-        code = ACCESS_FILE.read_text(encoding="utf-8").strip()
-        if code:
-            return code
-    code = new_code()
-    ACCESS_FILE.write_text(code + "\n", encoding="utf-8")
-    try:
-        ACCESS_FILE.chmod(0o600)
-    except OSError:
-        pass
-    return code
 
 
 def port_available(host: str, port: int) -> bool:
@@ -93,6 +70,15 @@ def find_cloudflared() -> str | None:
         if candidate.is_file():
             return str(candidate)
     return None
+
+
+def auth_snapshot(base_url: str) -> dict:
+    try:
+        with urllib.request.urlopen(base_url + "/api/health", timeout=3) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return payload.get("auth") or {}
+    except Exception:  # noqa: BLE001 - optional status display
+        return {}
 
 
 def wait_http(url: str, timeout: float = 25.0) -> bool:
@@ -142,8 +128,6 @@ def main() -> int:
     parser.add_argument("--host", default="0.0.0.0", help="监听地址，默认 0.0.0.0（手机同 Wi-Fi 可访问）")
     parser.add_argument("--port", type=int, default=8765, help="本地端口，默认 8765")
     parser.add_argument("--outputs", default="", help="产物目录；默认沿用服务配置")
-    parser.add_argument("--access-code", default="", help="指定访问码；默认复用或生成 .touchlearn_access")
-    parser.add_argument("--new-code", action="store_true", help="重新生成访问码")
     parser.add_argument("--no-tunnel", action="store_true", help="只启动本地/局域网服务，不建立隧道")
     parser.add_argument("--tunnel-timeout", type=float, default=60.0, help="等待公网地址的秒数")
     args = parser.parse_args()
@@ -152,9 +136,7 @@ def main() -> int:
         print(f"端口 {args.port} 已被占用。请先确认是不是触见已经在运行；换端口用 --port。")
         return 2
 
-    access_code = load_access_code(args.new_code, args.access_code)
     env = os.environ.copy()
-    env["TOUCHLEARN_ACCESS_CODE"] = access_code
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
     if args.outputs.strip():
@@ -178,11 +160,18 @@ def main() -> int:
             return 1
 
         print()
+        auth = auth_snapshot(local_url)
+        channels = []
+        if auth.get("phone"):
+            channels.append("手机号")
+        if auth.get("email"):
+            channels.append("邮箱")
         print("触见 TouchLearn 已启动")
         print(f"  本机:   {local_url}")
         print(f"  局域网: {lan_address(args.port)}")
-        print(f"  访问码: {access_code}")
-        print(f"  访问码文件: {ACCESS_FILE}")
+        print(f"  登录:   {' / '.join(channels) if channels else '未配置验证码通道'}")
+        if auth.get("dev_mode"):
+            print("  [警告] 开发模式：验证码直接显示在页面上；公网演示结束前请配置 SMTP 或短信。")
         if not args.no_tunnel:
             cloudflared = find_cloudflared()
             if not cloudflared:
@@ -234,7 +223,7 @@ def main() -> int:
                 "url": public_url,
                 "local_url": local_url,
                 "started_at": datetime.now(timezone.utc).isoformat(),
-                "access_code_file": str(ACCESS_FILE),
+                "auth_dev_mode": bool(auth.get("dev_mode")),
                 "temporary": True,
             }
             out_dir = ROOT / "outputs"
@@ -247,7 +236,6 @@ def main() -> int:
             print("=" * 58)
             print("  公网地址（任何设备可访问）")
             print(f"  {public_url}")
-            print(f"  访问码: {access_code}")
             print("=" * 58)
             print("这是临时隧道：本进程停止、电脑休眠或断网后地址失效。")
             print("正式部署见 docs/deploy.md（Docker / Render）。")

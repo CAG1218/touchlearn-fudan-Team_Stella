@@ -59,9 +59,9 @@ touchlearn 容器（Python HTTP 服务）
 
 - 域名模式下只有 Caddy 暴露 80/443；应用端口 8765 不对外。
 - IP 模式下不启动 Caddy，宿主机 8765 直接映射到应用容器，见下一节。
-- `outputs/` 放在 Docker 命名卷里，重新部署容器不会丢作业。
+- `outputs/` 放在 Docker 命名卷里，重新部署容器不会丢作业，也不会丢账号库。
 - 健康检查走 `/api/health`，Caddy 等应用健康后才启动。
-- 访问码由 `TOUCHLEARN_ACCESS_CODE` 控制；作业产物按不可猜测的 12 位 ID 公开，方便扫码。
+- 分析、生成和账户接口需要登录：手机号或邮箱验证码，首次验证自动注册；至少配置 SMTP 或阿里云短信其中一种。作业产物按不可猜测的 12 位 ID 公开，方便扫码。
 
 ## 三、无域名 IP 模式（可选）
 
@@ -70,10 +70,16 @@ touchlearn 容器（Python HTTP 服务）
 ```dotenv
 DEPLOY_MODE=ip
 TOUCHLEARN_PUBLIC_URL=http://1.2.3.4:8765
-TOUCHLEARN_ACCESS_CODE=TL-换成你自己的强随机码
+TOUCHLEARN_AUTH_DB=/app/outputs/accounts.sqlite3
+TOUCHLEARN_AUTH_DEV_MODE=false
+# 再配 SMTP 或阿里云短信其中一种，否则 deploy.sh 会拒绝启动
+TOUCHLEARN_SMTP_HOST=smtp.exmail.qq.com
+TOUCHLEARN_SMTP_USER=no-reply@example.com
+TOUCHLEARN_SMTP_PASSWORD=邮箱授权码
+TOUCHLEARN_SMTP_FROM=触见 <no-reply@example.com>
 ```
 
-然后 `bash deploy.sh`。脚本会使用 `docker-compose.ip.yml`，安全组只放行 22 和 8765。
+然后 `bash deploy.sh`。脚本会使用 `docker-compose.ip.yml`，安全组只放行 22 和 8765。没有 HTTPS 时短信/邮箱验证码仍在服务端校验，但验证码本身可能被同网络嗅探，公开使用建议尽快切到域名 + HTTPS。
 
 限制：
 
@@ -144,16 +150,34 @@ cp .env.example .env
 DEPLOY_MODE=domain
 SITE_ADDRESS=touch.example.com
 TOUCHLEARN_PUBLIC_URL=https://touch.example.com
-TOUCHLEARN_ACCESS_CODE=TL-换成你自己的强随机码
 ```
+
+再配置账号系统：
+
+```dotenv
+TOUCHLEARN_AUTH_DB=/app/outputs/accounts.sqlite3
+TOUCHLEARN_AUTH_DEV_MODE=false
+TOUCHLEARN_SMTP_HOST=smtp.exmail.qq.com
+TOUCHLEARN_SMTP_PORT=465
+TOUCHLEARN_SMTP_USER=no-reply@example.com
+TOUCHLEARN_SMTP_PASSWORD=邮箱授权码
+TOUCHLEARN_SMTP_FROM=触见 <no-reply@example.com>
+TOUCHLEARN_SMTP_TLS=ssl
+```
+
+只想开放邮箱登录就配 SMTP；想同时开放手机号登录，再加阿里云短信：
+
+```dotenv
+TOUCHLEARN_SMS_PROVIDER=aliyun
+TOUCHLEARN_ALIYUN_SMS_KEY_ID=...
+TOUCHLEARN_ALIYUN_SMS_KEY_SECRET=...
+TOUCHLEARN_ALIYUN_SMS_SIGN_NAME=触见
+TOUCHLEARN_ALIYUN_SMS_TEMPLATE_CODE=SMS_...
+```
+
+两者至少配一种，`deploy.sh` 会检查；都不配或把 `TOUCHLEARN_AUTH_DEV_MODE` 开成 `true` 时脚本拒绝启动。邮箱建议用企业邮箱或开启 SMTP 授权码，个人 QQ/163 邮箱也可以，但要把发件域名加进 SPF，否则容易进垃圾箱。
 
 IP 模式见上一节，`SITE_ADDRESS` 可以保留示例值，不会使用。
-
-生成访问码：
-
-```bash
-python3 -c "import secrets; print('TL-'+secrets.token_hex(4).upper())"
-```
 
 需要图片理解和自由场景生成时，再填 `TOUCHLEARN_LLM_*` / `TOUCHLEARN_VLM_*`。密钥只存在服务器的 `.env` 里，`deploy/.env` 已被 gitignore。
 
@@ -171,7 +195,7 @@ bash deploy.sh
 curl -fsS https://touch.example.com/api/health
 ```
 
-浏览器打开 `https://touch.example.com`，输入访问码，跑一遍“函数图像 → 生成 → 下载 STL”。
+浏览器打开 `https://touch.example.com`，用手机号或邮箱收验证码登录（首次自动注册），再跑一遍“函数图像 → 生成 → 下载 STL”。
 
 证书首次签发通常需要几十秒；如果失败，先确认 DNS 已生效、80/443 没有被占用、云防火墙已放行。
 
@@ -186,7 +210,7 @@ git pull
 bash deploy/deploy.sh          # 重新构建并滚动替换
 ```
 
-`outputs` 在命名卷里，更新不会删除历史作业。数据库没有，迁移成本为零。
+`outputs` 在命名卷里，更新不会删除历史作业，也不会删除 `accounts.sqlite3`。账号库只存用户、身份、会话和验证码摘要，结构变更由服务启动时自动迁移。
 
 ### 备份
 
@@ -194,7 +218,7 @@ bash deploy/deploy.sh          # 重新构建并滚动替换
 bash deploy/backup.sh
 ```
 
-产物在 `deploy/backups/touchlearn-outputs-<时间>.tar.gz`，脚本默认清理 14 天前的归档。建议再用 `scp` 拉到另一台机器或对象存储——**同机备份不算备份**。
+产物和账号库都在 `deploy/backups/touchlearn-outputs-<时间>.tar.gz` 里（`accounts.sqlite3` 位于卷根目录），脚本默认清理 14 天前的归档。建议再用 `scp` 拉到另一台机器或对象存储——**同机备份不算备份**。恢复前先停容器，避免复制到正在写入的 SQLite 文件。
 
 恢复：
 
@@ -230,13 +254,15 @@ docker compose --env-file .env down -v       # 连卷一起删，慎用
 
 ## 六、安全清单
 
-- [ ] `TOUCHLEARN_ACCESS_CODE` 是强随机值，不是 `TL-XXXXXXXX`。
+- [ ] 至少配置了 SMTP 或阿里云短信其中一种，`TOUCHLEARN_AUTH_DEV_MODE=false`。
+- [ ] 给自己发一次验证码，确认能收到、能登录；验证码不要出现在页面上。
+- [ ] `TOUCHLEARN_AUTH_DB` 位于持久卷（默认 `/app/outputs/accounts.sqlite3`）。
 - [ ] 域名模式安全组只开放 22、80、443；IP 模式只开放 22、8765。
 - [ ] SSH 使用密钥登录，禁用密码登录（`/etc/ssh/sshd_config` 中 `PasswordAuthentication no`）。
 - [ ] 定期 `apt upgrade`，Docker 镜像随代码更新重建。
 - [ ] `.env` 权限设为 `chmod 600`，不提交、不截图、不发群。
 - [ ] 备份文件不放在 Web 可访问目录。
-- [ ] 公开实例建议在 Caddy 或云 WAF 层再加请求频率限制；当前应用只做访问码和上传大小限制。
+- [ ] 公开实例建议在 Caddy 或云 WAF 层再加请求频率限制；应用自身已有验证码限流（同一标识 8 次/小时、同一 IP 40 次/小时）和上传大小限制。
 - [ ] 作业产物链接是“不可猜测”而不是“有权限”，不要上传敏感教材或个人信息。
 
 ## 七、排障
@@ -267,7 +293,7 @@ docker compose --env-file .env ps
 docker compose --env-file .env logs --tail=200 touchlearn
 ```
 
-常见原因是 `.env` 缺 `TOUCHLEARN_ACCESS_CODE`、磁盘满、或镜像构建失败。
+常见原因是 `.env` 没配验证码通道、`TOUCHLEARN_AUTH_DB` 所在目录不可写、磁盘满、或镜像构建失败。看 `docker compose logs --tail=200 touchlearn` 里的具体报错。
 
 ### 二维码指向内网地址
 
@@ -290,7 +316,7 @@ docker system df
 
 - [ ] `https://你的域名/api/health` 返回 `ok: true`；IP 模式为 `http://IP:8765/api/health`；
 - [ ] 浏览器地址栏是锁标识，证书由 Let's Encrypt 签发；IP 模式会提示“不安全”，属于预期；
-- [ ] 输入访问码后能完成一次函数图像构建；
+- [ ] 用手机号或邮箱验证码登录后能完成一次函数图像构建；
 - [ ] 作业页“制造证据”卡片显示 STL SHA-256 和合规判定；
 - [ ] 点“校验产物完整性”返回全部一致；
 - [ ] 扫码能打开音频页；

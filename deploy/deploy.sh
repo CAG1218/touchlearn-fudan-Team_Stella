@@ -11,7 +11,7 @@ fi
 
 if [ ! -f .env ]; then
   cp .env.example .env
-  echo "已生成 deploy/.env，请填写 DEPLOY_MODE、TOUCHLEARN_PUBLIC_URL 和访问码后重跑。" >&2
+  echo "已生成 deploy/.env，请填写 DEPLOY_MODE、TOUCHLEARN_PUBLIC_URL 和验证码通道后重跑。" >&2
   exit 1
 fi
 
@@ -35,8 +35,27 @@ if [ "$mode" = "domain" ] && grep -q "touch.example.com" .env; then
   exit 1
 fi
 
-if grep -q "TL-XXXXXXXX" .env; then
-  echo "deploy/.env 里还是示例访问码，请生成一个新的。" >&2
+if grep -qE '^TOUCHLEARN_AUTH_DEV_MODE=(1|true|yes|on)$' .env; then
+  echo "生产环境不能开启 TOUCHLEARN_AUTH_DEV_MODE，请改为 false。" >&2
+  exit 1
+fi
+
+email_ready=0
+if grep -qE '^TOUCHLEARN_SMTP_HOST=.+' .env \
+  && grep -qE '^TOUCHLEARN_SMTP_(FROM|USER)=.+' .env \
+  && grep -qE '^TOUCHLEARN_SMTP_PASSWORD=.+' .env; then
+  email_ready=1
+fi
+sms_ready=0
+if grep -qE '^TOUCHLEARN_SMS_PROVIDER=aliyun' .env \
+  && grep -qE '^TOUCHLEARN_ALIYUN_SMS_KEY_ID=.+' .env \
+  && grep -qE '^TOUCHLEARN_ALIYUN_SMS_KEY_SECRET=.+' .env \
+  && grep -qE '^TOUCHLEARN_ALIYUN_SMS_SIGN_NAME=.+' .env \
+  && grep -qE '^TOUCHLEARN_ALIYUN_SMS_TEMPLATE_CODE=.+' .env; then
+  sms_ready=1
+fi
+if [ "$email_ready" = "0" ] && [ "$sms_ready" = "0" ]; then
+  echo "至少配置一种验证码通道（SMTP 邮件或阿里云短信），否则用户无法登录。" >&2
   exit 1
 fi
 

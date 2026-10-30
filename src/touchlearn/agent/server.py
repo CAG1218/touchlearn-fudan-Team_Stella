@@ -11,14 +11,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import hmac
 import io
 import json
 import mimetypes
 import os
 import socket
 import threading
-import time
 import uuid
 import webbrowser
 import zipfile
@@ -29,9 +27,16 @@ from typing import Any
 from urllib.parse import quote, unquote, urlparse, urlsplit
 
 from . import __version__
+from .accounts import (
+    LEGACY_ACCESS_COOKIE,
+    SESSION_COOKIE,
+    AccountStore,
+    AuthError,
+    AuthSettings,
+)
 from .agent import TouchLearnAgent
 from .audio import available_voices
-from .llm import llm_status, providers_payload
+from .llm import llm_status, load_env, providers_payload
 from .scene import scene_templates, template_preview
 from .scene_svg import scene_to_svg
 from .vision import vision_status
@@ -83,42 +88,24 @@ class AppState:
         self,
         output_root: Path,
         public_base_url: str = "",
-        access_code: str = "",
+        auth: AccountStore | None = None,
         icp: str = "",
     ) -> None:
         self.agent = TouchLearnAgent(output_root=output_root)
         self.public_base_url = public_base_url.rstrip("/")
         self.output_root = output_root
-        self.access_code = access_code.strip()
+        self.auth = auth
         self.icp = icp.strip()
-        self.access_token = (
-            hashlib.sha256(f"touchlearn-access:{self.access_code}".encode("utf-8")).hexdigest()
-            if self.access_code
-            else ""
-        )
-        self._login_failures: dict[str, list[float]] = {}
-        self._login_lock = threading.Lock()
         self._voices: list[str] | None = None
 
     @property
     def auth_required(self) -> bool:
-        return bool(self.access_code)
+        return self.auth is not None
 
     def voices(self) -> list[str]:
         if self._voices is None:
             self._voices = available_voices()
         return self._voices
-
-    def login_allowed(self, ip: str) -> bool:
-        now = time.time()
-        with self._login_lock:
-            attempts = [stamp for stamp in self._login_failures.get(ip, []) if now - stamp < 300]
-            self._login_failures[ip] = attempts
-            return len(attempts) < 10
-
-    def note_login_failure(self, ip: str) -> None:
-        with self._login_lock:
-            self._login_failures.setdefault(ip, []).append(time.time())
 
     def prepare_job(self, draft_id: str) -> str:
         job_id = uuid.uuid4().hex[:12]
@@ -138,7 +125,12 @@ class Handler(BaseHTTPRequestHandler):
     def state(self) -> AppState:
         return self.server.state  # type: ignore[attr-defined]
 
-    def _send_json(self, payload: dict[str, Any], status: int = 200, headers: dict[str, str] | None = None) -> None:
+    def _send_json(
+        self,
+        payload: dict[str, Any],
+        status: int = 200,
+        headers: dict[str, str] | list[tuple[str, str]] | None = None,
+    ) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -147,7 +139,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
-        for key, value in (headers or {}).items():
+        items = headers.items() if isinstance(headers, dict) else (headers or [])
+        for key, value in items:
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
@@ -216,24 +209,47 @@ class Handler(BaseHTTPRequestHandler):
                 result[key.strip()] = value.strip()
         return result
 
+    def _session_token(self) -> str:
+        return self._cookies().get(SESSION_COOKIE, "")
+
+    def _current_user(self) -> dict[str, Any] | None:
+        if self.state.auth is None:
+            return None
+        return self.state.auth.user_for_token(self._session_token())
+
     def _is_authorized(self) -> bool:
-        if not self.state.auth_required:
+        if self.state.auth is None:
             return True
-        token = self._cookies().get("touchlearn_access", "")
-        return bool(token) and hmac.compare_digest(token, self.state.access_token)
+        return self._current_user() is not None
 
     def _require_auth(self) -> bool:
         if self._is_authorized():
             return True
-        self._send_error_json(HTTPStatus.UNAUTHORIZED, "需要访问码。请输入部署者提供的访问码。")
+        self._send_error_json(HTTPStatus.UNAUTHORIZED, "请先登录。")
         return False
 
-    def _access_cookie_header(self) -> str:
+    def _require_user(self) -> dict[str, Any] | None:
+        user = self._current_user()
+        if user is None:
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, "请先登录。")
+        return user
+
+    def _session_cookie(self, token: str, max_age: int) -> str:
         secure = "; Secure" if self._request_proto() == "https" else ""
         return (
-            f"touchlearn_access={self.state.access_token}; Path=/; HttpOnly; "
-            f"SameSite=Lax; Max-Age=2592000{secure}"
+            f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; "
+            f"SameSite=Lax; Max-Age={max_age}{secure}"
         )
+
+    @staticmethod
+    def _clear_cookie(name: str) -> str:
+        return f"{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+    def _auth_failure(self, error: AuthError) -> None:
+        payload: dict[str, Any] = {"error": error.message, "code": error.code}
+        if error.retry_after is not None:
+            payload["retry_after"] = error.retry_after
+        self._send_json(payload, status=error.status)
 
     def _client_ip(self) -> str:
         forwarded = self.headers.get("CF-Connecting-IP") or self.headers.get("X-Forwarded-For") or ""
@@ -292,16 +308,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(target)
             return
         if path == "/api/health":
-            authorized = self._is_authorized()
-            locked = {"configured": False, "mode": "locked", "message": "需要访问码"}
+            user = self._current_user() if self.state.auth is not None else None
+            authorized = self.state.auth is None or user is not None
+            locked = {"configured": False, "mode": "locked", "message": "登录后可查看"}
+            auth_config = (
+                self.state.auth.public_config()
+                if self.state.auth is not None
+                else {"phone": False, "email": False, "dev_mode": False, "code_ttl": 600, "resend_after": 60, "session_days": 30}
+            )
             self._send_json(
                 {
                     "ok": True,
                     "version": __version__,
                     "public_base_url": self.state.public_base_url or self._request_base_url(),
                     "lan_ip": detect_lan_ip(),
-                    "access_required": self.state.auth_required,
+                    "auth_required": self.state.auth_required,
                     "authenticated": authorized,
+                    "user": user,
+                    "auth": auth_config,
                     "icp": self.state.icp,
                     "voices": self.state.voices() if authorized else [],
                     "vision": vision_status() if authorized else locked,
@@ -309,6 +333,16 @@ class Handler(BaseHTTPRequestHandler):
                     "limits": {"file_mb": 30, "total_mb": 80},
                 }
             )
+            return
+        if path == "/api/auth/me":
+            user = self._current_user()
+            if user is None:
+                self._send_json(
+                    {"ok": False, "authenticated": False, "error": "未登录", "auth": self.state.auth.public_config() if self.state.auth else None},
+                    status=HTTPStatus.UNAUTHORIZED,
+                )
+                return
+            self._send_json({"ok": True, "authenticated": True, "user": user})
             return
         if path in {"/api/providers", "/api/scene-templates", "/api/examples"}:
             if not self._require_auth():
@@ -346,8 +380,8 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path.startswith("/api/templates/") and path.endswith("/thumbnail.svg"):
-            if not self._require_auth():
-                return
+            # Welcome-card artwork: public and cacheable so it still renders on
+            # the login screen, before a session exists.
             template_id = path[len("/api/templates/") : -len("/thumbnail.svg")].strip("/")
             preview = template_preview(template_id)
             if preview is None or not isinstance(preview.get("scene"), dict):
@@ -542,34 +576,187 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_file(target)
 
-    def _handle_login(self) -> None:
+    def _auth_json(self, action) -> None:  # type: ignore[no-untyped-def]
+        try:
+            payload = action()
+        except AuthError as error:
+            self._auth_failure(error)
+            return
+        except Exception as error:  # pragma: no cover - defensive
+            print(f"[auth] {type(error).__name__}: {error}")
+            self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, "账号服务暂时不可用，请稍后重试。")
+            return
+        self._send_json(payload)
+
+    def _read_auth_identity(self) -> tuple[str, str] | None:
+        payload = self._read_json()
+        if payload is None:
+            return None
+        return str(payload.get("kind") or "").strip(), str(payload.get("value") or "").strip()
+
+    def _handle_auth_request_code(self) -> None:
+        if self.state.auth is None:
+            self._send_error_json(HTTPStatus.NOT_FOUND, "账号服务未启用。")
+            return
         payload = self._read_json()
         if payload is None:
             return
-        code = str(payload.get("code") or "")
+        kind = str(payload.get("kind") or "").strip()
+        value = str(payload.get("value") or "").strip()
+        purpose = str(payload.get("purpose") or "login").strip()
         ip = self._client_ip()
-        if not self.state.login_allowed(ip):
-            self._send_error_json(HTTPStatus.TOO_MANY_REQUESTS, "尝试次数过多，请 5 分钟后再试。")
+        auth = self.state.auth
+        if purpose == "link":
+            user = self._require_user()
+            if user is None:
+                return
+            self._auth_json(lambda: auth.request_link_code(user["id"], kind, value, ip=ip))
             return
-        if not self.state.auth_required or hmac.compare_digest(code, self.state.access_code):
-            self._send_json(
-                {"ok": True, "access_required": self.state.auth_required},
-                headers={"Set-Cookie": self._access_cookie_header()},
+        self._auth_json(lambda: auth.request_code(kind, value, ip=ip))
+
+    def _handle_auth_login(self) -> None:
+        if self.state.auth is None:
+            self._send_error_json(HTTPStatus.NOT_FOUND, "账号服务未启用。")
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        kind = str(payload.get("kind") or "").strip()
+        value = str(payload.get("value") or "").strip()
+        code = str(payload.get("code") or "").strip()
+        auth = self.state.auth
+        try:
+            result = auth.login(
+                kind,
+                value,
+                code,
+                ip=self._client_ip(),
+                user_agent=self.headers.get("User-Agent") or "",
             )
+        except AuthError as error:
+            self._auth_failure(error)
             return
-        self.state.note_login_failure(ip)
-        self._send_error_json(HTTPStatus.UNAUTHORIZED, "访问码不正确。")
+        except Exception as error:  # pragma: no cover - defensive
+            print(f"[auth] login failed: {type(error).__name__}: {error}")
+            self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, "登录失败，请稍后重试。")
+            return
+        max_age = auth.settings.session_ttl
+        self._send_json(
+            {"ok": True, "user": result["user"], "expires_at": result["expires_at"]},
+            headers=[
+                ("Set-Cookie", self._session_cookie(result["token"], max_age)),
+                ("Set-Cookie", self._clear_cookie(LEGACY_ACCESS_COOKIE)),
+            ],
+        )
+
+    def _handle_auth_logout(self) -> None:
+        if self.state.auth is not None:
+            try:
+                self.state.auth.logout(self._session_token())
+            except Exception as error:  # pragma: no cover - defensive
+                print(f"[auth] logout failed: {error}")
+        self._send_json(
+            {"ok": True, "authenticated": False},
+            headers=[
+                ("Set-Cookie", self._clear_cookie(SESSION_COOKIE)),
+                ("Set-Cookie", self._clear_cookie(LEGACY_ACCESS_COOKIE)),
+            ],
+        )
+
+    def _handle_auth_link_code(self) -> None:
+        if self.state.auth is None:
+            self._send_error_json(HTTPStatus.NOT_FOUND, "账号服务未启用。")
+            return
+        user = self._require_user()
+        if user is None:
+            return
+        identity = self._read_auth_identity()
+        if identity is None:
+            return
+        kind, value = identity
+        ip = self._client_ip()
+        auth = self.state.auth
+        self._auth_json(lambda: auth.request_link_code(user["id"], kind, value, ip=ip))
+
+    def _handle_auth_link(self) -> None:
+        if self.state.auth is None:
+            self._send_error_json(HTTPStatus.NOT_FOUND, "账号服务未启用。")
+            return
+        user = self._require_user()
+        if user is None:
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        kind = str(payload.get("kind") or "").strip()
+        value = str(payload.get("value") or "").strip()
+        code = str(payload.get("code") or "").strip()
+        auth = self.state.auth
+        self._auth_json(
+            lambda: {"ok": True, "user": auth.link_identity(user["id"], kind, value, code)}
+        )
+
+    def _handle_auth_unlink(self) -> None:
+        if self.state.auth is None:
+            self._send_error_json(HTTPStatus.NOT_FOUND, "账号服务未启用。")
+            return
+        user = self._require_user()
+        if user is None:
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        try:
+            identity_id = int(payload.get("identity_id"))
+        except (TypeError, ValueError):
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "缺少绑定关系编号。")
+            return
+        auth = self.state.auth
+        self._auth_json(lambda: {"ok": True, "user": auth.unlink_identity(user["id"], identity_id)})
+
+    def _handle_auth_profile(self) -> None:
+        if self.state.auth is None:
+            self._send_error_json(HTTPStatus.NOT_FOUND, "账号服务未启用。")
+            return
+        user = self._require_user()
+        if user is None:
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        display_name = str(payload.get("display_name") or "")
+        auth = self.state.auth
+        self._auth_json(lambda: {"ok": True, "user": auth.update_profile(user["id"], display_name)})
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path == "/api/login":
-            self._handle_login()
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin:
+            origin_host = urlsplit(origin).netloc.lower()
+            host = (self.headers.get("Host") or "").lower()
+            if origin_host and origin_host != host:
+                self._send_error_json(HTTPStatus.FORBIDDEN, "跨站请求被拒绝。")
+                return
+        if path == "/api/auth/request-code":
+            self._handle_auth_request_code()
             return
-        if path == "/api/logout":
-            self._send_json(
-                {"ok": True},
-                headers={"Set-Cookie": "touchlearn_access=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"},
-            )
+        if path == "/api/auth/login":
+            self._handle_auth_login()
+            return
+        if path == "/api/auth/logout":
+            self._handle_auth_logout()
+            return
+        if path == "/api/auth/link-code":
+            self._handle_auth_link_code()
+            return
+        if path == "/api/auth/link":
+            self._handle_auth_link()
+            return
+        if path == "/api/auth/unlink":
+            self._handle_auth_unlink()
+            return
+        if path == "/api/auth/profile":
+            self._handle_auth_profile()
             return
         if not self._require_auth():
             return
@@ -709,9 +896,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="固定公网地址；默认按请求 Host/X-Forwarded-* 自动推导",
     )
     parser.add_argument(
-        "--access-code",
-        default=os.environ.get("TOUCHLEARN_ACCESS_CODE", ""),
-        help="可选访问码；设置后分析、生成和作业查询需要登录",
+        "--auth-db",
+        default=os.environ.get("TOUCHLEARN_AUTH_DB", ""),
+        help="账号数据库路径；默认 <产物目录>/accounts.sqlite3",
+    )
+    parser.add_argument(
+        "--auth-dev-mode",
+        action="store_true",
+        help="开发模式：验证码直接显示在页面上，仅限本机测试",
     )
     parser.add_argument(
         "--icp",
@@ -723,15 +915,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Pick up a local .env before reading CLI defaults, auth channels and
+    # deployment settings; llm.load_env never overrides real environment vars.
+    load_env()
     args = build_parser().parse_args(argv)
     output_root = Path(args.outputs).expanduser()
     port = int(args.port)
     public_base_url = args.public_url.rstrip("/") if args.public_url else ""
-    access_code = args.access_code.strip()
+    auth_db = Path(args.auth_db).expanduser() if args.auth_db else output_root / "accounts.sqlite3"
+    settings = AuthSettings.from_env(auth_db, dev_mode=True if args.auth_dev_mode else None)
+    if settings.dev_mode is None:
+        # Without a delivery channel nobody could ever sign in, so fall back to
+        # the console code and make the trade-off loud and explicit.
+        settings.dev_mode = not (settings.email_ready or settings.phone_ready)
+    auth = AccountStore(settings)
     state = AppState(
         output_root=output_root,
         public_base_url=public_base_url,
-        access_code=access_code,
+        auth=auth,
         icp=args.icp.strip(),
     )
     server = Server((args.host, port), state)
@@ -742,10 +943,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  局域网:   {lan_url}")
     if public_base_url:
         print(f"  公网地址: {public_base_url}")
-    if access_code:
-        print(f"  访问码:   {access_code}")
-    else:
-        print("  访问码:   未设置（公网暴露时请设置 TOUCHLEARN_ACCESS_CODE）")
+    print(f"  账号库:   {auth_db.resolve()}")
+    methods = auth.methods()
+    channels = []
+    if methods.get("phone"):
+        channels.append("手机号")
+    if methods.get("email"):
+        channels.append("邮箱")
+    print(f"  登录方式: {' / '.join(channels) or '未配置'}")
+    if auth.dev_mode:
+        print("  验证码:   开发模式，验证码直接显示在登录页（仅限测试）")
+        print("  [警告] 公网部署请配置 SMTP 或阿里云短信，并关闭 TOUCHLEARN_AUTH_DEV_MODE。")
     print(f"  产物目录: {output_root.resolve()}")
     print("  按 Ctrl+C 停止服务。")
     if not args.no_browser:

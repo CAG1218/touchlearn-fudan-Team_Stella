@@ -38,6 +38,10 @@
     <symbol id="icon-server" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7h.01M8 17h.01"/></symbol>
     <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
     <symbol id="icon-back" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+    <symbol id="icon-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M5.2 20a6.8 6.8 0 0 1 13.6 0"/></symbol>
+    <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6 8.5-6"/></symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5.5c0 4.4 2.9 8 7 9.5 4.1-1.5 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+    <symbol id="icon-link" viewBox="0 0 24 24"><path d="M10 13.5a3.5 3.5 0 0 0 5 0l3-3a3.5 3.5 0 0 0-5-5l-1.5 1.5"/><path d="M14 10.5a3.5 3.5 0 0 0-5 0l-3 3a3.5 3.5 0 0 0 5 5l1.5-1.5"/></symbol>
   </svg>
 
   <div class="app-shell">
@@ -54,6 +58,9 @@
           <span class="status-dot" id="statusDot"></span>
           <span id="statusText">连接中</span>
         </span>
+        <button class="avatar-btn" id="accountBtn" type="button" title="账户中心" aria-label="账户中心">
+          <svg class="icon"><use href="#icon-user"/></svg>
+        </button>
         <button class="icon-btn" id="settingsBtn" type="button" title="设置" aria-label="设置">
           <svg class="icon"><use href="#icon-settings"/></svg>
         </button>
@@ -154,17 +161,49 @@
   <div class="login-overlay hidden" id="loginOverlay">
     <div class="login-card">
       <div class="welcome-mark small" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-      <p class="welcome-eyebrow">受保护的触见实例</p>
-      <h2>输入访问码</h2>
-      <p class="login-copy">分析、生成和作业查询需要访问码。已经生成好的触觉产物链接可以直接打开。</p>
-      <form id="loginForm" class="login-form">
-        <input id="accessCode" type="password" autocomplete="current-password" inputmode="text" placeholder="访问码" aria-label="访问码">
-        <button class="btn primary block" id="loginBtn" type="submit">进入工作台</button>
+      <p class="welcome-eyebrow">触见账号</p>
+      <h2>登录或创建账号</h2>
+      <p class="login-copy">用手机号或邮箱接收验证码。第一次验证通过会自动创建账号，之后手机号和邮箱都可以登录同一个账号。</p>
+
+      <div class="login-tabs" role="tablist" aria-label="选择登录方式">
+        <button class="login-tab is-active" type="button" role="tab" aria-selected="true" data-auth-tab="phone">手机号</button>
+        <button class="login-tab" type="button" role="tab" aria-selected="false" data-auth-tab="email">邮箱</button>
+      </div>
+
+      <form id="loginForm" class="login-form" novalidate>
+        <label class="auth-field" id="loginPhoneField">
+          <span class="auth-prefix">+86</span>
+          <input id="loginPhone" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="16" placeholder="请输入手机号" aria-label="手机号">
+        </label>
+        <label class="auth-field hidden" id="loginEmailField">
+          <span class="auth-prefix auth-prefix-mail">@</span>
+          <input id="loginEmail" type="email" autocomplete="email" maxlength="254" placeholder="请输入邮箱地址" aria-label="邮箱地址">
+        </label>
+        <div class="auth-code-row">
+          <input id="loginCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位验证码" aria-label="验证码">
+          <button class="btn sm ghost auth-code-btn" id="loginSendCode" type="button">获取验证码</button>
+        </div>
+        <button class="btn primary block" id="loginBtn" type="submit">登录 / 注册</button>
       </form>
+
       <p class="login-error hidden" id="loginError"></p>
-      <p class="login-note">访问码由部署者在环境变量 <code>TOUCHLEARN_ACCESS_CODE</code> 中设置。</p>
+      <div class="login-dev hidden" id="loginDev"></div>
+      <p class="login-note" id="loginHint">未注册的手机号或邮箱，验证通过后会自动创建账号。</p>
+      <p class="login-note">遇到问题请联系部署者。登录状态会保留 30 天，可在账户中心退出。</p>
       <p class="login-note login-icp hidden" id="loginIcp"></p>
     </div>
+  </div>
+
+  <div class="sheet-backdrop hidden" id="accountSheet">
+    <section class="sheet account-sheet" role="dialog" aria-modal="true" aria-labelledby="accountTitle">
+      <div class="sheet-head">
+        <h2 id="accountTitle">账户中心</h2>
+        <button class="icon-btn" type="button" data-close-sheet aria-label="关闭">
+          <svg class="icon"><use href="#icon-close"/></svg>
+        </button>
+      </div>
+      <div class="sheet-body" id="accountBody"></div>
+    </section>
   </div>
 
   <div class="sheet-backdrop hidden" id="settingsSheet">

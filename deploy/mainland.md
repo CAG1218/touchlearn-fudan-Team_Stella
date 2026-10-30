@@ -27,7 +27,13 @@
 ```dotenv
 DEPLOY_MODE=ip
 TOUCHLEARN_PUBLIC_URL=http://服务器公网IP:8765
-TOUCHLEARN_ACCESS_CODE=TL-换成强随机码
+TOUCHLEARN_AUTH_DB=/app/outputs/accounts.sqlite3
+TOUCHLEARN_AUTH_DEV_MODE=false
+# 至少配 SMTP 或阿里云短信其中一种
+TOUCHLEARN_SMTP_HOST=smtp.exmail.qq.com
+TOUCHLEARN_SMTP_USER=no-reply@example.com
+TOUCHLEARN_SMTP_PASSWORD=邮箱授权码
+TOUCHLEARN_SMTP_FROM=触见 <no-reply@example.com>
 ```
 
 ```bash
@@ -35,7 +41,7 @@ cd deploy
 bash deploy.sh
 ```
 
-安全组只放行 22 和 8765。访问 `http://服务器公网IP:8765`，输入访问码即可。
+安全组只放行 22 和 8765。访问 `http://服务器公网IP:8765`，用手机号或邮箱验证码登录（首次自动注册）。
 
 这条路的代价：
 
@@ -124,12 +130,12 @@ git clone https://github.com/CAG1218/touchlearn-fudan-Team_Stella.git
 cd touchlearn-fudan-Team_Stella
 docker build -t touchlearn:0.2.0 .
 docker run -d --name touchlearn-test -p 8765:8765 \
-  -e TOUCHLEARN_ACCESS_CODE=TL-临时测试码 \
+  -e TOUCHLEARN_AUTH_DEV_MODE=true \
   -v touchlearn-outputs:/app/outputs \
   touchlearn:0.2.0
 ```
 
-浏览器打开 `http://服务器IP:8765`，用手机蜂窝网络也试一次。确认能上传、能生成、能下载 STL。
+浏览器打开 `http://服务器IP:8765`，用手机蜂窝网络也试一次。开发模式会把验证码直接显示在页面上，只用于自己验证；确认能收到、能登录、能上传、能生成、能下载 STL 后，正式部署必须切回真实 SMTP/短信通道。
 
 > 这一步只是你自己验证。备案通过前不要把域名对外宣传或提供公开服务；正式上线走域名 + 443，并在备案通过后关闭 8765。如果你决定不备案、长期用 IP 模式，跳过第 4、5 步，按第 6 步的 IP 配置部署即可，但上面列出的代价需要接受。
 
@@ -170,8 +176,21 @@ cp .env.example .env
 ```dotenv
 SITE_ADDRESS=touch.你的域名.com
 TOUCHLEARN_PUBLIC_URL=https://touch.你的域名.com
-TOUCHLEARN_ACCESS_CODE=TL-换成强随机码
 TOUCHLEARN_ICP_BEIAN=沪ICP备XXXXXXXX号-X
+TOUCHLEARN_AUTH_DB=/app/outputs/accounts.sqlite3
+TOUCHLEARN_AUTH_DEV_MODE=false
+TOUCHLEARN_SMTP_HOST=smtp.exmail.qq.com
+TOUCHLEARN_SMTP_PORT=465
+TOUCHLEARN_SMTP_USER=no-reply@example.com
+TOUCHLEARN_SMTP_PASSWORD=邮箱授权码
+TOUCHLEARN_SMTP_FROM=触见 <no-reply@example.com>
+TOUCHLEARN_SMTP_TLS=ssl
+# 需要手机号登录再加阿里云短信；只开放邮箱登录可以不加
+# TOUCHLEARN_SMS_PROVIDER=aliyun
+# TOUCHLEARN_ALIYUN_SMS_KEY_ID=...
+# TOUCHLEARN_ALIYUN_SMS_KEY_SECRET=...
+# TOUCHLEARN_ALIYUN_SMS_SIGN_NAME=触见
+# TOUCHLEARN_ALIYUN_SMS_TEMPLATE_CODE=SMS_...
 ```
 
 启动：
@@ -187,7 +206,12 @@ Caddy 会自动申请 Let's Encrypt 证书。首次签发需要 80 端口可从�
 ```dotenv
 DEPLOY_MODE=ip
 TOUCHLEARN_PUBLIC_URL=http://服务器公网IP:8765
-TOUCHLEARN_ACCESS_CODE=TL-换成强随机码
+TOUCHLEARN_AUTH_DB=/app/outputs/accounts.sqlite3
+TOUCHLEARN_AUTH_DEV_MODE=false
+TOUCHLEARN_SMTP_HOST=smtp.exmail.qq.com
+TOUCHLEARN_SMTP_USER=no-reply@example.com
+TOUCHLEARN_SMTP_PASSWORD=邮箱授权码
+TOUCHLEARN_SMTP_FROM=触见 <no-reply@example.com>
 # TOUCHLEARN_HOST_PORT=8765
 ```
 
@@ -205,11 +229,11 @@ curl -fsS http://服务器公网IP:8765/api/health
 然后：
 
 1. 浏览器打开域名，确认锁标识和证书；
-2. 输入访问码，完整跑一次函数或电路生成；
-3. 用手机移动网络（关闭 Wi-Fi）再跑一次；
+2. 用手机号或邮箱收验证码登录，完整跑一次函数或电路生成；
+3. 用手机移动网络（关闭 Wi-Fi）再跑一次，确认收码和登录正常；
 4. 扫码打开音频页；
 5. 在作业页点“校验产物完整性”；
-6. 确认设置页显示 ICP 备案号；
+6. 确认设置页显示 ICP 备案号和当前登录账号；
 7. 关闭安全组的 8765 端口。
 
 ## 四、代码侧已经准备好的东西
@@ -281,17 +305,17 @@ TOUCHLEARN_VLM_MODEL=qwen-vl-max
 
 如果 ACME 长期不可用，可在云厂商申请免费 SSL 证书，把证书挂进 Caddy 容器，改用 Caddyfile 的 `tls /etc/caddy/cert.pem /etc/caddy/key.pem`。这条路需要手动续期，能走自动签发就不要选。
 
-### 5. 访问码与公开访问
+### 5. 登录与公开访问
 
-当前默认用 `TOUCHLEARN_ACCESS_CODE` 保护分析和生成接口，适合比赛演示，防止陌生人消耗你的模型额度。
+访问控制和账号绑定在一起：分析和生成接口需要登录，登录方式是手机号或邮箱验证码，首次验证自动注册。每个手机号/邮箱全局唯一对应一个账号，登录后可以把另一种联系方式绑定到同一账号，之后两者都能登录。
 
-如果要真正“任何用户直接打开”，需要同时做三件事，否则不要去掉访问码：
+公开实例必须做三件事，否则被刷时消耗的是你的 API Key 和磁盘：
 
-1. 在云 WAF 或带限流插件的 Caddy 上做 IP 限流；
-2. 给作业产物设置保留期，定期清理旧作业；
-3. 监控磁盘和模型账单，设置预算告警。
+1. 至少配置一种真实验证码通道（SMTP 或阿里云短信），关闭 `TOUCHLEARN_AUTH_DEV_MODE`；
+2. 在云 WAF 或带限流插件的 Caddy 上再做一层 IP 限流；应用自身已有验证码限流（同一标识 8 次/小时、同一 IP 40 次/小时）和 5 次尝试上限；
+3. 给作业产物设置保留期，定期清理旧作业，监控磁盘和模型账单并设置预算告警。
 
-去掉访问码只需把 `TOUCHLEARN_ACCESS_CODE` 留空；但公开实例被刷接口时，消耗的是你的 API Key 和磁盘。
+不要把 `TOUCHLEARN_AUTH_DEV_MODE=true` 留在公网实例上——那会把验证码直接显示在页面上，任何人输入任意手机号/邮箱都能登录。
 
 ### 6. 作业产物会一直增长
 
@@ -330,7 +354,7 @@ Caddy 访问日志在 `touchlearn-caddy-data` 卷的 `/data/access.log`，已按
 | LLM / VLM API | 几元到几十元/月 | 按用量 |
 | 合计 | 约 200–700 元 | 约 200–700 元 + API |
 
-比赛演示阶段，模型调用通常每月几元到几十元。真正花钱的是公开后被刷，所以访问码、限流和预算告警要一起上。
+比赛演示阶段，模型调用通常每月几元到几十元。真正花钱的是公开后被刷，所以真实验证码通道、登录限流和预算告警要一起上。
 
 ## 七、上线验收清单
 
@@ -338,6 +362,10 @@ Caddy 访问日志在 `touchlearn-caddy-data` 卷的 `/data/access.log`，已按
 - [ ] ICP 备案通过，备案号展示在登录页和设置页，并链接工信部；
 - [ ] 公安备案已提交或已完成；
 - [ ] `https://域名/api/health` 返回 `ok: true`；
+- [ ] 手机号或邮箱能收到验证码，首次登录自动注册，第二次登录进入同一账号；
+- [ ] 手机号和邮箱可以绑定到同一账号，两者都能登录；
+- [ ] `TOUCHLEARN_AUTH_DEV_MODE=false`，页面上不显示验证码；
+- [ ] 账号库位于持久卷，重启容器后账号仍能登录；
 - [ ] 证书由可信 CA 签发，浏览器无警告；
 - [ ] 手机移动网络、Wi-Fi、电脑浏览器都能打开；
 - [ ] 上传图片、生成、下载 STL、扫码音频全流程通过；

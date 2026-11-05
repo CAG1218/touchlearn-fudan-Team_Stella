@@ -112,7 +112,6 @@ def interpret_image(
         _prompt(subject, hint),
         images=[path],
         kind="vision",
-        max_tokens=2400,
         model=model,
         effort=effort,
     )
@@ -125,7 +124,6 @@ def interpret_image(
             _prompt(subject, hint),
             images=[path],
             kind="vision",
-            max_tokens=2400,
             model=model,
             effort="off",
         )

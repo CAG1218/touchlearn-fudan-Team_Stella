@@ -181,6 +181,20 @@ IP 模式见上一节，`SITE_ADDRESS` 可以保留示例值，不会使用。
 
 需要图片理解和自由场景生成时，再填 `TOUCHLEARN_LLM_*` / `TOUCHLEARN_VLM_*`。密钥只存在服务器的 `.env` 里，`deploy/.env` 已被 gitignore。
 
+需要“照片级3D重建”时，推荐直接复用腾讯云 TokenHub 的 Key：
+
+```dotenv
+TOUCHLEARN_3D_PROVIDER=tokenhub
+# 留空时复用 TOUCHLEARN_LLM_KEY
+TOUCHLEARN_3D_KEY=
+TOUCHLEARN_3D_MODEL=hy-3d-3.1
+TOUCHLEARN_3D_FACES=300000
+TOUCHLEARN_3D_TIMEOUT=600
+TOUCHLEARN_3D_POLL=4
+```
+
+也可以改用 `TOUCHLEARN_3D_PROVIDER=tripo` 或 `meshy`，再填对应服务的 Key。留空只会关闭照片级重建；触觉教材和本地确定性 3D 模型仍可用。三维服务的返回文件最大 220 MB，重建任务按服务商排队，轮询超时默认 600 秒。TokenHub 单张照片上限约 6 MB，当前使用第一张照片做单图重建，且图生 3D 不能同时提交文字 prompt。
+
 ### 6. 启动
 
 ```bash
@@ -196,6 +210,8 @@ curl -fsS https://touch.example.com/api/health
 ```
 
 浏览器打开 `https://touch.example.com`，用手机号或邮箱收验证码登录（首次自动注册），再跑一遍“函数图像 → 生成 → 下载 STL”。
+
+如果配置了三维服务，再上传 1–4 张照片走一遍“照片级3D重建”，确认 `/api/health` 里 `reconstruction.configured` 为 `true`，并检查产物里有 `model_textured.glb`、`model.stl` 和 `reconstruction.json`。
 
 证书首次签发通常需要几十秒；如果失败，先确认 DNS 已生效、80/443 没有被占用、云防火墙已放行。
 

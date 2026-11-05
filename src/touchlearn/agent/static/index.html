@@ -25,6 +25,7 @@
     <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
     <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14"/></symbol>
     <symbol id="icon-cube" viewBox="0 0 24 24"><path d="M12 3 4 7.5v9L12 21l8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></symbol>
+    <symbol id="icon-camera" viewBox="0 0 24 24"><path d="M4 8h3l1.6-2h6.8L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="3.4"/></symbol>
     <symbol id="icon-audio" viewBox="0 0 24 24"><path d="M5 10v4h3l4 3V7l-4 3H5Z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
     <symbol id="icon-qr" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/><path d="M14 14h3v3h-3zM20 14v6h-6"/></symbol>
     <symbol id="icon-printer" viewBox="0 0 24 24"><path d="M7 9V4h10v5M7 18H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M7 14h10v6H7z"/></symbol>
@@ -121,7 +122,9 @@
           <span class="capability">PDF</span>
           <span class="capability">函数</span>
           <span class="capability">STL / OBJ</span>
-          <span class="capability">场景 JSON</span>
+          <span class="capability">触觉 3D 模型</span>
+          <span class="capability">照片级 3D 重建</span>
+          <span class="capability">中文盲文</span>
           <span class="capability">8 个离线模板</span>
         </div>
         <p class="site-icp hidden" id="siteIcp"></p>
@@ -136,7 +139,7 @@
         <button class="composer-icon" id="attachBtn" type="button" title="上传文件" aria-label="上传文件">
           <svg class="icon"><use href="#icon-paperclip"/></svg>
         </button>
-        <textarea id="promptInput" rows="1" placeholder="描述你想做的触觉教材…" enterkeyhint="send" aria-label="描述你的需求"></textarea>
+        <textarea id="promptInput" rows="1" placeholder="描述你想做的触觉教材或 3D 模型…" enterkeyhint="send" aria-label="描述你的需求"></textarea>
         <button class="send-btn" id="sendBtn" type="submit" title="发送" aria-label="发送" disabled>
           <svg class="icon"><use href="#icon-arrow-up"/></svg>
         </button>
@@ -146,7 +149,20 @@
           <svg class="icon"><use href="#icon-grid"/></svg>
           <span>示例模板</span>
         </button>
-        <span class="meta-center">自动识别图片、PDF、STL、函数与示意图</span>
+        <div class="mode-switch" id="modeSwitch" role="group" aria-label="生成类型（可多选）">
+          <button class="mode-option is-active" type="button" data-mode="tactile" aria-pressed="true" title="生成可打印的触觉教材板，最短边 A5">
+            <svg class="icon"><use href="#icon-grid"/></svg>
+            <span>触觉教材</span>
+          </button>
+          <button class="mode-option" type="button" data-mode="model3d" aria-pressed="false" title="生成带底座和中文盲文标注的触觉 3D 模型">
+            <svg class="icon"><use href="#icon-cube"/></svg>
+            <span>触觉3D模型</span>
+          </button>
+          <button class="mode-option" type="button" data-mode="reconstruct" aria-pressed="false" title="上传照片做照片级三维重建，再用文字调整高度、底座和盲文名称">
+            <svg class="icon"><use href="#icon-camera"/></svg>
+            <span>照片级3D重建</span>
+          </button>
+        </div>
         <button class="model-chip" id="modelChip" type="button" title="选择模型与思考强度" aria-haspopup="dialog" aria-expanded="false">
           <svg class="icon"><use href="#icon-spark"/></svg>
           <span id="modelChipText">离线规则</span>

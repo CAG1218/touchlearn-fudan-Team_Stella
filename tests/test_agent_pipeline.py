@@ -94,6 +94,30 @@ class AgentPipelineTests(unittest.TestCase):
         self.assertIn("X^2-2X-3", draft["fields"]["expression"])
         self.assertEqual(draft["files"][0]["document"]["ok"], True)
 
+    def test_uploaded_file_with_chinese_name_keeps_extension(self) -> None:
+        content = "课堂练习：请画出函数 y=x^2-2x-3 的图像。".encode("utf-8")
+        draft = self.agent.analyze(
+            {
+                "subject": "auto",
+                "files": [{"name": "路线图.txt", "data": base64.b64encode(content).decode("ascii")}],
+            }
+        )
+        uploaded = draft["files"][0]
+        self.assertEqual(uploaded["extension"], ".txt")
+        self.assertEqual(uploaded["name"], "路线图.txt")
+        self.assertEqual(uploaded["document"]["ok"], True)
+
+    def test_uploaded_image_with_chinese_name_is_accepted(self) -> None:
+        draft = self.agent.analyze(
+            {
+                "subject": "auto",
+                "files": [{"name": "尾翼图.png", "data": base64.b64encode(b"not-a-real-png").decode("ascii")}],
+            }
+        )
+        uploaded = draft["files"][0]
+        self.assertEqual(uploaded["extension"], ".png")
+        self.assertEqual(uploaded["name"], "尾翼图.png")
+
     def test_uploaded_scene_json_is_used_directly(self) -> None:
         scene = {
             "title": "CUSTOM SCENE",

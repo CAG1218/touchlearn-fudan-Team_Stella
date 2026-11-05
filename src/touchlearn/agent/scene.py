@@ -7,19 +7,20 @@ lines, outlines, arrows, text and braille.
 
 A scene spec uses normalized coordinates (0-100) inside one content box, so a
 language model never has to guess millimetres.  The compiler maps the spec onto
-the A5 plate, keeps a 6 mm margin, reserves the QR corner, and reuses the same
-deterministic mesh and compliance pipeline as the specialized engines.
+an A5/A4/A3 plate, keeps a 6 mm margin, reserves the QR corner, and reuses the
+same deterministic mesh and compliance pipeline as the specialized engines.
 """
 
 from __future__ import annotations
 
 import copy
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from .. import braille, font
+from .. import font, tactile_braille
 from ..layout import (
     Feature,
     LayoutResult,
@@ -32,6 +33,7 @@ from ..layout import (
     text_width,
 )
 from ..model import Diagram
+from ..paper import paper_size
 from .circuit import (
     CircuitError,
     circuit_from_scene,
@@ -43,6 +45,8 @@ from .llm import chat_json, scene_effort, scene_model
 from .parametric import _axis_arrow, _fit_text, _footer, _place_label, _qr_zone
 
 SCENE_VERSION = 1
+# A5 content box kept for callers that import it; build_scene_layout now
+# derives the box from the actual canvas so A4/A3 plates get the extra room.
 CONTENT_BOX = (8.0, 24.0, 132.0, 142.0)
 MAX_BLOCKS = 12
 MAX_PRIMITIVES = 48
@@ -175,6 +179,35 @@ def _slug(text: Any, fallback: str) -> str:
     return (value or fallback)[:24]
 
 
+_PLACEHOLDER_RE = re.compile(
+    r"PLACEHOLDER|STRUCTURE\s+ONLY|GRID\s+LAYOUT|TEMPLATE\s+ONLY|LOREM\s+IPSUM",
+    re.IGNORECASE,
+)
+
+
+def placeholder_marker(data: Any) -> str:
+    """Return the placeholder phrase a vision model used, if any.
+
+    A weak or overloaded vision model sometimes answers an unreadable image with
+    a generic grid whose labels say ``STRUCTURE ONLY`` or ``TEXT PLACEHOLDER``.
+    That is a refusal dressed up as an answer: the deterministic compiler will
+    happily turn it into a printable but meaningless plate.  Callers use this
+    check to stop before the plate is built.
+    """
+    if not isinstance(data, dict):
+        return ""
+    parts = [str(data.get("title") or ""), str(data.get("subtitle") or "")]
+    for block in data.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        parts.append(str(block.get("label") or ""))
+        for primitive in block.get("primitives") or []:
+            if isinstance(primitive, dict):
+                parts.append(str(primitive.get("text") or ""))
+    match = _PLACEHOLDER_RE.search(" ".join(parts))
+    return match.group(0) if match else ""
+
+
 def _width(value: Any, default: float = 2.0) -> float:
     number = _number(value, default)
     return round(_clamp(number if number is not None else default, 1.0, 3.2), 3)
@@ -257,8 +290,19 @@ def _normalize_primitive(raw: Any, warnings: list[str]) -> dict[str, Any] | None
 
     if kind == "braille":
         position = _point([raw.get("x"), raw.get("y")])
-        text = _ascii(raw.get("text"), 22)
-        if position is None or not text:
+        if position is None:
+            return None
+        raw_text = raw.get("text")
+        if isinstance(raw_text, str) and tactile_braille.contains_chinese(raw_text):
+            text = _chinese(raw_text, 40)
+            if not text:
+                return None
+            if not tactile_braille.safe_text(text):
+                warnings.append(f"盲文标签含拼音表未收录的汉字，已省略：{text[:12]}")
+                return None
+            return {"type": "braille", "x": position[0], "y": position[1], "text": text}
+        text = _ascii(raw_text, 22)
+        if not text:
             return None
         return {"type": "braille", "x": position[0], "y": position[1], "text": text}
 
@@ -355,7 +399,303 @@ def normalize_scene(raw: Any, *, fallback_title: str = "") -> tuple[dict[str, An
         "notes": notes,
         "scale_note": _ascii(raw.get("scale_note"), 42) or "SCHEMATIC / NOT TO SCALE",
     }
+    hint = str(raw.get("paper_hint") or "").strip().upper()
+    if hint in {"A5", "A4", "A3"}:
+        # A text roadmap needs a minimum physical row pitch; the compiler cannot
+        # see the sheet at normalization time, so the caller reads this hint.
+        scene["paper_hint"] = hint
     return scene, warnings
+
+
+# ---------------------------------------------------------------------------
+# Roadmap: staged text, not a picture
+# ---------------------------------------------------------------------------
+
+ROADMAP_STAGE_LIMIT = 4
+ROADMAP_ITEM_LIMIT = 4
+# Larger sheets keep the same physical row pitch, so the timeline is nudged
+# right to stay visually centred instead of hugging the left edge.
+ROADMAP_X_OFFSET = {"A5": 0.0, "A4": 4.0, "A3": 10.0}
+# Rows that fit at the 8.6 mm minimum pitch (92 normalized units of content).
+ROADMAP_ROW_CAPACITY = {"A5": 14, "A4": 24, "A3": 10**6}
+# An A3 content box holds about 28 rows at that pitch.
+ROADMAP_MAX_LINES = 28
+
+
+def _roadmap_clean(value: Any, limit: int) -> str:
+    """Keep the characters Chinese braille can actually encode."""
+    if not isinstance(value, str):
+        return ""
+    kept: list[str] = []
+    for character in " ".join(value.split()):
+        if "\u4e00" <= character <= "\u9fff":
+            kept.append(character)
+        elif character.isascii() and (character.isalnum() or character in " +-./:=?"):
+            kept.append(character)
+        elif character in "，、。：；（）·":
+            kept.append(character)
+    return " ".join("".join(kept).split())[:limit]
+
+
+def _roadmap_safe(text: str, warnings: list[str]) -> str:
+    kept: list[str] = []
+    dropped: list[str] = []
+    for character in text:
+        if "\u4e00" <= character <= "\u9fff" and not tactile_braille.safe_text(character):
+            dropped.append(character)
+            continue
+        kept.append(character)
+    if dropped:
+        warnings.append(f"盲文拼音表未收录「{''.join(dropped[:6])}」，已省略。")
+    return "".join(kept)
+
+
+def _braille_lines(
+    text: str,
+    max_mm: float,
+    max_chars: int,
+    warnings: list[str],
+    max_lines: int = 2,
+) -> list[str]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= max_chars and tactile_braille.width(text) <= max_mm:
+        return [text]
+    if max_lines >= 2 and len(text) >= 2:
+        # Split near the middle instead of filling the first row: a 6-character
+        # heading that is 2 mm too wide should become 4+2, not 5+1.
+        best: tuple[float, str, str] | None = None
+        for cut in range(1, len(text)):
+            left, right = text[:cut], text[cut:]
+            if len(left) > max_chars or len(right) > max_chars:
+                continue
+            left_width = tactile_braille.width(left)
+            right_width = tactile_braille.width(right)
+            if left_width > max_mm or right_width > max_mm:
+                continue
+            score = max(left_width, right_width)
+            if best is None or score < best[0]:
+                best = (score, left, right)
+        if best is not None:
+            return [best[1], best[2]]
+    lines: list[str] = []
+    current = ""
+    for character in text:
+        trial = current + character
+        if current and (len(trial) > max_chars or tactile_braille.width(trial) > max_mm):
+            lines.append(current)
+            current = character
+        else:
+            current = trial
+    if current:
+        lines.append(current)
+    if len(lines) > max_lines:
+        warnings.append(f"「{text[:8]}」过长，只保留前 {max_lines} 行。")
+        lines = lines[:max_lines]
+    return lines
+
+
+def _roadmap_geometry(sheet: str) -> dict[str, float]:
+    """Column positions and usable line widths for one sheet."""
+    width, _ = paper_size(sheet)
+    box_left = 8.0
+    box_right = width - 8.0
+    box_width = box_right - box_left
+    delta = ROADMAP_X_OFFSET.get(sheet, 0.0)
+    heading_x = 22.0 + delta
+    item_x = 28.0 + delta
+    return {
+        "spine_x": 16.0 + delta,
+        "heading_x": heading_x,
+        "item_x": item_x,
+        "bullet_x": 24.5 + delta,
+        "label_x": 6.0 + delta,
+        "heading_mm": box_right - (box_left + heading_x / 100.0 * box_width) - 4.0,
+        "item_mm": box_right - (box_left + item_x / 100.0 * box_width) - 4.0,
+    }
+
+
+def normalize_roadmap(raw: Any, *, fallback_title: str = "") -> tuple[dict[str, Any], list[str]]:
+    """Compile a staged roadmap into stacked Chinese-braille rows.
+
+    A tech-roadmap infographic is text organised in stages, not a picture.  If
+    a vision model is asked to redraw every icon, the text is lost and the
+    result is a grid of meaningless shapes.  This path keeps the words and lets
+    deterministic geometry decide the spacing: one vertical spine, a numbered
+    node per stage, the heading in Chinese braille, and one line per item.
+    """
+    if not isinstance(raw, dict):
+        raise SceneError("路线图必须是 JSON 对象。")
+    warnings: list[str] = []
+    title = _ascii(raw.get("title"), 32) or _ascii(fallback_title, 32) or "ROADMAP"
+    title_zh = _chinese(raw.get("title_zh"), 40) or _chinese(fallback_title, 40) or title
+    subtitle = _ascii(raw.get("subtitle"), 48) or "ROADMAP / TOP TO BOTTOM"
+
+    stages_raw = raw.get("stages")
+    if not isinstance(stages_raw, list) or not stages_raw:
+        raise SceneError("路线图缺少 stages 阶段列表。")
+
+    cleaned_stages: list[dict[str, Any]] = []
+    for entry in stages_raw[:ROADMAP_STAGE_LIMIT]:
+        if isinstance(entry, str):
+            heading_raw, items_raw = entry, []
+        elif isinstance(entry, dict):
+            heading_raw = (
+                entry.get("heading")
+                or entry.get("title")
+                or entry.get("label_zh")
+                or entry.get("label")
+                or entry.get("name")
+            )
+            items_raw = (
+                entry.get("items")
+                or entry.get("steps")
+                or entry.get("bullets")
+                or entry.get("points")
+                or []
+            )
+        else:
+            continue
+        if not isinstance(items_raw, list):
+            items_raw = [items_raw]
+        heading = _roadmap_safe(_roadmap_clean(heading_raw, 16), warnings)
+        items: list[str] = []
+        for item in items_raw[:ROADMAP_ITEM_LIMIT]:
+            cleaned = _roadmap_safe(_roadmap_clean(item, 20), warnings)
+            if cleaned:
+                items.append(cleaned)
+        if not heading and not items:
+            continue
+        cleaned_stages.append({"heading": heading, "items": items})
+    if not cleaned_stages:
+        raise SceneError("路线图没有可读的阶段文字。")
+
+    def wrap(sheet_name: str, notes: list[str]) -> list[dict[str, Any]]:
+        geom = _roadmap_geometry(sheet_name)
+        rows_out: list[dict[str, Any]] = []
+        for stage in cleaned_stages:
+            rows_out.append(
+                {
+                    "heading": stage["heading"],
+                    "heading_lines": _braille_lines(
+                        stage["heading"], geom["heading_mm"], 14, notes
+                    ),
+                    "items": [
+                        lines
+                        for item in stage["items"]
+                        if (lines := _braille_lines(item, geom["item_mm"], 18, notes))
+                    ],
+                    "notes": stage["items"],
+                }
+            )
+        return rows_out
+
+    def line_count(rows_in: list[dict[str, Any]]) -> int:
+        return sum(
+            len(stage["heading_lines"]) + sum(len(group) for group in stage["items"])
+            for stage in rows_in
+        )
+
+    gap = 0.8
+    sheet = "A3"
+    prepared: list[dict[str, Any]] = []
+    # Smallest sheet whose rows still clear the 8.6 mm pitch.  Trying them in
+    # order lets an item wrap onto a second row instead of forcing A3 for a
+    # few tenths of a millimetre.
+    for candidate in ("A5", "A4", "A3"):
+        scratch: list[str] = []
+        candidate_rows = wrap(candidate, scratch)
+        used = line_count(candidate_rows) + gap * max(0, len(candidate_rows) - 1)
+        if used <= ROADMAP_ROW_CAPACITY[candidate]:
+            sheet = candidate
+            prepared = candidate_rows
+            warnings.extend(scratch)
+            break
+
+    # Trim the tail instead of shrinking the dots.
+    while line_count(prepared) > ROADMAP_MAX_LINES:
+        for stage in reversed(prepared):
+            if stage["items"]:
+                stage["items"].pop()
+                warnings.append("路线图内容过多，已从末尾删减部分要点以保持点距。")
+                break
+        else:
+            break
+
+    prepared = [stage for stage in prepared if stage["heading_lines"] or stage["items"]]
+    lines = line_count(prepared)
+    if lines == 0:
+        raise SceneError("路线图没有可读的阶段文字。")
+
+    rows = lines + gap * max(0, len(prepared) - 1)
+    pitch = 92.0 / rows
+    paper_hint = sheet if sheet != "A5" else ""
+    geom = _roadmap_geometry(sheet)
+
+    spine_x = geom["spine_x"]
+    heading_x = geom["heading_x"]
+    bullet_x = geom["bullet_x"]
+    item_x = geom["item_x"]
+
+    blocks: list[dict[str, Any]] = []
+    cursor = 4.0
+    for index, stage in enumerate(prepared, start=1):
+        primitives: list[dict[str, Any]] = []
+        if index == 1:
+            primitives.append(
+                {
+                    "type": "line",
+                    "points": [[spine_x, 4.0], [spine_x, 96.0]],
+                    "width": 2.2,
+                }
+            )
+        y = cursor
+        for text in stage["heading_lines"]:
+            primitives.append(
+                {"type": "braille", "x": heading_x, "y": round(y, 3), "text": text}
+            )
+            y += pitch
+        for group in stage["items"]:
+            for line_index, text in enumerate(group):
+                if line_index == 0:
+                    primitives.append(
+                        {"type": "point", "cx": bullet_x, "cy": round(y + 1.8, 3), "r": 1.0}
+                    )
+                primitives.append(
+                    {"type": "braille", "x": item_x, "y": round(y, 3), "text": text}
+                )
+                y += pitch
+        node_y = round((cursor + max(cursor, y - pitch) + 4.6) / 2.0, 3)
+        primitives.append({"type": "point", "cx": spine_x, "cy": node_y, "r": 1.7})
+        blocks.append(
+            {
+                "id": f"stage{index}",
+                "label": f"STAGE {index}",
+                "label_zh": stage["heading"] or f"第 {index} 阶段",
+                "note": "；".join(stage["notes"]),
+                "marker": [geom["label_x"], node_y],
+                "show_label": False,
+                "kind": "roadmap",
+                "primitives": primitives,
+            }
+        )
+        cursor = y + gap * pitch
+
+    scene, extra = normalize_scene(
+        {
+            "title": title,
+            "title_zh": title_zh,
+            "subtitle": subtitle,
+            "blocks": blocks,
+            "reading_order": [block["id"] for block in blocks],
+            "footer_lines": ["ROADMAP / TOP TO BOTTOM", "SCAN QR FOR AUDIO"],
+            "notes": ["从上到下依次是各阶段；每个阶段先摸标题，再摸下面的要点。"],
+            "paper_hint": paper_hint,
+        },
+        fallback_title=fallback_title,
+    )
+    return scene, warnings + extra
 
 
 def scene_summary(scene: dict[str, Any]) -> dict[str, Any]:
@@ -388,8 +728,24 @@ def scene_summary(scene: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _mapper() -> tuple[float, float, float, float, Any]:
-    left, top, width, height = CONTENT_BOX
+def content_box(width: float, height: float, margin: float) -> tuple[float, float, float, float]:
+    """Content area for a plate of any catalogue size.
+
+    The title band (23 mm) and the footer/QR band (38 mm plus a 6 mm gutter)
+    are fixed physical sizes, so a larger sheet gives the drawing more room
+    instead of stretching the title.
+    """
+    left = margin + 2.0
+    top = 24.0
+    right = width - margin - 2.0
+    bottom = height - 38.0 - 6.0
+    if right - left < 40.0 or bottom - top < 40.0:
+        raise SceneError("板面太小，放不下标题、内容区和二维码区。")
+    return (left, top, right - left, bottom - top)
+
+
+def _mapper(box: tuple[float, float, float, float]) -> tuple[float, float, float, float, Any]:
+    left, top, width, height = box
 
     def to_mm(point: Point) -> Point:
         return (left + point[0] / 100.0 * width, top + point[1] / 100.0 * height)
@@ -435,7 +791,11 @@ def _add_primitive(builder: _Builder, feature: Feature, primitive: dict[str, Any
         builder.text(feature, x, y, primitive["text"], primitive["height"])
     elif kind == "braille":
         x, y = to_mm((primitive["x"], primitive["y"]))
-        builder.braille(feature, x, y, primitive["text"].lower())
+        text = primitive["text"]
+        # UEB uses lowercase cells plus a capital sign, so the Latin path keeps
+        # lowering the text it always did.  Chinese braille is case-free and
+        # must reach cnbraille untouched.
+        builder.braille(feature, x, y, text if tactile_braille.contains_chinese(text) else text.lower())
     else:
         raise SceneError(f"未知图元：{kind}")
 
@@ -447,7 +807,8 @@ def build_scene_layout(diagram: Diagram) -> LayoutResult:
     width = diagram.canvas.width_mm
     height = diagram.canvas.height_mm
     margin = float(diagram.canvas.margin_mm)
-    left, top, box_width, box_height = CONTENT_BOX
+    box = content_box(width, height, margin)
+    left, top, box_width, box_height = box
 
     title_feature = builder.feature("title", "title")
     title_text, title_height = _fit_text(scene["title"], width - 2 * margin - 4.0, 5.4, 4.2)
@@ -470,17 +831,17 @@ def build_scene_layout(diagram: Diagram) -> LayoutResult:
             "stage": "layout",
             "action": "map_content_box",
             "decision": f"x {left:.0f}-{left + box_width:.0f} mm, y {top:.0f}-{top + box_height:.0f} mm",
-            "reason": "Reserves the title, footer and 30x30 mm QR corner on the A5 sheet.",
+            "reason": f"Reserves the title, footer and 30x30 mm QR corner on the {diagram.canvas.size} sheet.",
         }
     )
 
     obstacles: list[Feature] = []
     block_features: list[tuple[int, dict[str, Any], Feature]] = []
-    to_mm = _mapper()[4]
+    to_mm = _mapper(box)[4]
     for index, block in enumerate(scene["blocks"], start=1):
         feature = builder.feature(f"block_{block['id']}", block.get("kind") or "scene", label=block.get("label") or "", semantic_id=block["id"], index=index)
         for primitive in block["primitives"]:
-            _add_primitive(builder, feature, primitive, to_mm, CONTENT_BOX)
+            _add_primitive(builder, feature, primitive, to_mm, box)
         obstacles.append(feature)
         block_features.append((index, block, feature))
         builder.trace.append(
@@ -562,9 +923,11 @@ def scene_narration(scene: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 SCENE_SYSTEM = (
-    "你是触觉教材的结构设计助手。你把用户的二维示意图需求转成严格 JSON，供确定性编译器排成 A5 触觉板。"
+    "你是触觉教材的结构设计助手。你把用户的二维示意图需求转成严格 JSON，供确定性编译器排成可打印触觉板。"
+    "板面最小 A5，会根据内容复杂度自动放大到 A4/A3。"
     "只输出 JSON 对象，不要 Markdown，不要解释。不要输出毫米坐标；所有 x/y 都用内容区的 0-100 归一化坐标，"
     "原点在左上角，x 向右，y 向下。线条宽度用毫米，范围 1.2-3.0。"
+    "以文字为主的图（技术路线图、流程图、时间轴、组织结构图）优先提取阶段和要点，不要描摹图标。"
     "不要编造用户没有提供的事实、数字或标签；不确定的内容放到 questions 或 notes。"
 )
 
@@ -592,6 +955,15 @@ SCENE_PROMPT = """请把下面的需求转成触觉场景 JSON。
       {{"id": "switch", "type": "switch", "side": "left", "offset": 0.5, "state": "open"}}
     ],
     "notes": ["电流从电池正极出发，依次经过开关、电阻和灯泡，再回到负极。"]
+  }},
+  "roadmap": {{
+    "title": "TECH ROADMAP",
+    "title_zh": "技术路线图",
+    "subtitle": "STAGES / TOP TO BOTTOM",
+    "stages": [
+      {{"heading": "阶段名称", "items": ["要点一", "要点二"]}},
+      {{"heading": "阶段名称", "items": ["要点一", "要点二"]}}
+    ]
   }},
   "blocks": [
     {{
@@ -625,13 +997,18 @@ SCENE_PROMPT = """请把下面的需求转成触觉场景 JSON。
 7. 如果用户给了尺寸，只能把它转换成相对比例，并在 notes 中说明实际尺寸需在打印设置中确认。
 8. 最多 10 个图块；不要为了凑数拆散一个学习单元。
 9. 如果是串联电路，优先填写 circuit 并省略 blocks。type 只能是 battery、switch、resistor、lamp、ammeter、voltmeter、motor；side 只能是 top、right、bottom、left，表示元件所在的回路边；offset 是 0 到 1 的位置，0.5 表示该边中点；不要输出导线，编译器会根据元件自动生成闭合导线。只有并联或非串联电路才用 blocks 自己画导线。
-10. circuit 和 blocks 二选一：有 circuit 时 blocks 可以为空；不要同时给出两套互相矛盾的几何。
+10. circuit、roadmap、blocks 三选一：有 circuit 或 roadmap 时 blocks 可以为空；不要同时给出两套互相矛盾的几何。
+11. 如果图片或需求是技术路线图、研发计划、里程碑、时间轴、分栏的阶段图，用 roadmap 记录文字，不要用 blocks 描摹每个图标。stages 最多 4 个，按从上到下的顺序；每个阶段 heading 不超过 12 个汉字，items 最多 4 条、每条不超过 18 个汉字。
+12. roadmap 必须保留中文原文，不要转成拼音、不要翻译成英文、不要拆成单个字；编译器会自动生成中文盲文和点距。
+13. 绝对不要输出 PLACEHOLDER、TEMPLATE、STRUCTURE ONLY、GRID LAYOUT、LOREM IPSUM 这类占位文字。看不清的字不要用占位符代替：把读不出的条目写进 questions。
 """
 
 SCENE_IMAGE_HINT = (
     "用户上传了图片。请先判断图片类型：如果是电路原理图或接线图，用 circuit 字段记录每个元件的类型、"
-    "所在回路边和顺序；如果是其他示意图，再用 blocks 重建主要轮廓、部件和标注。"
-    "不要逐像素描摹，不要还原照片纹理；看不清的文字不要猜，放到 questions 中。"
+    "所在回路边和顺序；如果是技术路线图、研发计划、时间轴或分栏阶段图，按阶段把标题和要点抄进 roadmap；"
+    "如果是其他示意图，再用 blocks 重建主要轮廓、部件和标注。"
+    "以文字为主的图必须逐条抄下原文，不要输出占位网格，不要逐像素描摹，不要还原照片纹理；"
+    "看不清的文字不要猜，放到 questions 中。"
 )
 
 CIRCUIT_HINTS = (
@@ -704,15 +1081,11 @@ def generate_scene(
         prompt,
         images=images if use_vision else (),
         kind="vision" if vision_call else "text",
-        # Reasoning models count hidden reasoning tokens against max_tokens on
-        # some providers.  A full scene JSON is ~2-3k tokens, so keep a wide
-        # budget instead of silently returning an empty answer.
-        max_tokens=8192,
+        # The transport applies the provider's full output budget, so hidden
+        # reasoning tokens cannot silently consume a small app-side cap.
         model=chosen_model,
-        # Hidden reasoning tokens count against max_tokens on some providers and
-        # can truncate the JSON.  Scene specs are formatting, not puzzles --
-        # this applies to image reconstruction too, which otherwise hit
-        # finish_reason=length at 8192 on TokenHub's vision model.
+        # Scene specs are formatting, not puzzles; a user-selected thinking
+        # level is still honoured on the first attempt.
         effort=chosen_effort,
     )
     retried = False
@@ -725,7 +1098,6 @@ def generate_scene(
             prompt,
             images=images if use_vision else (),
             kind="vision" if vision_call else "text",
-            max_tokens=8192,
             model=chosen_model,
             effort="off",
         )
@@ -740,6 +1112,23 @@ def generate_scene(
         reason = _chinese(data.get("unsupported_reason"), 240) or "模型判断该需求不适合转成二维触觉图。"
         return SceneGeneration(False, provider=result.provider, model=result.model, message=reason, raw=data)
 
+    # A vision model answering an unreadable image with "STRUCTURE ONLY" or
+    # "TEXT PLACEHOLDER" is refusing in disguise.  The compiler would happily
+    # print that grid, so stop and ask for a better source instead.
+    marker = placeholder_marker(data)
+    if marker:
+        return SceneGeneration(
+            False,
+            provider=result.provider,
+            model=result.model,
+            message=(
+                f"模型没有读出图中的实际内容，只返回了占位描述（{marker}）。"
+                "这通常是原图信息太密、文字太小或分栏过多造成的。请换一张更清晰的局部图，"
+                "或用一句话写出图里的阶段和要点，让系统按文字排版成中文盲文路线图。"
+            ),
+            raw=data,
+        )
+
     confidence = data.get("confidence", 0.55)
     try:
         confidence = max(0.0, min(1.0, float(confidence)))
@@ -747,6 +1136,30 @@ def generate_scene(
         confidence = 0.55
     notes = [str(item).strip()[:180] for item in (data.get("notes") or []) if isinstance(item, str) and item.strip()][:5]
     questions = [str(item).strip()[:180] for item in (data.get("questions") or []) if isinstance(item, str) and item.strip()][:5]
+
+    # Text-heavy diagrams (roadmaps, timelines, stage charts) are compiled from
+    # the words, not redrawn icon by icon; the result is Chinese braille.
+    raw_roadmap = data.get("roadmap")
+    if isinstance(raw_roadmap, dict):
+        try:
+            roadmap_scene, roadmap_warnings = normalize_roadmap(
+                raw_roadmap, fallback_title=request[:28]
+            )
+        except SceneError as error:
+            notes.append(f"模型给出的路线图结构无法排版（{error}），已改按普通图块处理。")
+        else:
+            notes.extend(roadmap_warnings[:4])
+            return SceneGeneration(
+                True,
+                scene=roadmap_scene,
+                confidence=confidence,
+                provider=result.provider,
+                model=result.model,
+                message="已按阶段排成中文盲文路线图。",
+                notes=notes,
+                questions=questions,
+                raw=data,
+            )
 
     circuit: dict[str, Any] = {}
     warnings: list[str] = []
@@ -1225,6 +1638,24 @@ def _cell_scene() -> dict[str, Any]:
     )
 
 
+def _roadmap_scene() -> dict[str, Any]:
+    scene, _ = normalize_roadmap(
+        {
+            "title": "TECH ROADMAP",
+            "title_zh": "技术路线图",
+            "subtitle": "STAGES / TOP TO BOTTOM",
+            "stages": [
+                {"heading": "需求分析", "items": ["明确目标", "调研现状"]},
+                {"heading": "方案设计", "items": ["总体架构", "关键指标"]},
+                {"heading": "原型验证", "items": ["制作样机", "测试改进"]},
+                {"heading": "迭代优化", "items": ["收集反馈", "版本迭代"]},
+            ],
+        },
+        fallback_title="技术路线图",
+    )
+    return scene
+
+
 TEMPLATES: dict[str, dict[str, Any]] = {
     "triangle": {
         "label": "三角形与高",
@@ -1275,6 +1706,12 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "description": "细胞膜、细胞核、线粒体和液泡。",
         "keywords": ["细胞", "细胞核", "线粒体", "液泡", "生物", "cell", "nucleus", "mitochondria"],
         "scene": _cell_scene,
+    },
+    "roadmap": {
+        "label": "技术路线图",
+        "description": "四个阶段，每阶段两个要点，中文盲文竖排。",
+        "keywords": ["技术路线", "路线图", "里程碑", "研发计划", "时间轴", "阶段", "roadmap", "milestone"],
+        "scene": _roadmap_scene,
     },
 }
 

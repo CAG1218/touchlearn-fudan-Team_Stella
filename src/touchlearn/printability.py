@@ -174,7 +174,7 @@ def check_layout(diagram: Diagram, layout: LayoutResult, mesh: Mesh | None = Non
             Issue(
                 "error",
                 "feature_count",
-                f"{len(diagram.elements)} semantic elements exceed the A5 limit of {max_features}.",
+                f"{len(diagram.elements)} semantic elements exceed the {diagram.canvas.size} limit of {max_features}.",
             )
         )
 
@@ -186,7 +186,8 @@ def check_layout(diagram: Diagram, layout: LayoutResult, mesh: Mesh | None = Non
         issues.append(Issue("error", "braille_height", f"braille height is {braille_height} mm; allowed range is 0.4-0.8 mm."))
 
     margin = max(float(diagram.canvas.margin_mm), 5.0)
-    qr_rect = (113.0, 175.0, 30.0, 30.0)
+    qr_size = 30.0
+    qr_rect = (layout.width - margin - qr_size, layout.height - margin - qr_size, qr_size, qr_size)
     connected = diagram.connected_pairs()
     min_width_seen = float("inf")
     min_spacing_seen = float("inf")
@@ -266,6 +267,8 @@ def check_layout(diagram: Diagram, layout: LayoutResult, mesh: Mesh | None = Non
                 min_spacing_seen = min(min_spacing_seen, distance)
 
     metrics: dict[str, Any] = {
+        "paper": diagram.canvas.size,
+        "canvas_mm": [layout.width, layout.height],
         "semantic_features": len(diagram.elements),
         "label_features": len(labels),
         "min_line_width_mm": round(min_width_seen, 3) if min_width_seen != float("inf") else None,
@@ -279,7 +282,7 @@ def check_layout(diagram: Diagram, layout: LayoutResult, mesh: Mesh | None = Non
         metrics["mesh"] = mesh_stats
         min_x, min_y, min_z, max_x, max_y, max_z = mesh.bounds()
         if min_x < -1e-6 or min_y < -1e-6 or max_x > layout.width + 1e-6 or max_y > layout.height + 1e-6:
-            issues.append(Issue("error", "mesh_bounds", "mesh is outside the A5 footprint."))
+            issues.append(Issue("error", "mesh_bounds", f"mesh is outside the {diagram.canvas.size} footprint."))
         if max_z > 4.0 + 1e-6:
             issues.append(Issue("error", "mesh_height", f"mesh height is {max_z:.2f} mm; maximum is 4.0 mm."))
         if mesh.volume() <= 0:

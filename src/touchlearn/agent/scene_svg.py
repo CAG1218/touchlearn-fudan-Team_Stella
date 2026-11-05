@@ -13,7 +13,7 @@ import math
 from html import escape
 from typing import Any
 
-from .. import braille, font
+from .. import font, tactile_braille as braille
 from ..layout import base_plate_polygon
 
 PLATE_WIDTH = 148.0
@@ -149,7 +149,7 @@ def _primitive_svg(primitive: dict[str, Any], to_mm_x: Any, to_mm_y: Any, color:
             color,
         )
     if kind == "braille":
-        radius = braille.DOT_DIAMETER_MM / 2.0
+        radius = braille.dot_diameter(str(primitive.get("text") or "")) / 2.0
         return "".join(
             f'<circle cx="{_fmt(cx)}" cy="{_fmt(cy)}" r="{_fmt(radius)}" fill="{color}"/>'
             for cx, cy in braille.dot_centers(

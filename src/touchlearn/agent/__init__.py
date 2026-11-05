@@ -5,4 +5,4 @@ the product layer: multimodal intake, a confirmation loop, two output modes
 (tactile plate and volumetric model), a standards gate and a local web UI.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.3"

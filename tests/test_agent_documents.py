@@ -61,6 +61,34 @@ class DocumentTextTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("扫描件", result.message)
 
+    def test_scanned_pdf_is_rasterized_for_the_vision_model(self) -> None:
+        try:
+            import pymupdf
+            from PIL import Image, ImageDraw
+        except ImportError:
+            self.skipTest("pymupdf / Pillow not installed")
+        image_path = self.root / "page.png"
+        image = Image.new("L", (600, 800), 255)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((70, 90, 530, 330), fill=0)
+        draw.line((90, 420, 510, 420), fill=0, width=8)
+        image.save(image_path)
+
+        document = pymupdf.open()
+        page = document.new_page(width=595, height=842)
+        page.insert_image(page.rect, filename=str(image_path))
+        path = self.root / "scanned.pdf"
+        document.save(path)
+        document.close()
+
+        result = extract_document(path)
+        self.assertTrue(result.ok)
+        self.assertTrue(result.rasterized)
+        self.assertEqual(len(result.page_images), 1)
+        self.assertTrue(Path(result.page_images[0]).is_file())
+        self.assertIn("视觉模型", result.message)
+        self.assertEqual(result.metadata()["page_images"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

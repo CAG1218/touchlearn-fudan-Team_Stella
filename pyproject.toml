@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "touchlearn"
-version = "0.2.0"
+version = "0.3.3"
 description = "Turn multimodal STEM requests into printable tactile plates and 3D models with standards checks and audio."
 readme = "README.md"
 requires-python = ">=3.10"

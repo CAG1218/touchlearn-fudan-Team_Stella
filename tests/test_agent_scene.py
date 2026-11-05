@@ -10,7 +10,9 @@ from touchlearn.agent.scene import (
     SceneError,
     generate_scene,
     match_template,
+    normalize_roadmap,
     normalize_scene,
+    placeholder_marker,
     scene_narration,
     scene_summary,
     scene_templates,
@@ -19,6 +21,7 @@ from touchlearn.agent.standards import STATUS_FAIL, check_plate
 from touchlearn.geometry import build_mesh
 from touchlearn.layout import build_layout
 from touchlearn.model import diagram_from_dict
+from touchlearn.paper import canvas_for
 
 CONSTRAINTS = {
     "base_thickness_mm": 3.0,
@@ -28,7 +31,7 @@ CONSTRAINTS = {
 }
 
 
-def diagram_for(scene: dict) -> dict:
+def diagram_for(scene: dict, paper: str = "A5") -> dict:
     elements = []
     relations = []
     previous = None
@@ -53,7 +56,7 @@ def diagram_for(scene: dict) -> dict:
         "title": scene["title"],
         "title_zh": scene["title_zh"],
         "domain": "scene",
-        "canvas": {"size": "A5", "width_mm": 148, "height_mm": 210, "margin_mm": 6},
+        "canvas": canvas_for(paper),
         "source": {"kind": "scene", "ref": "test"},
         "elements": elements,
         "relations": relations,
@@ -143,6 +146,101 @@ class SceneTemplateTests(unittest.TestCase):
         self.assertEqual(fake.call_args_list[0].kwargs["effort"], "high")
         self.assertEqual(fake.call_args_list[1].kwargs["effort"], "off")
         self.assertEqual(fake.call_args_list[1].kwargs["model"], "glm-5.3")
+
+    def test_roadmap_keeps_chinese_and_compiles(self) -> None:
+        scene, warnings = normalize_roadmap(
+            {
+                "title": "TECH ROADMAP",
+                "title_zh": "技术路线图",
+                "stages": [
+                    {"heading": "仿生尾翼设计", "items": ["尾翼材料选型", "扑动频率测试"]},
+                    {
+                        "heading": "创新点",
+                        "items": ["轻量化结构设计", "机翼蒙皮材料研发与疲劳测试"],
+                    },
+                ],
+            },
+            fallback_title="技术路线图",
+        )
+        self.assertEqual(len(scene["blocks"]), 2)
+        self.assertEqual(scene["blocks"][0]["label_zh"], "仿生尾翼设计")
+        self.assertIn("扑动频率测试", scene["blocks"][0]["note"])
+        braille = [
+            primitive["text"]
+            for block in scene["blocks"]
+            for primitive in block["primitives"]
+            if primitive["type"] == "braille"
+        ]
+        self.assertIn("仿生尾翼设计", braille)
+        self.assertIn("扑动频率测试", braille)
+        self.assertFalse(any("省略" in item for item in warnings))
+
+        # A wrapped item may occupy two rows, but only its first row gets a
+        # bullet; otherwise continuation rows look like extra items.
+        bullets = [
+            primitive
+            for block in scene["blocks"]
+            for primitive in block["primitives"]
+            if primitive["type"] == "point" and primitive.get("r") == 1.0
+        ]
+        item_count = sum(len(block["note"].split("；")) for block in scene["blocks"])
+        self.assertEqual(len(bullets), item_count)
+
+        paper = scene.get("paper_hint") or "A5"
+        diagram = diagram_from_dict(diagram_for(scene, paper))
+        layout = build_layout(diagram)
+        mesh = build_mesh(layout)
+        report = check_plate(layout, mesh, audio_ready=False)
+        failures = [check.rule_id for check in report.checks if check.status == STATUS_FAIL]
+        self.assertEqual(failures, [])
+        self.assertTrue(report.printable)
+
+    def test_roadmap_rejects_empty_stages(self) -> None:
+        with self.assertRaises(SceneError):
+            normalize_roadmap({"title": "EMPTY", "stages": []})
+
+    def test_placeholder_answer_is_rejected(self) -> None:
+        data = {
+            "title": "CLEAR TOUCH GRID LAYOUT",
+            "blocks": [{"label": "TEXT PLACEHOLDER", "primitives": []}],
+        }
+        self.assertEqual(placeholder_marker(data), "GRID LAYOUT")
+        with patch(
+            "touchlearn.agent.scene.chat_json",
+            return_value=LLMResult(True, provider="fake", model="fake", data=data),
+        ):
+            result = generate_scene("把这张技术路线图做成触觉板")
+        self.assertFalse(result.ok)
+        self.assertIn("占位", result.message)
+
+    def test_generate_scene_compiles_roadmap_field(self) -> None:
+        data = {
+            "title": "TECH ROADMAP",
+            "title_zh": "技术路线图",
+            "confidence": 0.7,
+            "roadmap": {
+                "stages": [
+                    {"heading": "需求分析", "items": ["明确目标"]},
+                    {"heading": "方案设计", "items": ["总体架构"]},
+                ]
+            },
+        }
+        with patch(
+            "touchlearn.agent.scene.chat_json",
+            return_value=LLMResult(True, provider="fake", model="fake", data=data),
+        ):
+            result = generate_scene("画一张技术路线图")
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.scene["blocks"]), 2)
+        self.assertEqual(result.scene["blocks"][0]["label_zh"], "需求分析")
+
+    def test_normalize_keeps_paper_hint(self) -> None:
+        scene, _ = normalize_roadmap(
+            {"stages": [{"heading": "阶段一", "items": ["要点"]}]},
+            fallback_title="技术路线图",
+        )
+        again, _ = normalize_scene(scene, fallback_title="技术路线图")
+        self.assertEqual(again.get("paper_hint") or "", scene.get("paper_hint") or "")
 
     def test_generate_scene_reports_the_reasoning_fallback(self) -> None:
         scene = scene_templates()[0]["scene"]

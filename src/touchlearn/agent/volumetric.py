@@ -217,10 +217,15 @@ def _sphere(mesh: Mesh, centre: Vec3, radius: float, slices: int = 24, stacks: i
         return
     centre = _shift_z(centre, _shell_offset(mesh))
     rings: list[list[Vec3]] = []
+    # A true pole fan produces tiny triangles whose shortest edge can fall below
+    # the 0.2 mm numerical-degeneracy threshold.  Clamp the first/last ring to a
+    # short flat cap instead: visually negligible at print scale, but every
+    # triangle keeps a sliceable edge.
+    min_ring_radius = 0.24 * slices / (2.0 * math.pi)
     for stack in range(1, stacks):
         phi = math.pi * stack / stacks
-        z = radius * math.cos(phi)
-        ring_radius = radius * math.sin(phi)
+        ring_radius = max(radius * math.sin(phi), min_ring_radius)
+        z = math.copysign(math.sqrt(max(radius * radius - ring_radius * ring_radius, 0.0)), math.cos(phi))
         ring = []
         for slice_index in range(slices):
             theta = 2.0 * math.pi * slice_index / slices

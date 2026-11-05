@@ -28,6 +28,15 @@ DEFAULT_TIMEOUT = 75.0
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
+# ``max_tokens`` is a ceiling for *one response*, not the API key's account
+# quota.  Reasoning models spend this budget on hidden thinking tokens before
+# they write any visible text, so a small number (a common 4096 default) can be
+# exhausted before the answer starts.  The app therefore uses provider-scale
+# budgets.  ``TOUCHLEARN_MAX_OUTPUT_TOKENS`` overrides them; ``0`` omits the
+# field entirely and leaves the ceiling to the provider.
+DEFAULT_MAX_OUTPUT_TOKENS = 8192
+MAX_RETRY_OUTPUT_TOKENS = 131072
+
 # ``base_url`` is a base, not a full endpoint.  The transport appends the
 # OpenAI-compatible path.  ``vision_model`` is empty when the provider has no
 # public vision model in this preset.
@@ -38,6 +47,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "model": "gpt-4o-mini",
         "vision_model": "gpt-4o-mini",
         "requires_key": True,
+        "max_output_tokens": 16384,
     },
     "deepseek": {
         "label": "DeepSeek",
@@ -48,9 +58,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         # on Flash; Pro stays the default for reasoning-heavy text tasks.
         "scene_model": "deepseek-flash",
         "requires_key": True,
+        "max_output_tokens": 32768,
+        "retry_output_tokens": 65536,
         # Reasoning models spend output budget on hidden tokens before writing
         # the answer.  ``low`` keeps structured JSON tasks fast and leaves most
-        # of ``max_tokens`` for the actual output.
+        # of the output budget for the actual answer.
         "default_effort": "low",
         # Scene specs are long JSON, not a reasoning puzzle.  Turning thinking
         # off avoids burning the output budget and cut latency from ~28 s to
@@ -68,6 +80,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         "vision_model": "deepseek/deepseek-flash",
         "scene_model": "deepseek-v4.1-flash",
         "requires_key": True,
+        # TokenHub publishes a 384k maximum output for its DeepSeek models.
+        # 65536 is far above any scene/3D JSON this app produces while still
+        # leaving plenty of room for hidden reasoning tokens.
+        "max_output_tokens": 65536,
+        "retry_output_tokens": 131072,
         # TokenHub passes reasoning_effort through to the underlying model.
         "default_effort": "low",
         "scene_effort": "off",
@@ -78,6 +95,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "model": "qwen-plus",
         "vision_model": "qwen-vl-max",
         "requires_key": True,
+        "max_output_tokens": 8192,
     },
     "moonshot": {
         "label": "月之暗面 / Kimi",
@@ -85,6 +103,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "model": "moonshot-v1-8k",
         "vision_model": "moonshot-v1-8k-vision-preview",
         "requires_key": True,
+        "max_output_tokens": 4096,
     },
     "zhipu": {
         "label": "智谱 GLM",
@@ -92,6 +111,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "model": "glm-4-flash",
         "vision_model": "glm-4v-flash",
         "requires_key": True,
+        "max_output_tokens": 4096,
     },
     "ollama": {
         "label": "本地 Ollama / vLLM",
@@ -99,6 +119,8 @@ PRESETS: dict[str, dict[str, Any]] = {
         "model": "qwen2.5:7b",
         "vision_model": "qwen2.5vl:7b",
         "requires_key": False,
+        "max_output_tokens": 8192,
+        "retry_output_tokens": 32768,
     },
     "custom": {
         "label": "自定义 OpenAI 兼容接口",
@@ -106,6 +128,8 @@ PRESETS: dict[str, dict[str, Any]] = {
         "model": "",
         "vision_model": "",
         "requires_key": False,
+        "max_output_tokens": 16384,
+        "retry_output_tokens": 32768,
     },
 }
 
@@ -317,6 +341,55 @@ def load_env() -> None:
 def _env(name: str) -> str:
     load_env()
     return os.environ.get(name, "").strip()
+
+
+def _max_output_tokens(provider: str, requested: int | None = None) -> int:
+    """Resolve the per-response output ceiling.
+
+    An explicit argument wins, then ``TOUCHLEARN_MAX_OUTPUT_TOKENS``, then the
+    provider preset.  ``0`` (or a negative value) means "do not send the
+    field": the provider's own maximum applies.  This is a per-request budget,
+    never an account-level token quota.
+    """
+    if requested is not None:
+        try:
+            value = int(requested)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, value)
+    raw = _env("TOUCHLEARN_MAX_OUTPUT_TOKENS")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = DEFAULT_MAX_OUTPUT_TOKENS
+        return max(0, value)
+    preset = _preset(provider)
+    try:
+        return max(0, int(preset.get("max_output_tokens") or DEFAULT_MAX_OUTPUT_TOKENS))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def _retry_max_tokens(provider: str, used: int) -> int:
+    """A larger budget for one automatic retry after ``finish_reason=length``.
+
+    The retry never exceeds the provider's published ceiling; when the first
+    request already used that ceiling there is no headroom and the caller
+    skips the budget retry.
+    """
+    preset = _preset(provider)
+    try:
+        ceiling = int(
+            preset.get("retry_output_tokens")
+            or preset.get("max_output_tokens")
+            or DEFAULT_MAX_OUTPUT_TOKENS
+        )
+    except (TypeError, ValueError):
+        ceiling = DEFAULT_MAX_OUTPUT_TOKENS
+    ceiling = min(ceiling, MAX_RETRY_OUTPUT_TOKENS)
+    base = used if used > 0 else _max_output_tokens(provider)
+    return min(max(base * 2, 16384), ceiling)
 
 
 def _preset(name: str) -> dict[str, Any]:
@@ -700,6 +773,7 @@ def providers_payload() -> dict[str, Any]:
             "vision": ["TOUCHLEARN_VLM_PROVIDER", "TOUCHLEARN_VLM_URL", "TOUCHLEARN_VLM_KEY", "TOUCHLEARN_VLM_MODEL"],
             "shared": [
                 "TOUCHLEARN_LLM_TIMEOUT",
+                "TOUCHLEARN_MAX_OUTPUT_TOKENS",
                 "TOUCHLEARN_LLM_EFFORT",
                 "TOUCHLEARN_SCENE_MODEL",
                 "TOUCHLEARN_SCENE_EFFORT",
@@ -762,12 +836,16 @@ def chat(
     kind: str = "text",
     config: ProviderConfig | None = None,
     temperature: float = 0.0,
-    max_tokens: int = 1800,
+    max_tokens: int | None = None,
     timeout: float | None = None,
     effort: str | None = None,
     model: str | None = None,
 ) -> LLMResult:
-    """Send one chat completion request and return a structured result."""
+    """Send one chat completion request and return a structured result.
+
+    ``max_tokens`` is optional: ``None`` uses the provider's configured budget,
+    and ``0`` omits the field so the provider's own maximum applies.
+    """
     config = config or resolve_config(kind)
     if config is None:
         return LLMResult(False, message="未配置大模型接口。", provider="offline")
@@ -776,8 +854,10 @@ def chat(
     payload = {
         "model": config.model,
         "messages": messages,
-        "max_tokens": max(64, int(max_tokens)),
     }
+    budget = _max_output_tokens(config.provider, max_tokens)
+    if budget > 0:
+        payload["max_tokens"] = budget
     if not any(config.model.startswith(prefix) for prefix in NO_TEMPERATURE_PREFIXES):
         payload["temperature"] = max(0.0, min(2.0, temperature))
     reasoning = _effort(config.provider, effort)
@@ -856,10 +936,7 @@ def chat(
     if not text:
         detail = "接口返回为空。"
         if finish_reason == "length":
-            detail = (
-                "模型在写出正文前耗尽了 max_tokens（finish_reason=length），"
-                "通常是推理过程占满了输出预算。请提高 max_tokens 或降低推理强度。"
-            )
+            detail = "模型还没写出内容就用完了本次输出额度（finish_reason=length）。"
         return LLMResult(
             False,
             provider=config.provider,
@@ -888,7 +965,7 @@ def chat_text(
     images: Sequence[str | Path] = (),
     kind: str = "text",
     temperature: float = 0.0,
-    max_tokens: int = 1800,
+    max_tokens: int | None = None,
     timeout: float | None = None,
     effort: str | None = None,
     model: str | None = None,
@@ -964,39 +1041,61 @@ def chat_json(
     images: Sequence[str | Path] = (),
     kind: str = "text",
     temperature: float = 0.0,
-    max_tokens: int = 1800,
+    max_tokens: int | None = None,
     timeout: float | None = None,
     effort: str | None = None,
     model: str | None = None,
 ) -> LLMResult:
-    """Chat and parse a JSON object/array; keeps the raw text for diagnostics."""
-    result = chat_text(
-        system,
-        user,
-        images=images,
-        kind=kind,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout=timeout,
-        effort=effort,
-        model=model,
-    )
+    """Chat and parse a JSON object/array; keeps the raw text for diagnostics.
+
+    When the provider reports ``finish_reason=length`` the request is retried
+    once with a larger output budget.  Callers may still retry afterwards with
+    reasoning disabled as a second fallback.
+    """
+
+    def _call(budget: int | None, call_effort: str | None) -> tuple[LLMResult, Any]:
+        response = chat_text(
+            system,
+            user,
+            images=images,
+            kind=kind,
+            temperature=temperature,
+            max_tokens=budget,
+            timeout=timeout,
+            effort=call_effort,
+            model=model,
+        )
+        parsed = extract_json(response.text) if response.ok else None
+        return response, parsed
+
+    result, data = _call(max_tokens, effort)
+    if data is not None:
+        result.data = data
+        return result
+
+    if result.finish_reason == "length":
+        used = _max_output_tokens(result.provider or "", max_tokens)
+        retry_budget = _retry_max_tokens(result.provider or "", used)
+        if retry_budget > used:
+            retry, retry_data = _call(retry_budget, effort)
+            if retry_data is not None:
+                retry.data = retry_data
+                retry.message = "ok（首次输出被截断，已自动扩大输出额度后重试）"
+                return retry
+            result = retry
+
     if not result.ok:
         return result
-    data = extract_json(result.text)
-    if data is None:
-        detail = "模型没有返回可解析的 JSON。"
-        if result.finish_reason == "length":
-            detail = "模型输出被 max_tokens 截断，未能形成完整 JSON；请提高 max_tokens 或降低推理强度。"
-        return LLMResult(
-            False,
-            provider=result.provider,
-            model=result.model,
-            message=detail,
-            text=result.text,
-            latency_ms=result.latency_ms,
-            usage=result.usage,
-            finish_reason=result.finish_reason,
-        )
-    result.data = data
-    return result
+    detail = "模型没有返回可解析的 JSON。"
+    if result.finish_reason == "length":
+        detail = "模型两次都没能完成完整的 JSON 输出，已自动扩大输出额度重试。请换一个更快的模型或稍后再试。"
+    return LLMResult(
+        False,
+        provider=result.provider,
+        model=result.model,
+        message=detail,
+        text=result.text,
+        latency_ms=result.latency_ms,
+        usage=result.usage,
+        finish_reason=result.finish_reason,
+    )

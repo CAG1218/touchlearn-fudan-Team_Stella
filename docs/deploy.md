@@ -171,6 +171,7 @@ TOUCHLEARN_AUTH_DEV_MODE=false
    - `TOUCHLEARN_AUTH_DEV_MODE=false`：必填，防止开发模式上线；
    - `TOUCHLEARN_SMTP_*` 或 `TOUCHLEARN_ALIYUN_SMS_*`：至少一组；
    - `TOUCHLEARN_LLM_*` / `TOUCHLEARN_VLM_*`：按需；
+   - `TOUCHLEARN_3D_PROVIDER` / `TOUCHLEARN_3D_KEY` / `TOUCHLEARN_3D_MODEL` / `TOUCHLEARN_3D_TEXT_MODEL`：要启用文字生成 3D 或照片级重建时填写；留空只关闭这些模式；
    - `TOUCHLEARN_PUBLIC_URL`：只有绑定自定义域名时才填，例如 `https://touch.example.com`。留空时按请求 Host 自动推导，二维码会跟着当前访问地址走。
 5. Apply，等待构建完成；
 6. 打开 `https://<service>.onrender.com`，用手机号或邮箱验证码登录。
@@ -192,6 +193,8 @@ docker run --rm -p 8765:8765 \
   -e TOUCHLEARN_LLM_PROVIDER=tokenhub \
   -e TOUCHLEARN_LLM_KEY=sk-... \
   -e TOUCHLEARN_LLM_MODEL=deepseek-v4.1-flash \
+  -e TOUCHLEARN_3D_PROVIDER=tripo \
+  -e TOUCHLEARN_3D_KEY=... \
   -v touchlearn-outputs:/app/outputs \
   touchlearn
 ```
@@ -255,11 +258,51 @@ TOUCHLEARN_VLM_MODEL=qwen-vl-max
 
 完整预置、端点规则和失败行为见 [providers.md](providers.md)。密钥只从环境变量或本机 `.env` 读取，不会写进作业目录，也不会通过 `/api/providers` 返回。
 
+### 5.1 文字生成三维模型与照片级重建
+
+三维模式分两条输入路径，共用同一套本地后处理：
+
+- **文字生成 3D**：把对象描述整理成生成提示词，交给 TokenHub 的文生 3D 模型。默认 `tripo-3d-3.1`（最高 150 万面，detailed 几何与纹理），可切 `hy-3d-3.1`、`hy-3d-3.0`、`tripo-3d-p1`、`tripo-3d-p2` 或 `hy-3d-express`。模型族不同，请求字段自动切换。
+- **照片级重建**：照片上传后走 image-to-3D，返回带纹理的 GLB。默认 `tripo-3d-p1`：1 张照片走 `input` 单图；2–4 张照片且文件名含 `front/left/back/right`（或 `前/左/后/右`）时自动走 `inputs` 多视图。`hy-3d-3.1` 仍可用 `image_base64` 单图模式。
+
+两条路径返回的都是一个完整网格，不是基础几何体拼装。本地再解析三角网格，统一缩放、摆正、补底座和支撑柱、刻中文盲文标题、加底座编号图例、留二维码位，输出单色可打印 STL。
+
+推荐腾讯云 TokenHub（与文本模型共用同一个 Key）：
+
+```dotenv
+TOUCHLEARN_3D_PROVIDER=tokenhub
+# 留空时复用 TOUCHLEARN_LLM_KEY
+TOUCHLEARN_3D_KEY=
+# 图生 3D 使用的模型：tripo-3d-p1（单图 + 多视图）或 hy-3d-3.1（image_base64）
+TOUCHLEARN_3D_MODEL=tripo-3d-p1
+# 文字生成 3D 使用的模型
+TOUCHLEARN_3D_TEXT_MODEL=tripo-3d-3.1
+# draft / standard / high（默认 high）
+TOUCHLEARN_3D_QUALITY=high
+# 0 = 强制回退到本地结构化编译器
+TOUCHLEARN_3D_GENERATIVE=1
+# 3000–2000000，默认 300000；主要影响图生 3D
+TOUCHLEARN_3D_FACES=300000
+TOUCHLEARN_3D_TIMEOUT=600
+TOUCHLEARN_3D_POLL=4
+```
+
+也可以继续用 Tripo 官方或 Meshy 官方接口，把 `TOUCHLEARN_3D_PROVIDER` 改成 `tripo` / `meshy` 并填各自的 Key。TokenHub 单张照片上限约 6 MB，支持 PNG/JPEG/WEBP。图生接口不允许 `prompt` 与照片同时提交，因此照片路径的姿态编辑不会转发，文字生成路径则完整转发提示词。
+
+TokenHub 的 Tripo 示例用 HTTPS 图片 URL。服务端有公网地址（`TOUCHLEARN_PUBLIC_URL` 或启动参数 `--public-url`）时，会把上传照片临时发布到 `/files/<job>/input-N.<ext>` 再交给 TokenHub，重建结束后立刻删除；本地 `127.0.0.1` 预览没有公网可达地址，会自动退回 data URI。`hy-3d-motion` 输出动画而不是静态网格，不应配置为本产品的 3D 模型。
+
+说明：
+
+- 未配置 `TOUCHLEARN_3D_KEY` 时，前端会明确提示该模式未启用；触觉教材和本地确定性 3D 模型不受影响。
+- 纹理和颜色只保留在 GLB；STL 是单色打印件。报告会把重建网格的水密性问题标成待复核，不会假装“完全合规”。
+- 文字指令会写入 `reconstruction.json` 并尽量传给服务商；改变姿态等几何编辑取决于服务商能力，服务不支持时保留照片原样。
+- 输出目录会多出 `model_textured.glb`、`thumbnail.png`、`photo_view.html`、`reconstruction.json`；`/api/health` 只返回是否配置和 provider 名称，不返回密钥。
+
 ## 六、语音与 PDF 的平台差异
 
 - 本地 Windows：使用系统 SAPI 生成 `narration.wav`，当前机器有 `Microsoft Huihui Desktop` 中文语音。
 - Linux 容器：没有 SAPI，WAV 生成会失败并记录到 `manifest.audio.tts_message`；前端会自动切换为浏览器 `speechSynthesis` 朗读讲解稿。讲解稿文本、音频页和二维码仍然可用。
-- PDF：Docker 镜像安装了 `pypdf`，能读文字型 PDF 的文字层。扫描件没有文字层时不会假装识别，需要配置视觉模型并上传关键页图片；当前不做服务端 PDF 光栅化。
+- PDF：Docker 镜像安装了 `pypdf`，能读文字型 PDF 的文字层。扫描件会优先用 PyMuPDF（或系统 poppler）在服务端光栅化，再交给视觉模型；如果宿主缺少光栅化依赖，会保留页面图片并提示补充，不会假装识别成功。
 
 ## 七、排障
 
@@ -294,7 +337,7 @@ Render 免费实例会休眠。升级实例，或改用常驻 VPS；不建议用
 
 ## 八、当前还需要人来做的事
 
-1. **大模型 API Key**：没有也能离线演示；要演示照片/复杂教材理解，需要至少一个文本模型，最好再加一个视觉模型。
+1. **大模型 API Key**：没有也能离线演示；要演示照片/复杂教材理解，需要至少一个文本模型，最好再加一个视觉模型。要做照片级三维重建，还需要三维服务 Key；腾讯云 TokenHub 可与文本模型共用同一个 Key，也可另配 Tripo / Meshy。
 2. **固定托管环境**：渲染平台或自有服务器任选其一。仓库侧配置已经准备好，账号、域名和备案需要人来完成；自有服务器的完整步骤见 [deploy/README.md](../deploy/README.md)。
 3. **自定义域名（可选）**：没有域名也能用 `onrender.com` 子域；有域名时在平台绑定后设置 `TOUCHLEARN_PUBLIC_URL`。
 4. **实体打印与盲人用户测试**：仍未完成。内部 PASS 只代表几何和工艺检查通过，不等于国家标准认证，也不等于真实触觉可用性验证。

@@ -12,6 +12,8 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import html
+import ipaddress
 import json
 import math
 import platform
@@ -25,11 +27,22 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
+from urllib.parse import urlsplit
 
 from .. import __version__ as core_version
+from .. import cnbraille
 from ..geometry import Mesh, build_mesh
 from ..layout import LayoutResult, build_layout
 from ..model import Diagram, diagram_from_dict
+from ..model3d import (
+    Model3DError,
+    braille_summary,
+    build_model3d,
+    companion_scene,
+    model3d_narration,
+    plan_model3d,
+)
+from ..paper import canvas_for, choose_paper, paper_name, paper_size
 from ..stl import sha256_file, write_binary_stl
 from ..svg import write_svg
 from . import __version__ as agent_version
@@ -57,11 +70,22 @@ from .parametric import (
 )
 from .preview import mesh_preview_svg
 from .qr import audio_page_html, make_qr_card_svg
+from .reconstruct import (
+    ReconstructionError,
+    ReconstructionPlan,
+    generative_enabled,
+    plan_reconstruction,
+    reconstruction_status,
+    reconstruct,
+    text_to_3d,
+)
+from .reconstruct_print import compose_printable
 from .router import RouteDecision, classify_request, extract_function
 from .scene import (
     SceneError,
     generate_scene,
     match_template,
+    normalize_roadmap,
     normalize_scene,
     scene_has_wires,
     scene_narration,
@@ -124,6 +148,46 @@ def _utc_now() -> str:
 def _slug(value: str, fallback: str = "touchlearn") -> str:
     clean = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._")
     return clean[:80] or fallback
+
+
+def _upload_name(value: str, fallback: str = "upload") -> str:
+    """Sanitise an upload name without losing the extension.
+
+    ``_slug`` is built for ASCII ids: it replaces every non-ASCII run with a
+    dash and then strips leading/trailing ``-._``, so ``路线图.jpg`` collapses to
+    ``jpg`` and the suffix check reports an unknown file type.  Uploads keep
+    their suffix and allow non-ASCII letters, which the Windows and Linux
+    filesystems both accept; everything that is not a word character, dot or
+    dash is still replaced.
+    """
+    base = str(value).replace("\\", "/").split("/")[-1]
+    path = Path(base)
+    suffix = path.suffix.lower()
+    stem = re.sub(r"[^\w.-]+", "-", path.stem, flags=re.UNICODE).strip("-._")
+    return (stem[:80] or fallback) + suffix
+
+
+def _public_http_base(value: str) -> str:
+    """Return a base URL the 3D provider can actually fetch, or ``""``.
+
+    A local preview server reports ``http://127.0.0.1:8765``.  Sending that to
+    TokenHub would make it fetch its own loopback, so photo reconstruction
+    falls back to an inline data URI unless the deployment configured a real
+    public address.
+    """
+    base = (value or "").strip().rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        return ""
+    host = urlsplit(base).hostname or ""
+    if not host or host.lower() in {"localhost", "0.0.0.0"} or host.lower().endswith(".local"):
+        return ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return base
+    if address.is_loopback or address.is_private or address.is_link_local or address.is_reserved:
+        return ""
+    return base
 
 
 def _json_safe(value: Any) -> Any:
@@ -209,6 +273,91 @@ def _mesh_info(path: Path) -> dict[str, Any]:
     except Exception as error:
         return {"error": str(error)}
     return {**mesh_health(mesh), "source": path.name}
+
+
+def _generation_modes(payload: dict[str, Any]) -> list[str]:
+    """Read the product switches from the composer.
+
+    ``tactile`` is the flat teaching plate, ``model3d`` is the deterministic
+    display model and ``reconstruct`` turns uploaded photos into a textured
+    GLB plus a printable stand.  Unknown values are ignored; an empty request
+    keeps the historical tactile default so older clients keep working.
+    """
+    raw = payload.get("generation_modes")
+    if isinstance(raw, str):
+        raw = [raw]
+    modes: list[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            value = str(item).strip().lower()
+            if value in {"tactile", "tactile_plate", "plate", "教材"}:
+                value = "tactile"
+            elif value in {"model3d", "3d", "model", "volumetric", "3d_model", "模型"}:
+                value = "model3d"
+            elif value in {
+                "reconstruct",
+                "photo3d",
+                "photo_3d",
+                "photo-real",
+                "photoreal",
+                "照片级",
+                "照片级3d重建",
+                "照片重建",
+                "重建",
+            }:
+                value = "reconstruct"
+            else:
+                continue
+            if value not in modes:
+                modes.append(value)
+    return modes or ["tactile"]
+
+
+def _looks_model3d(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        keyword in lowered
+        for keyword in (
+            "3d",
+            "三维",
+            "立体",
+            "摆件",
+            "手办",
+            "太阳系",
+            "行星",
+            "地球仪",
+            "分子结构",
+            "火箭",
+            "模型",
+        )
+    )
+
+
+def _short_title(value: str) -> str:
+    text = "".join(ch for ch in (value or "") if "\u4e00" <= ch <= "\u9fff" or ch.isalnum())
+    return text[:6] or "模型"
+
+
+def _generation_prompt(text: str, spec: dict[str, Any], title: str) -> str:
+    """Write one prompt for the generative provider.
+
+    The prompt asks only for the object itself.  Base, plaque, stand, labels
+    and orientation are added later by ``compose_printable``; letting the
+    provider invent them would duplicate the deterministic layer.
+    """
+    subject = (text or "").strip() or title
+    parts = [
+        str(part.get("name_zh") or "").strip()
+        for part in (spec.get("parts") or [])
+        if str(part.get("name_zh") or "").strip()
+    ][:8]
+    structure = f"主要结构包括：{'、'.join(parts)}。" if parts else ""
+    return (
+        f"高精度三维模型：{subject}。{structure}"
+        "单个完整物体，结构、比例和表面细节真实准确，轮廓清楚，"
+        "表面连续闭合，底面平整，可稳定放置。"
+        "不要包含文字、铭牌、支架、底座、场景或背景。"
+    )[:1000]
 
 
 def parse_robot_description(text: str) -> tuple[RobotSpec, float, list[str], list[str]]:
@@ -342,8 +491,22 @@ class TouchLearnAgent:
 
     def analyze(self, payload: dict[str, Any]) -> dict[str, Any]:
         subject = str(payload.get("subject") or "").strip().lower()
-        if subject not in {"", "auto", "function", "robot", "mesh", "scene", "unsupported"}:
+        if subject not in {
+            "",
+            "auto",
+            "function",
+            "robot",
+            "mesh",
+            "scene",
+            "model3d",
+            "reconstruct",
+            "unsupported",
+        }:
             raise ValueError(f"unsupported subject: {subject}")
+        generation_modes = _generation_modes(payload)
+        wants_tactile = "tactile" in generation_modes
+        wants_model3d = "model3d" in generation_modes
+        wants_reconstruct = "reconstruct" in generation_modes
 
         # Validate the browser's per-request choice before touching uploads or
         # writing a draft.  An unknown model is a client error, not a reason to
@@ -364,6 +527,7 @@ class TouchLearnAgent:
             for item in files
             if item["extension"] in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
         ]
+        scanned_pages: list[Path] = []
 
         text = str(
             payload.get("text")
@@ -383,9 +547,22 @@ class TouchLearnAgent:
         for item in files:
             if item["extension"] not in {".pdf", ".txt", ".json"}:
                 continue
-            document = extract_document(draft_dir / str(item["path"]))
+            document = extract_document(
+                draft_dir / str(item["path"]),
+                raster_dir=draft_dir / "pages",
+            )
             item["document"] = document.metadata()
+            if document.page_images:
+                for raw_page in document.page_images:
+                    page_path = Path(raw_page)
+                    if page_path.is_file():
+                        scanned_pages.append(page_path)
+                document_notes.append(f"{item['name']}：{document.message}")
+                continue
             if not document.ok:
+                document_notes.append(f"{item['name']}：{document.message}")
+                continue
+            if not document.text.strip():
                 document_notes.append(f"{item['name']}：{document.message}")
                 continue
             document_texts.append(document.text)
@@ -396,6 +573,11 @@ class TouchLearnAgent:
                 if candidate is not None:
                     scene_document = candidate
                     scene_document_name = str(item["name"])
+        if scanned_pages:
+            images.extend(scanned_pages)
+            document_notes.append(
+                f"已把 {len(scanned_pages)} 页扫描 PDF 转成图片，交给视觉模型重建结构；图片不会被逐像素描摹。"
+            )
         if document_texts:
             joined = "\n\n".join(document_texts).strip()
             payload["document_text"] = joined
@@ -414,7 +596,34 @@ class TouchLearnAgent:
                 or bool(str(payload.get("circuit") or "").strip())
             )
             requested_template = str(payload.get("template") or "").strip()
-            if has_scene or requested_template:
+            # Photo reconstruction is the strongest signal: it needs photos and
+            # is explicitly selected by the user.  A scene JSON or a chosen
+            # template is hard evidence for the tactile plate, so it wins only
+            # when the user did not select reconstruction (or supplied no photo).
+            if wants_reconstruct and (images or not (has_scene or requested_template)):
+                subject = "reconstruct"
+                route = {
+                    "subject": "reconstruct",
+                    "confidence": 0.95 if images else 0.4,
+                    "reason": (
+                        "用户选择了照片级 3D 重建并上传了照片。"
+                        if images
+                        else "用户选择了照片级 3D 重建，但还没有上传照片。"
+                    ),
+                    "provider": "mode",
+                }
+            # An explicit 3-D request wins when the user selected the 3-D
+            # product.  A scene JSON or a chosen template is hard evidence for
+            # the tactile plate, so it wins when both products are selected.
+            elif wants_model3d and (not wants_tactile or _looks_model3d(text)) and not (has_scene and wants_tactile) and not requested_template:
+                subject = "model3d"
+                route = {
+                    "subject": "model3d",
+                    "confidence": 0.9,
+                    "reason": "用户选择了触觉 3D 模型，需求指向立体建模。",
+                    "provider": "mode",
+                }
+            elif has_scene or requested_template:
                 # 用户显式给出场景结构或选择了离线模板，这是硬证据，优先于文本意图判断。
                 decision = RouteDecision(
                     subject="scene",
@@ -422,6 +631,16 @@ class TouchLearnAgent:
                     reason="用户提供了场景 JSON 或选择了离线场景模板。",
                     provider="manual",
                 )
+                subject = decision.subject
+                route = decision.to_dict()
+            elif wants_model3d and not wants_tactile:
+                subject = "model3d"
+                route = {
+                    "subject": "model3d",
+                    "confidence": 0.75,
+                    "reason": "用户只选择了触觉 3D 模型。",
+                    "provider": "mode",
+                }
             else:
                 decision = classify_request(
                     text,
@@ -434,8 +653,8 @@ class TouchLearnAgent:
                     effort=selection.get("effort") or None,
                     vision_model=selection.get("vision_model") or None,
                 )
-            subject = decision.subject
-            route = decision.to_dict()
+                subject = decision.subject
+                route = decision.to_dict()
 
         if subject == "robot" and text and not str(payload.get("description") or "").strip():
             payload["description"] = text
@@ -446,6 +665,26 @@ class TouchLearnAgent:
             draft = self._analyze_mesh(payload, draft_id, files, mesh_files)
         elif subject == "scene":
             draft = self._analyze_scene(payload, draft_id, files, images=images, route=route, selection=selection)
+        elif subject == "model3d":
+            draft = self._analyze_model3d(
+                payload,
+                draft_id,
+                files,
+                images=images,
+                route=route,
+                selection=selection,
+                generation_modes=generation_modes,
+            )
+        elif subject == "reconstruct":
+            draft = self._analyze_reconstruct(
+                payload,
+                draft_id,
+                files,
+                images=images,
+                route=route,
+                selection=selection,
+                generation_modes=generation_modes,
+            )
         elif subject == "unsupported":
             draft = Draft(
                 id=draft_id,
@@ -521,7 +760,7 @@ class TouchLearnAgent:
         for index, item in enumerate(raw_files):
             if not isinstance(item, dict):
                 continue
-            name = _slug(str(item.get("name") or f"upload-{index + 1}"), f"upload-{index + 1}")
+            name = _upload_name(str(item.get("name") or f"upload-{index + 1}"), f"upload-{index + 1}")
             extension = Path(name).suffix.lower()
             if extension not in ALLOWED_UPLOADS:
                 raise ValueError(f"不支持的文件类型：{extension or '未知'}（支持 PNG/JPG/PDF/STL/OBJ/TXT/JSON）")
@@ -1045,6 +1284,358 @@ class TouchLearnAgent:
             files=files,
         )
 
+    def _analyze_model3d(
+        self,
+        payload: dict[str, Any],
+        draft_id: str,
+        files: list[dict[str, Any]],
+        *,
+        images: Sequence[Path] = (),
+        route: dict[str, Any] | None = None,
+        selection: dict[str, Any] | None = None,
+        generation_modes: Sequence[str] = ("tactile",),
+    ) -> Draft:
+        selection = selection or {}
+        text = str(
+            payload.get("text")
+            or payload.get("description")
+            or payload.get("prompt")
+            or payload.get("request")
+            or ""
+        ).strip()
+        plan = plan_model3d(
+            text,
+            images=images,
+            model=(selection.get("vision_model") if images else selection.get("model")) or None,
+            effort=selection.get("effort") or None,
+        )
+        notes = list(plan.notes)
+        questions = list(plan.questions)
+        spec = plan.spec if isinstance(plan.spec, dict) else {}
+        kind = str(spec.get("kind") or "assembly")
+        planets = spec.get("planets") or []
+        parts = spec.get("parts") or []
+        status = reconstruction_status()
+        # The deterministic compiler stays for the solar catalogue and for
+        # offline deployments.  Everything else is generated as one mesh by
+        # the 3D provider, then annotated by the local print composer.
+        use_generative = (
+            bool(text)
+            and bool(status.get("configured"))
+            and bool(status.get("text_to_3d"))
+            and generative_enabled()
+            and kind != "solar_system"
+        )
+        companion = "tactile" in generation_modes and not use_generative
+
+        generation_plan: ReconstructionPlan | None = None
+        generation_info: dict[str, Any] = {}
+        if use_generative:
+            title = _short_title(str(spec.get("title_zh") or spec.get("title") or text))
+            generation_plan = ReconstructionPlan(
+                ok=True,
+                title=title,
+                subject=(text or title)[:160],
+                keep_features=[
+                    str(item.get("name_zh") or "").strip()
+                    for item in (spec.get("parts") or [])
+                    if isinstance(item, dict) and str(item.get("name_zh") or "").strip()
+                ][:6],
+                height_mm=120.0,
+                base="disc",
+                margin_mm=10.0,
+                labels=[{"text": title, "target": "主体"}],
+                provider=str(status.get("provider") or ""),
+                model=str(status.get("text_model") or status.get("model") or ""),
+                message="文字交给三维生成模型输出完整网格，本地再统一加标题、底座和方向适配。",
+            )
+            generation_info = {
+                "enabled": True,
+                "prompt": _generation_prompt(text, spec, title),
+                "provider": status.get("provider"),
+                "provider_label": status.get("label"),
+                "model": status.get("text_model") or status.get("model"),
+                "quality": status.get("quality"),
+                "face_budget": status.get("face_budget"),
+                "mode": "text_to_3d",
+            }
+
+        labels: list[dict[str, Any]] = []
+        if use_generative and generation_plan is not None:
+            label = generation_plan.title
+            try:
+                labels.append(
+                    {
+                        "text": label,
+                        "target": "主体",
+                        "pinyin": cnbraille.readings(label),
+                        "cells": [list(cell) for cell in cnbraille.encode_text(label)],
+                        "width_mm": round(cnbraille.width(label, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM), 2),
+                    }
+                )
+            except Exception:
+                pass
+            notes.append(
+                f"已接入{status.get('label') or '三维生成'}的 {generation_info.get('model') or '默认模型'}"
+                f"（{status.get('quality') or 'high'} 质量）；输出是单个完整网格，不是基础几何体拼装。"
+            )
+            notes.append("部件名不再刻到模型表面。生成后由本地统一加盲文标题、底座、前后方向与二维码位。")
+        elif kind == "solar_system":
+            for planet in planets:
+                name = str(planet.get("name_zh") or "")
+                if not name:
+                    continue
+                try:
+                    labels.append(
+                        {
+                            "text": name,
+                            "planet": planet.get("id"),
+                            "pinyin": cnbraille.readings(name),
+                            "cells": [list(cell) for cell in cnbraille.encode_text(name)],
+                            "width_mm": round(cnbraille.width(name), 2),
+                        }
+                    )
+                except Exception:
+                    continue
+            title_text = str(spec.get("title_zh") or "太阳系")
+            notes.append(
+                f"已生成太阳和 {len(planets)} 颗行星："
+                + "、".join(str(item.get("name_zh") or "") for item in planets)
+                + "。"
+            )
+            if len(planets) == 7:
+                notes.append("按你的要求默认生成 7 颗行星，海王星未包含；说“八大行星”可生成 8 颗。")
+            notes.append("行星半径保持真实大小顺序，但经过压缩；轨道表示相对顺序，不表示真实距离。")
+            notes.append(
+                "中文盲文没有刻在行星球面上：行星直径只有 9-25 mm，而一个两字名称的盲文长约 36-53 mm。"
+                "行星名称按离太阳由近到远的顺序刻在底座外缘的圆柱面上，从正面标题牌左侧起绕底座一周摸读；不生成竖立名牌。"
+            )
+        else:
+            for part in parts:
+                name = str(part.get("name_zh") or part.get("id") or "")
+                if not name:
+                    continue
+                try:
+                    labels.append(
+                        {
+                            "text": name[:4],
+                            "part": part.get("id"),
+                            "pinyin": cnbraille.readings(name[:4]),
+                            "cells": [list(cell) for cell in cnbraille.encode_text(name[:4])],
+                            "width_mm": round(cnbraille.width(name[:4]), 2),
+                        }
+                    )
+                except Exception:
+                    continue
+            notes.append("三维模型由本地编译器生成：大模型只描述部件、相对大小和位置，毫米尺寸由编译器决定。")
+
+        if not plan.ok and not use_generative:
+            notes.append(plan.message or "这个需求还不能可靠地转成三维模型。")
+        if companion and plan.ok:
+            notes.append("你同时选择了触觉教材；生成三维模型时会附带一张 A5-A3 的结构总览板，帮助先建立整体方位。")
+        elif companion and not plan.ok:
+            notes.append("这次三维模型没有通过校验，所以不会生成配套触觉板；可以先只生成触觉教材，或补充描述后重试。")
+
+        summary_kind = "generative" if use_generative else kind
+        summary: dict[str, Any] = {
+            "kind": summary_kind,
+            "title": spec.get("title"),
+            "title_zh": spec.get("title_zh"),
+            "planet_count": len(planets),
+            "part_count": 0 if use_generative else len(parts),
+            "scale_note": spec.get("scale_note"),
+            "planets": [
+                {
+                    "name_zh": item.get("name_zh"),
+                    "name_en": item.get("name_en"),
+                    "radius_mm": item.get("radius_mm"),
+                    "relative_radius": item.get("relative_radius"),
+                    "orbit_mm": item.get("orbit_mm"),
+                }
+                for item in planets
+            ],
+            "parts": [] if use_generative else [
+                {
+                    "name_zh": item.get("name_zh"),
+                    "shape": item.get("shape"),
+                    "size": item.get("size"),
+                    "position": item.get("position"),
+                }
+                for item in parts[:16]
+            ],
+        }
+        if use_generative and generation_plan is not None:
+            summary.update(
+                {
+                    "title": generation_plan.title,
+                    "title_zh": generation_plan.title,
+                    "provider": generation_info.get("provider"),
+                    "provider_label": generation_info.get("provider_label"),
+                    "model": generation_info.get("model"),
+                    "quality": generation_info.get("quality"),
+                    "mode": "text_to_3d",
+                    "scale_note": "生成式网格按目标高度缩放；底座、标题与前后方向由本地统一添加。",
+                }
+            )
+
+        fields: dict[str, Any] = {
+            "source_text": text,
+            "output_mode": "model3d",
+            "spec": spec,
+            "kind": summary_kind,
+            "planet_count": len(planets),
+            "part_count": 0 if use_generative else len(parts),
+            "provider_generation": generation_info,
+            "reconstruction": status,
+            "title": generation_plan.title if generation_plan else "",
+            "height_mm": generation_plan.height_mm if generation_plan else 120.0,
+            "base": generation_plan.base if generation_plan else "disc",
+            "margin_mm": generation_plan.margin_mm if generation_plan else 10.0,
+            "labels": generation_plan.labels if generation_plan else [],
+            "summary": summary,
+            "braille": {
+                "standard": "GF 0019-2018",
+                "dot_mm": 1.6,
+                "labels": labels,
+            },
+            "generation": {
+                "ok": plan.ok or use_generative,
+                "provider": generation_info.get("provider") or plan.provider,
+                "model": generation_info.get("model") or plan.model,
+                "effort": selection.get("effort"),
+                "message": generation_plan.message if generation_plan else plan.message,
+            },
+            "modes": list(generation_modes),
+            "companion_tactile": companion and plan.ok,
+            "image_received": bool(images),
+            "target_height_mm": generation_plan.height_mm if generation_plan else None,
+        }
+        if route:
+            fields["routing"] = route
+        if not plan.ok and not use_generative:
+            questions.append("也可以只选择“触觉教材”，先做一张二维结构板；或把三维对象拆成更具体的部件再描述。")
+        if use_generative:
+            questions.append("请确认盲文标题（1–4 个汉字）、打印高度和底座形状，再提交三维生成。")
+        else:
+            questions.append("请确认部件/行星数量、中文名称和底座图例的阅读方向，再生成 STL。")
+        return Draft(
+            id=draft_id,
+            subject="model3d",
+            output_mode="model3d",
+            confidence=plan.confidence or (0.7 if use_generative else 0.35),
+            ready=bool(use_generative or plan.ok),
+            fields=fields,
+            questions=questions,
+            notes=notes,
+            files=files,
+        )
+
+    def _analyze_reconstruct(
+        self,
+        payload: dict[str, Any],
+        draft_id: str,
+        files: list[dict[str, Any]],
+        *,
+        images: Sequence[Path] = (),
+        route: dict[str, Any] | None = None,
+        selection: dict[str, Any] | None = None,
+        generation_modes: Sequence[str] = ("reconstruct",),
+    ) -> Draft:
+        selection = selection or {}
+        text = str(
+            payload.get("text")
+            or payload.get("description")
+            or payload.get("prompt")
+            or payload.get("request")
+            or ""
+        ).strip()
+        status = reconstruction_status()
+        plan = plan_reconstruction(
+            text,
+            images=images,
+            model=(selection.get("vision_model") if images else selection.get("model")) or None,
+            effort=selection.get("effort") or None,
+        )
+        notes = list(plan.notes)
+        questions = list(plan.questions)
+        labels: list[dict[str, Any]] = []
+        for item in plan.labels:
+            label = str(item.get("text") or "")
+            if not label:
+                continue
+            try:
+                labels.append(
+                    {
+                        "text": label,
+                        "target": item.get("target") or "",
+                        "pinyin": cnbraille.readings(label),
+                        "cells": [list(cell) for cell in cnbraille.encode_text(label)],
+                        "width_mm": round(cnbraille.width(label, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM), 2),
+                    }
+                )
+            except Exception:
+                continue
+
+        if images:
+            notes.append(f"已收到 {len(images)} 张照片，将交给三维重建服务还原细节与纹理。")
+        else:
+            notes.append("照片级重建需要至少一张照片；只有文字描述时请改用“触觉3D模型”，由本地编译器建模。")
+            questions.append("请上传 1-4 张同一物体的照片，正面、侧面和顶面各一张效果最好。")
+        if not status["configured"]:
+            notes.append(str(status["message"]))
+            questions.append("服务端尚未配置 TOUCHLEARN_3D_KEY；可先使用“触觉3D模型”，或配置密钥后重试。")
+        notes.append("重建会输出两份文件：保留颜色与细节的纹理 GLB，以及带底座、盲文标题、底座盲文图例和二维码位的单色可打印 STL。")
+        notes.append("高度、底座、盲文名称由本地确定；照片里看不到的结构不会被编造。")
+        notes.append("文字指令会写入重建计划并尽量传给三维服务；改变姿态等几何编辑取决于服务能力，服务不支持时会保留照片原样。")
+        if "tactile" in generation_modes:
+            notes.append("你同时选择了触觉教材；重建时会附带一张 A5-A3 的结构总览板，帮助先建立整体方位。")
+
+        fields: dict[str, Any] = {
+            "source_text": text,
+            "output_mode": "reconstruction",
+            "plan": plan.to_dict(),
+            "title": plan.title,
+            "subject_text": plan.subject,
+            "height_mm": plan.height_mm,
+            "base": plan.base,
+            "margin_mm": plan.margin_mm,
+            "labels": plan.labels,
+            "keep_features": plan.keep_features,
+            "changes": plan.changes,
+            "print_notes": plan.print_notes,
+            "braille": {
+                "standard": "GF 0019-2018",
+                "dot_mm": cnbraille.DOT_DIAMETER_MM,
+                "labels": labels,
+            },
+            "generation": {
+                "ok": plan.ok,
+                "provider": plan.provider,
+                "model": plan.model,
+                "effort": selection.get("effort"),
+                "message": plan.message,
+            },
+            "reconstruction": status,
+            "image_count": len(images),
+            "modes": list(generation_modes),
+            "companion_tactile": "tactile" in generation_modes,
+            "target_height_mm": plan.height_mm,
+        }
+        if route:
+            fields["routing"] = route
+        questions.append("请确认盲文标题和特征名（每个 1-4 个汉字）、打印高度与底座形状，再开始重建。")
+        return Draft(
+            id=draft_id,
+            subject="reconstruct",
+            output_mode="reconstruction",
+            confidence=plan.confidence or (0.4 if images else 0.2),
+            ready=bool(images) and bool(status["configured"]) and bool(plan.ok),
+            fields=fields,
+            questions=questions,
+            notes=notes,
+            files=files,
+        )
+
     def _analyze_scene(
         self,
         payload: dict[str, Any],
@@ -1111,6 +1702,20 @@ class TouchLearnAgent:
             except (CircuitError, SceneError) as error:
                 circuit = None
                 questions.append(f"电路结构无法使用：{error}")
+
+        explicit_roadmap = payload.get("roadmap")
+        if isinstance(explicit_roadmap, str):
+            try:
+                explicit_roadmap = json.loads(explicit_roadmap)
+            except json.JSONDecodeError:
+                explicit_roadmap = None
+        if scene is None and isinstance(explicit_roadmap, dict):
+            try:
+                scene, warnings = normalize_roadmap(explicit_roadmap, fallback_title=text[:32])
+                confidence = 0.8
+                notes.append("已按阶段把路线图排成中文盲文板。")
+            except SceneError as error:
+                questions.append(f"路线图无法排版：{error}")
 
         explicit = payload.get("scene")
         if isinstance(explicit, str):
@@ -1428,6 +2033,17 @@ class TouchLearnAgent:
                 artifacts, metadata = self._build_mesh(job_dir, draft_dir, fields, output_mode, report_progress)
             elif subject == "scene":
                 artifacts, metadata = self._build_scene(job_dir, fields, report_progress)
+            elif subject == "model3d":
+                artifacts, metadata = self._build_model3d(job_dir, fields, report_progress)
+            elif subject == "reconstruct":
+                artifacts, metadata = self._build_reconstruct(
+                    job_dir,
+                    draft_dir,
+                    fields,
+                    draft_payload,
+                    report_progress,
+                    public_base_url=public_base_url,
+                )
             else:
                 raise ValueError(f"unsupported subject: {subject}")
 
@@ -1569,13 +2185,20 @@ class TouchLearnAgent:
                 }
             )
             relations.append({"from": element_id, "to": "curve", "kind": "on_curve", "order": index})
+        paper = choose_paper(
+            requested=fields.get("paper"),
+            blocks=len(elements),
+            primitives=len(elements) + 12,
+            chars=len(expression.canonical),
+        )
+        canvas = canvas_for(paper)
         payload = {
             "schema_version": "0.2.0",
             "id": f"function-{_slug(expression.canonical, 'graph')}",
             "title": title,
             "title_zh": title_zh,
             "domain": "math",
-            "canvas": {"size": "A5", "width_mm": 148, "height_mm": 210, "margin_mm": 6},
+            "canvas": canvas,
             "source": {"kind": "expression", "ref": expression.canonical},
             "elements": elements,
             "relations": relations,
@@ -1608,10 +2231,12 @@ class TouchLearnAgent:
         return [], {
             "mode": "tactile_plate",
             "title": title,
-            "subtitle": f"{expression.canonical}  /  A5 TACTILE PLATE",
+            "subtitle": f"{expression.canonical}  /  {paper} TACTILE PLATE",
             "audio": audio,
             "report": report,
             "report_dict": report.to_dict(),
+            "paper": paper,
+            "canvas": canvas,
             "geometry": {
                 "kind": "tactile_plate",
                 "diagram": payload,
@@ -1619,10 +2244,17 @@ class TouchLearnAgent:
                 "mesh": mesh.stats(),
                 "warnings": layout.warnings,
             },
-            "print": self._print_settings("tactile_plate", mesh),
+            "print": self._print_settings("tactile_plate", mesh, paper=paper),
         }
 
-    def _build_scene(self, job_dir: Path, fields: dict[str, Any], progress: Progress) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def _build_scene(
+        self,
+        job_dir: Path,
+        fields: dict[str, Any],
+        progress: Progress,
+        *,
+        prefix: str = "",
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         progress(10, "读取并校验场景")
         # The semantic circuit is the source of truth when present: recompiling
         # here guarantees the printed plate matches what the editor showed,
@@ -1672,9 +2304,19 @@ class TouchLearnAgent:
                 relations.append({"from": previous, "to": element_id, "kind": "reading_order", "order": index})
             previous = element_id
 
+        summary = scene_summary(scene)
+        paper = choose_paper(
+            # A roadmap asks for a larger sheet when its braille rows would sit
+            # closer than the readable minimum pitch; a user choice still wins.
+            requested=fields.get("paper") or scene.get("paper_hint") or "",
+            blocks=summary["block_count"],
+            primitives=summary["primitive_count"],
+            chars=len(str(scene.get("title_zh") or "")) + sum(len(str(block.get("note") or "")) for block in scene["blocks"]),
+        )
+        canvas = canvas_for(paper)
         title = scene["title"]
         title_zh = scene.get("title_zh") or title
-        subtitle = scene.get("subtitle") or f"A5 TACTILE SCENE / {len(scene['blocks'])} BLOCKS"
+        subtitle = scene.get("subtitle") or f"{paper} TACTILE SCENE / {len(scene['blocks'])} BLOCKS"
         audio = scene_narration(scene)
         payload = {
             "schema_version": "0.2.0",
@@ -1682,7 +2324,7 @@ class TouchLearnAgent:
             "title": title,
             "title_zh": title_zh,
             "domain": "scene",
-            "canvas": {"size": "A5", "width_mm": 148, "height_mm": 210, "margin_mm": 6},
+            "canvas": canvas,
             "source": {"kind": "scene", "ref": str(fields.get("source_text") or fields.get("template") or "user request")[:200]},
             "elements": elements,
             "relations": relations,
@@ -1690,16 +2332,16 @@ class TouchLearnAgent:
             "constraints": DEFAULT_CONSTRAINTS,
             "audio": audio,
         }
-        _write_json(job_dir / "diagram.json", payload)
+        _write_json(job_dir / f"{prefix}diagram.json", payload)
         progress(28, "排版场景图块")
         diagram = diagram_from_dict(payload)
         layout = build_layout(diagram)
         progress(45, "生成封闭网格")
         mesh = build_mesh(layout)
-        write_binary_stl(mesh, job_dir / "model.stl")
-        write_svg(layout, job_dir / "preview.svg")
+        write_binary_stl(mesh, job_dir / f"{prefix}model.stl")
+        write_svg(layout, job_dir / f"{prefix}preview.svg")
         _write_json(
-            job_dir / "decision_trace.json",
+            job_dir / f"{prefix}decision_trace.json",
             layout.trace + [{"stage": "layout", "action": "summary", "decision": layout.summary()}],
         )
         report = check_plate(layout, mesh, audio_ready=False)
@@ -1710,16 +2352,18 @@ class TouchLearnAgent:
             "audio": audio,
             "report": report,
             "report_dict": report.to_dict(),
+            "paper": paper,
+            "canvas": canvas,
             "geometry": {
                 "kind": "tactile_plate",
                 "diagram": payload,
                 "circuit": circuit,
-                "scene_summary": scene_summary(scene),
+                "scene_summary": summary,
                 "layout_summary": layout.summary(),
                 "mesh": mesh.stats(),
                 "warnings": warnings + list(layout.warnings),
             },
-            "print": self._print_settings("tactile_plate", mesh),
+            "print": self._print_settings("tactile_plate", mesh, paper=paper),
         }
 
     def _build_robot_relief(self, job_dir: Path, spec: RobotSpec, fields: dict[str, Any], progress: Progress) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1772,13 +2416,21 @@ class TouchLearnAgent:
         title = f"{spec.dof} AXIS ROBOT ARM"
         title_zh = f"{spec.dof}轴机械臂触觉示意图"
         audio = robot_relief_narration(spec)
+        paper = choose_paper(
+            requested=fields.get("paper"),
+            dof=spec.dof,
+            blocks=len(elements),
+            primitives=len(elements) * 2 + 10,
+            chars=len(str(fields.get("description") or "")),
+        )
+        canvas = canvas_for(paper)
         payload = {
             "schema_version": "0.2.0",
             "id": f"robot-{spec.dof}-axis",
             "title": title,
             "title_zh": title_zh,
             "domain": "robotics",
-            "canvas": {"size": "A5", "width_mm": 148, "height_mm": 210, "margin_mm": 6},
+            "canvas": canvas,
             "source": {"kind": "text", "ref": str(fields.get("description") or "robot spec")},
             "elements": elements,
             "relations": relations,
@@ -1799,10 +2451,12 @@ class TouchLearnAgent:
         return [], {
             "mode": "tactile_plate",
             "title": title,
-            "subtitle": f"{spec.dof} DOF / {spec.end_effector.upper()} / A5 TACTILE PLATE",
+            "subtitle": f"{spec.dof} DOF / {spec.end_effector.upper()} / {paper} TACTILE PLATE",
             "audio": audio,
             "report": report,
             "report_dict": report.to_dict(),
+            "paper": paper,
+            "canvas": canvas,
             "geometry": {
                 "kind": "tactile_plate",
                 "diagram": payload,
@@ -1810,7 +2464,7 @@ class TouchLearnAgent:
                 "mesh": mesh.stats(),
                 "warnings": layout.warnings,
             },
-            "print": self._print_settings("tactile_plate", mesh),
+            "print": self._print_settings("tactile_plate", mesh, paper=paper),
         }
 
     def _build_robot_volume(self, job_dir: Path, spec: RobotSpec, fields: dict[str, Any], progress: Progress) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1882,13 +2536,834 @@ class TouchLearnAgent:
             "print": self._print_settings(output_mode, result.mesh),
         }
 
+    def _build_model3d(self, job_dir: Path, fields: dict[str, Any], progress: Progress) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        provider_generation = fields.get("provider_generation")
+        if isinstance(provider_generation, dict) and provider_generation.get("enabled"):
+            return self._build_generated_model3d(job_dir, fields, progress)
+
+        progress(8, "校验三维模型规格")
+        spec = fields.get("spec")
+        if not isinstance(spec, dict) or not spec:
+            raise ValueError("缺少三维模型规格；请重新理解需求后再生成。")
+        spec = json.loads(json.dumps(spec))
+        target_height = fields.get("target_height_mm")
+        try:
+            target_value = float(target_height) if target_height not in {None, ""} else None
+        except (TypeError, ValueError):
+            target_value = None
+
+        progress(22, "生成底座、支架与曲面盲文标注")
+        result = build_model3d(spec, target_height_mm=target_value)
+        meta = result.meta
+        title = str(meta.get("title") or spec.get("title") or "TACTILE 3D MODEL")
+        title_zh = str(meta.get("title_zh") or spec.get("title_zh") or "触觉三维模型")
+        if meta.get("kind") == "solar_system":
+            subtitle = f"{meta.get('planet_count', 0)} PLANETS / BRAILLE RIM LEGEND / DISPLAY BASE"
+        else:
+            subtitle = f"{len(meta.get('parts') or [])} PARTS / SURFACE BRAILLE + BASE LEGEND"
+
+        progress(44, "写入 STL 与三维预览")
+        write_binary_stl(result.mesh, job_dir / "model.stl")
+        mesh_preview_svg(
+            result.mesh,
+            job_dir / "preview.svg",
+            title=title,
+            subtitle=subtitle,
+            width_mm=210.0,
+            height_mm=148.0,
+        )
+        _write_json(job_dir / "model_spec.json", spec)
+        _write_json(
+            job_dir / "decision_trace.json",
+            [
+                {
+                    "stage": "model3d",
+                    "action": "deterministic_compile",
+                    "decision": {
+                        "kind": meta.get("kind"),
+                        "size_mm": meta.get("size_mm"),
+                        "watertight": meta.get("watertight"),
+                        "triangles": meta.get("triangles"),
+                    },
+                }
+            ],
+        )
+
+        progress(58, "检查打印几何与盲文标注")
+        report = check_volumetric(result.mesh, qr_area_mm=float(meta.get("qr_pad_mm") or 32.0))
+        labels = (meta.get("braille") or {}).get("labels") or []
+        label_count = len(labels)
+        report.checks.append(
+            Check(
+                "model.kind",
+                STATUS_PASS,
+                str(meta.get("kind") or "assembly"),
+                "底座 + 支架 + 可触摸主体的确定性三维装配模型。",
+            )
+        )
+        if label_count:
+            report.checks.append(
+                Check(
+                    "encoding.chinese_braille",
+                    STATUS_PASS,
+                    f"GF 0019-2018 / {label_count} labels / 1.6 mm dots",
+                    "中文盲文按 GF 0019-2018 二级标调编码；点径 1.6 mm，点高 0.8 mm，优先刻在部件表面（顶面、侧壁、球冠或轮廓侧面），放不下时按编号刻在底座图例上。",
+                )
+            )
+        else:
+            report.checks.append(
+                Check(
+                    "encoding.chinese_braille",
+                    STATUS_REVIEW,
+                    "no labels",
+                    "模型没有中文盲文标注；请补充 2-4 个字的中文名称。",
+                )
+            )
+        report.checks.append(
+            Check(
+                "model.braille_reachability",
+                STATUS_PASS,
+                "surface labels + base legend",
+                "部件名称优先直接刻在可触摸表面；行星和过小部件按编号或轨道顺序刻在底座表面，不生成竖立名牌。",
+            )
+        )
+        if meta.get("kind") == "solar_system":
+            report.checks.append(
+                Check(
+                    "model.scale",
+                    STATUS_DEVIATION,
+                    "compressed radii",
+                    "行星半径保持真实大小顺序但经过压缩，轨道只表示相对顺序；不是等比例太阳系。",
+                )
+            )
+        else:
+            report.checks.append(
+                Check(
+                    "model.scale",
+                    STATUS_REVIEW,
+                    "relative sizes",
+                    "部件大小为相对比例，不是工程尺寸；需要工程尺寸时应提供具体毫米值并由人工复核。",
+                )
+            )
+
+        companion_meta: dict[str, Any] | None = None
+        companion_files: list[str] = []
+        if fields.get("companion_tactile"):
+            progress(64, "生成配套触觉总览板")
+            scene = companion_scene(spec, meta)
+            paper = choose_paper(
+                blocks=len(scene.get("blocks") or []),
+                primitives=sum(len(block.get("primitives") or []) for block in scene.get("blocks") or []),
+                chars=sum(len(str(block.get("label") or "")) + len(str(block.get("label_zh") or "")) for block in scene.get("blocks") or []),
+            )
+
+            def companion_progress(value: int, message: str) -> None:
+                progress(64 + int(value * 0.18), f"配套触觉板：{message}")
+
+            _, companion = self._build_scene(
+                job_dir,
+                {"scene": scene, "paper": paper, "source_text": fields.get("source_text")},
+                companion_progress,
+                prefix="plate_",
+            )
+            companion_meta = {
+                "paper": companion.get("paper"),
+                "canvas": companion.get("canvas"),
+                "scene": companion.get("geometry", {}).get("scene_summary"),
+                "mesh": companion.get("geometry", {}).get("mesh"),
+                "printable": companion.get("report_dict", {}).get("printable"),
+                "files": ["plate_model.stl", "plate_preview.svg", "plate_diagram.json"],
+            }
+            companion_files = ["plate_model.stl", "plate_preview.svg", "plate_diagram.json"]
+
+        audio = model3d_narration(spec, meta)
+        size = meta.get("size_mm") or [0, 0, 0]
+        progress(86, "整理三维模型说明")
+        return companion_files, {
+            "mode": "model3d",
+            "title": title,
+            "title_zh": title_zh,
+            "subtitle": subtitle,
+            "audio": audio,
+            "report": report,
+            "report_dict": report.to_dict(),
+            "geometry": {
+                "kind": "model3d",
+                "spec": spec,
+                "meta": meta,
+                "mesh": mesh_health(result.mesh),
+                "size_mm": size,
+                "companion": companion_meta,
+            },
+            "paper": "3D",
+            "print": self._print_settings("model3d", result.mesh),
+        }
+
+    def _build_generated_model3d(
+        self,
+        job_dir: Path,
+        fields: dict[str, Any],
+        progress: Progress,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Generate one complex mesh, then apply the deterministic tactile layer.
+
+        The provider is responsible only for the object.  Title, base, support
+        plinth, front direction, braille, QR pad and print checks are all added
+        here so every generated model is annotated the same way.
+        """
+        info = fields.get("provider_generation") if isinstance(fields.get("provider_generation"), dict) else {}
+        prompt = str(info.get("prompt") or fields.get("source_text") or "").strip()
+        if not prompt:
+            raise ValueError("缺少三维生成提示词；请重新理解需求后再生成。")
+
+        title = _short_title(str(fields.get("title") or info.get("prompt") or "模型"))
+        try:
+            height = float(fields.get("height_mm") or 120.0)
+        except (TypeError, ValueError):
+            height = 120.0
+        height = max(60.0, min(200.0, height))
+        try:
+            margin = float(fields.get("margin_mm") or 10.0)
+        except (TypeError, ValueError):
+            margin = 10.0
+        base_shape = str(fields.get("base") or "disc")
+        if base_shape not in {"disc", "rounded_rect"}:
+            base_shape = "disc"
+        labels = [
+            {"text": str(item.get("text") or "")[:3], "target": str(item.get("target") or "")}
+            for item in (fields.get("labels") or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ][:3]
+        if not labels:
+            labels = [{"text": title, "target": "主体"}]
+
+        plan = ReconstructionPlan(
+            ok=True,
+            title=title,
+            subject=str(fields.get("source_text") or "")[:160],
+            height_mm=height,
+            base=base_shape,
+            margin_mm=max(4.0, min(20.0, margin)),
+            labels=labels,
+            provider=str(info.get("provider") or ""),
+            model=str(info.get("model") or ""),
+            message="由三维生成模型输出完整网格，本地统一添加标题、底座与方向适配。",
+        )
+
+        def provider_progress(value: int, message: str) -> None:
+            progress(8 + int(max(0, min(100, value)) * 0.56), message)
+
+        progress(6, "提交文字描述到三维生成服务")
+        asset = text_to_3d(prompt, plan, dest=job_dir, progress=provider_progress)
+        if asset.mesh is None or not asset.mesh.triangles:
+            detail = asset.mesh_error or "三维服务没有返回可解析的三角网格。"
+            raise ReconstructionError(
+                f"{detail} 纹理 GLB 已保存，但无法生成可打印 STL；请换一个描述重试，"
+                "或改用“照片级 3D 重建”。"
+            )
+
+        progress(66, "生成底座、盲文标题与方向适配")
+        result = compose_printable(asset.mesh, plan, target_height_mm=plan.height_mm, title=plan.title)
+        meta = result.meta
+        subtitle = f"GENERATIVE 3D / {plan.subject or plan.title} / BRAILLE TITLE + BASE LEGEND"
+
+        progress(74, "写入 STL 与三维预览")
+        write_binary_stl(result.mesh, job_dir / "model.stl")
+        mesh_preview_svg(
+            result.mesh,
+            job_dir / "preview.svg",
+            title=title,
+            subtitle=subtitle,
+            width_mm=210.0,
+            height_mm=148.0,
+        )
+        print_settings = self._print_settings("model3d", result.mesh)
+        _write_json(
+            job_dir / "model_spec.json",
+            {
+                "kind": "generative_model3d",
+                "plan": plan.to_dict(),
+                "prompt": prompt,
+                "print_meta": meta,
+                "provider": asset.to_dict(),
+            },
+        )
+        view_html = self._photo_view_html(title, plan, asset, kind="generated")
+        (job_dir / "model_view.html").write_text(view_html, encoding="utf-8")
+        _write_json(
+            job_dir / "generation.json",
+            {
+                "schema_version": "1.0",
+                "mode": "text_to_3d",
+                "provider": asset.provider,
+                "task_id": asset.task_id,
+                "model": plan.model,
+                "prompt": prompt,
+                "plan": plan.to_dict(),
+                "height_mm": plan.height_mm,
+                "base": plan.base,
+                "margin_mm": plan.margin_mm,
+                "labels": plan.labels,
+                "textured_model": "model_textured.glb" if "glb" in asset.files else "",
+                "thumbnail": "thumbnail.png" if "thumbnail" in asset.files else "",
+                "print": print_settings,
+                "print_meta": meta,
+                "source_mesh": mesh_health(asset.mesh),
+                "provider_meta": asset.meta,
+                "instructions": {
+                    "keep_features": plan.keep_features,
+                    "note": "生成模型只负责外观与细节；标题、底座、方向、盲文、二维码位由本地确定性后处理完成。",
+                },
+            },
+        )
+        _write_json(
+            job_dir / "decision_trace.json",
+            [
+                {
+                    "stage": "model3d",
+                    "action": "provider_generation",
+                    "decision": {
+                        "provider": asset.provider,
+                        "task_id": asset.task_id,
+                        "model": plan.model,
+                        "quality": info.get("quality"),
+                        "source_triangles": asset.mesh.triangle_count(),
+                        "target_height_mm": plan.height_mm,
+                    },
+                },
+                {
+                    "stage": "model3d",
+                    "action": "deterministic_tactile_composition",
+                    "decision": {
+                        "strategy": meta.get("strategy"),
+                        "watertight": meta.get("watertight"),
+                        "triangles": meta.get("triangles"),
+                        "size_mm": meta.get("size_mm"),
+                        "front": "title_plaque_and_qr_on_base_front_tab",
+                    },
+                },
+            ],
+        )
+
+        progress(82, "检查打印几何、盲文与生成来源")
+        report = check_volumetric(result.mesh, qr_area_mm=float(meta.get("qr_pad_mm") or 30.0))
+        softened: list[Check] = []
+        for check in report.checks:
+            if check.rule_id == "encoding.chinese_braille":
+                continue
+            if check.rule_id in {"mesh.watertight", "mesh.min_feature"} and check.status == STATUS_FAIL:
+                softened.append(
+                    Check(
+                        check.rule_id,
+                        STATUS_REVIEW,
+                        check.measured,
+                        "AI 生成网格可能存在开放边或退化面；切片前请用网格修复工具检查，再决定是否打印。",
+                    )
+                )
+            else:
+                softened.append(check)
+        report.checks = softened
+        report.checks.append(
+            Check(
+                "generation.provider",
+                STATUS_PASS,
+                f"{asset.provider} / {asset.task_id[:12]}",
+                "文字由三维生成模型还原为一个完整网格，不是基础几何体拼装；生成过程不伪造照片里不存在的测量数据。",
+            )
+        )
+        report.checks.append(
+            Check(
+                "generation.texture",
+                STATUS_PASS if "glb" in asset.files else STATUS_REVIEW,
+                "GLB + STL" if "glb" in asset.files else "STL only",
+                "GLB 保留生成的颜色与材质；STL 为单色打印，不携带纹理。",
+            )
+        )
+        report.checks.append(
+            Check(
+                "generation.mesh_repair",
+                STATUS_PASS if meta.get("watertight") else STATUS_REVIEW,
+                "watertight" if meta.get("watertight") else "repair recommended",
+                "生成网格与底座、盲文图例合并后若仍有开放边，切片前需要修复；报告不会把未验证的网格标成完全合规。",
+            )
+        )
+        report.checks.append(
+            Check(
+                "generation.orientation",
+                STATUS_PASS,
+                "front = title plaque + QR pad",
+                "正面由本地底座定义：标题牌和二维码位所在的一侧为前方，读图与摆放方向一致；不旋转未知朝向的主体。",
+            )
+        )
+        report.checks.append(
+            Check(
+                "generation.scale",
+                STATUS_DEVIATION,
+                f"target {plan.height_mm:.1f} mm",
+                "生成式网格不是测量数据；高度按用户目标缩放，不能当作真实尺寸。",
+            )
+        )
+        label_count = len(meta.get("braille", {}).get("labels") or [])
+        report.checks.append(
+            Check(
+                "encoding.chinese_braille",
+                STATUS_PASS,
+                f"GF 0019-2018 / title + {label_count} base labels",
+                "中文盲文按 GF 0019-2018 编码；标题在正面名牌，特征名按编号刻在底座前缘的盲文图例上，不在生成网格表面刻猜出来的名字。",
+            )
+        )
+
+        size = meta.get("size_mm") or [0, 0, 0]
+        audio = {
+            "intro": f"这是一个由三维生成模型制作的{plan.subject or plan.title}立体模型。",
+            "steps": [
+                "先从正面底座摸起，正面有一块标题牌和一块方形二维码位。",
+                f"标题是{plan.title}，用中文盲文刻在标题牌上。",
+                "沿底座前缘摸到编号盲文图例，可以读出各个特征的名称。",
+                "再向上摸主体，感受生成模型还原出的轮廓、转折和表面起伏。",
+                f"主体高约 {plan.height_mm:.0f} 毫米，连同底座总高约 {float(size[2]):.0f} 毫米。",
+            ],
+            "outro": "这是生成式展示模型，不是测量件；单色打印不保留颜色，颜色和纹理请看带纹理的 GLB。",
+        }
+        return [], {
+            "mode": "model3d",
+            "title": title,
+            "title_zh": plan.title,
+            "subtitle": subtitle,
+            "audio": audio,
+            "report": report,
+            "report_dict": report.to_dict(),
+            "geometry": {
+                "kind": "generative_model3d",
+                "plan": plan.to_dict(),
+                "provider": asset.to_dict(),
+                "prompt": prompt,
+                "meta": meta,
+                "mesh": mesh_health(result.mesh),
+                "source_mesh": mesh_health(asset.mesh),
+                "size_mm": size,
+            },
+            "paper": "3D",
+            "print": print_settings,
+        }
+
+    def _build_reconstruct(
+        self,
+        job_dir: Path,
+        draft_dir: Path,
+        fields: dict[str, Any],
+        draft_payload: dict[str, Any],
+        progress: Progress,
+        *,
+        public_base_url: str = "",
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        progress(6, "读取重建计划")
+        raw_plan = fields.get("plan") if isinstance(fields.get("plan"), dict) else {}
+        try:
+            height = float(fields.get("height_mm") or raw_plan.get("height_mm") or 120.0)
+        except (TypeError, ValueError):
+            height = 120.0
+        height = max(60.0, min(200.0, height))
+        try:
+            margin = float(fields.get("margin_mm") or raw_plan.get("margin_mm") or 10.0)
+        except (TypeError, ValueError):
+            margin = 10.0
+        base_shape = str(fields.get("base") or raw_plan.get("base") or "disc")
+        if base_shape not in {"disc", "rounded_rect"}:
+            base_shape = "disc"
+        plan = ReconstructionPlan(
+            ok=True,
+            title=str(fields.get("title") or raw_plan.get("title") or "模型")[:6],
+            subject=str(fields.get("subject_text") or raw_plan.get("subject") or ""),
+            keep_features=[str(item) for item in (fields.get("keep_features") or raw_plan.get("keep_features") or [])][:6],
+            changes=[str(item) for item in (fields.get("changes") or raw_plan.get("changes") or [])][:6],
+            height_mm=height,
+            base=base_shape,
+            margin_mm=max(4.0, min(20.0, margin)),
+            labels=[
+                {"text": str(item.get("text") or "")[:3], "target": str(item.get("target") or "")}
+                for item in (fields.get("labels") or raw_plan.get("labels") or [])
+                if isinstance(item, dict) and str(item.get("text") or "").strip()
+            ][:3],
+            print_notes=[str(item) for item in (fields.get("print_notes") or raw_plan.get("print_notes") or [])][:4],
+        )
+        if not plan.labels:
+            plan.labels = [{"text": plan.title, "target": "主体"}]
+
+        extensions = {".png", ".jpg", ".jpeg", ".webp"}
+        images = [
+            draft_dir / str(item["path"])
+            for item in (draft_payload.get("files") or [])
+            if str(item.get("extension") or "").lower() in extensions
+        ]
+        images = [path for path in images if path.is_file()]
+        if not images:
+            raise ReconstructionError("没有收到可用于重建的照片。请上传 PNG/JPEG/WEBP 照片。")
+
+        def provider_progress(value: int, message: str) -> None:
+            progress(10 + int(max(0, min(100, value)) * 0.50), message)
+
+        # TokenHub's Tripo examples pass HTTPS image URLs.  When this deployment
+        # has a real public address, publish the first four photos through the
+        # existing unguessable /files/<job>/<name> route and hand those URLs to
+        # the provider.  On a local-only preview we keep the data-URI fallback.
+        public_base = _public_http_base(public_base_url)
+        image_urls: list[str] = []
+        published: list[Path] = []
+        if public_base:
+            for index, path in enumerate(images[:4]):
+                suffix = path.suffix.lower() if path.suffix.lower() in extensions else ".jpg"
+                name = f"input-{index + 1}{suffix}"
+                target = job_dir / name
+                if path.resolve() != target.resolve():
+                    shutil.copyfile(path, target)
+                published.append(target)
+                image_urls.append(f"{public_base}/files/{job_dir.name}/{name}")
+
+        progress(10, "提交照片到三维重建服务")
+        try:
+            asset = reconstruct(
+                images,
+                plan,
+                dest=job_dir,
+                progress=provider_progress,
+                image_urls=image_urls,
+            )
+        finally:
+            # The provider has fetched the images by the time reconstruction
+            # returns; do not ship the learner's photos inside the artifact zip.
+            for target in published:
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+        if asset.mesh is None or not asset.mesh.triangles:
+            detail = asset.mesh_error or "三维服务没有返回可解析的三角网格。"
+            raise ReconstructionError(
+                f"{detail} 纹理 GLB 已保存，但无法生成可打印 STL；请换一组照片重试，或改用“触觉3D模型”。"
+            )
+
+        progress(62, "生成底座、盲文标题与底座图例")
+        result = compose_printable(asset.mesh, plan, target_height_mm=plan.height_mm, title=plan.title)
+        meta = result.meta
+        title = str(meta.get("title") or plan.title or "PHOTO 3D")
+        subtitle = f"PHOTO RECONSTRUCTION / {plan.subject or title} / BRAILLE TITLE + BASE LEGEND"
+
+        progress(70, "写入 STL 与三维预览")
+        write_binary_stl(result.mesh, job_dir / "model.stl")
+        mesh_preview_svg(
+            result.mesh,
+            job_dir / "preview.svg",
+            title=title,
+            subtitle=subtitle,
+            width_mm=210.0,
+            height_mm=148.0,
+        )
+        print_settings = self._print_settings("reconstruction", result.mesh)
+        _write_json(
+            job_dir / "model_spec.json",
+            {
+                "kind": "reconstruction",
+                "plan": plan.to_dict(),
+                "print_meta": meta,
+                "provider": asset.to_dict(),
+            },
+        )
+
+        photo_html = self._photo_view_html(title, plan, asset)
+        (job_dir / "photo_view.html").write_text(photo_html, encoding="utf-8")
+        _write_json(
+            job_dir / "reconstruction.json",
+            {
+                "schema_version": "1.0",
+                "provider": asset.provider,
+                "task_id": asset.task_id,
+                "plan": plan.to_dict(),
+                "height_mm": plan.height_mm,
+                "base": plan.base,
+                "margin_mm": plan.margin_mm,
+                "labels": plan.labels,
+                "textured_model": "model_textured.glb" if "glb" in asset.files else "",
+                "thumbnail": "thumbnail.png" if "thumbnail" in asset.files else "",
+                "print": print_settings,
+                "print_meta": meta,
+                "source_mesh": mesh_health(asset.mesh),
+                "provider_meta": asset.meta,
+                "instructions": {
+                    "keep_features": plan.keep_features,
+                    "changes": plan.changes,
+                    "note": "几何编辑由三维服务执行；本地确定高度、底座、盲文与二维码位。",
+                },
+            },
+        )
+        _write_json(
+            job_dir / "decision_trace.json",
+            [
+                {
+                    "stage": "reconstruct",
+                    "action": "provider_reconstruction",
+                    "decision": {
+                        "provider": asset.provider,
+                        "task_id": asset.task_id,
+                        "source_triangles": asset.mesh.triangle_count(),
+                        "target_height_mm": plan.height_mm,
+                        "base": plan.base,
+                        "labels": [item["text"] for item in plan.labels],
+                    },
+                },
+                {
+                    "stage": "reconstruct",
+                    "action": "deterministic_print_composition",
+                    "decision": {
+                        "strategy": meta.get("strategy"),
+                        "watertight": meta.get("watertight"),
+                        "triangles": meta.get("triangles"),
+                        "size_mm": meta.get("size_mm"),
+                    },
+                },
+            ],
+        )
+
+        progress(78, "检查打印几何、盲文与重建来源")
+        report = check_volumetric(result.mesh, qr_area_mm=float(meta.get("qr_pad_mm") or 30.0))
+        softened: list[Check] = []
+        for check in report.checks:
+            if check.rule_id == "encoding.chinese_braille":
+                continue
+            if check.rule_id in {"mesh.watertight", "mesh.min_feature"} and check.status == STATUS_FAIL:
+                softened.append(
+                    Check(
+                        check.rule_id,
+                        STATUS_REVIEW,
+                        check.measured,
+                        "AI 重建网格可能存在开放边或退化面；切片前请用网格修复工具检查，再决定是否打印。",
+                    )
+                )
+            else:
+                softened.append(check)
+        report.checks = softened
+        report.checks.append(
+            Check(
+                "reconstruction.provider",
+                STATUS_PASS,
+                f"{asset.provider} / {asset.task_id[:12]}",
+                "照片由专门的三维重建服务还原为带纹理的 GLB；本地不伪造照片里看不到的结构。",
+            )
+        )
+        report.checks.append(
+            Check(
+                "reconstruction.texture",
+                STATUS_PASS if "glb" in asset.files else STATUS_REVIEW,
+                "GLB + STL" if "glb" in asset.files else "STL only",
+                "GLB 保留照片颜色与纹理；STL 为单色打印，不携带纹理。",
+            )
+        )
+        report.checks.append(
+            Check(
+                "reconstruction.mesh_repair",
+                STATUS_PASS if meta.get("watertight") else STATUS_REVIEW,
+                "watertight" if meta.get("watertight") else "repair recommended",
+                "重建网格与底座、盲文图例合并后若仍有开放边，切片前需要修复；报告不会把未验证的网格标成完全合规。",
+            )
+        )
+        report.checks.append(
+            Check(
+                "reconstruction.instructions",
+                STATUS_REVIEW if plan.changes else STATUS_PASS,
+                " / ".join(plan.changes)[:120] if plan.changes else "photo only",
+                "文字指令已写入重建计划并尽量传给三维服务；改变姿态等几何编辑取决于服务能力，服务不支持时保留照片原样。",
+            )
+        )
+        report.checks.append(
+            Check(
+                "reconstruction.scale",
+                STATUS_DEVIATION,
+                f"target {plan.height_mm:.1f} mm",
+                "AI 重建网格不是测量数据；高度按用户目标缩放，不能当作真实尺寸。",
+            )
+        )
+        label_count = len(meta.get("braille", {}).get("labels") or [])
+        report.checks.append(
+            Check(
+                "encoding.chinese_braille",
+                STATUS_PASS,
+                f"GF 0019-2018 / title + {label_count} feature labels",
+                "中文盲文按 GF 0019-2018 编码；标题在正面名牌，特征名按编号刻在底座前缘的盲文图例上。重建网格没有可靠的特征坐标，所以不在模型表面刻猜出来的名字，也不生成竖立名牌。",
+            )
+        )
+
+        companion_meta: dict[str, Any] | None = None
+        companion_files: list[str] = []
+        if fields.get("companion_tactile"):
+            progress(84, "生成配套触觉总览板")
+            scene = self._reconstruction_companion(plan)
+            paper = choose_paper(
+                blocks=len(scene.get("blocks") or []),
+                primitives=sum(len(block.get("primitives") or []) for block in scene.get("blocks") or []),
+                chars=sum(len(str(block.get("label") or "")) + len(str(block.get("label_zh") or "")) for block in scene.get("blocks") or []),
+            )
+
+            def companion_progress(value: int, message: str) -> None:
+                progress(84 + int(value * 0.08), f"配套触觉板：{message}")
+
+            _, companion = self._build_scene(
+                job_dir,
+                {"scene": scene, "paper": paper, "source_text": fields.get("source_text")},
+                companion_progress,
+                prefix="plate_",
+            )
+            companion_meta = {
+                "paper": companion.get("paper"),
+                "canvas": companion.get("canvas"),
+                "scene": companion.get("geometry", {}).get("scene_summary"),
+                "mesh": companion.get("geometry", {}).get("mesh"),
+                "printable": companion.get("report_dict", {}).get("printable"),
+                "files": ["plate_model.stl", "plate_preview.svg", "plate_diagram.json"],
+            }
+            companion_files = ["plate_model.stl", "plate_preview.svg", "plate_diagram.json"]
+
+        size = meta.get("size_mm") or [0, 0, 0]
+        feature_text = "、".join(str(item.get("target") or item.get("text") or "") for item in plan.labels if item.get("target"))
+        audio = {
+            "intro": f"这是一个根据照片重建的{plan.subject or plan.title}立体模型。",
+            "steps": [
+                "先从正面底座摸起，正面有一块标题牌和一块方形二维码位；标题牌上刻着中文盲文。",
+                f"标题是{plan.title}。",
+                "在底座前缘摸到编号盲文图例，按编号读出各个特征的名称。"
+                + (f"这次标注了{feature_text}。" if feature_text else ""),
+                "再向上摸主体，感受照片里物体的轮廓、转折和主要起伏。",
+                f"主体高约 {plan.height_mm:.0f} 毫米，连同底座总高约 {float(size[2]):.0f} 毫米。",
+            ],
+            "outro": "这是照片级重建的展示模型，不是测量件；单色打印不保留照片颜色，颜色和纹理请看带纹理的 GLB。",
+        }
+        return companion_files, {
+            "mode": "reconstruction",
+            "title": title,
+            "title_zh": plan.title,
+            "subtitle": subtitle,
+            "audio": audio,
+            "report": report,
+            "report_dict": report.to_dict(),
+            "geometry": {
+                "kind": "reconstruction",
+                "plan": plan.to_dict(),
+                "provider": asset.to_dict(),
+                "meta": meta,
+                "mesh": mesh_health(result.mesh),
+                "source_mesh": mesh_health(asset.mesh),
+                "size_mm": size,
+                "companion": companion_meta,
+            },
+            "paper": "3D",
+            "print": print_settings,
+        }
+
+    @staticmethod
+    def _photo_view_html(title: str, plan: ReconstructionPlan, asset: Any, *, kind: str = "photo") -> str:
+        glb = asset.files.get("glb")
+        thumbnail = asset.files.get("thumbnail")
+        if glb is not None:
+            viewer = (
+                f'<model-viewer src="{html.escape(glb.name)}" alt="{html.escape(title)}" '
+                'camera-controls auto-rotate shadow-intensity="1" exposure="1" '
+                'style="width:100%;height:70vh;background:#eef1f4;"></model-viewer>'
+            )
+            script = (
+                '<script type="module" '
+                'src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>'
+            )
+        elif thumbnail is not None:
+            viewer = f'<img src="{html.escape(thumbnail.name)}" alt="{html.escape(title)}" style="max-width:100%;">'
+            script = ""
+        else:
+            viewer = '<p>三维服务没有返回可预览文件，请打开 <a href="preview.svg">preview.svg</a> 查看打印轮廓。</p>'
+            script = ""
+        changes = "".join(f"<li>{html.escape(item)}</li>" for item in plan.changes)
+        keeps = "".join(f"<li>{html.escape(item)}</li>" for item in plan.keep_features)
+        generated = kind == "generated"
+        heading = "生成说明" if generated else "重建说明"
+        lead = "文字生成的三维模型" if generated else "照片级三维重建"
+        keep_title = "生成要点" if generated else "保留特征"
+        keep_empty = "<li>按文字描述生成完整主体</li>" if generated else "<li>按照片原样保留</li>"
+        color_note = (
+            "GLB 保留生成的颜色与材质；model.stl 是带底座、盲文标题、底座盲文图例和二维码位的单色打印件。"
+            if generated
+            else "GLB 保留照片颜色与纹理；model.stl 是带底座、盲文标题、底座盲文图例和二维码位的单色打印件。"
+        )
+        return (
+            "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+            f"<title>{html.escape(title)} · {html.escape(lead)}</title>"
+            "<style>body{font-family:system-ui,'Microsoft YaHei',sans-serif;margin:0;background:#f6f7f9;color:#1d2530;}"
+            "main{max-width:960px;margin:0 auto;padding:24px;}h1{font-size:22px;}"
+            "section{background:#fff;border:1px solid #dde3ea;border-radius:12px;padding:18px;margin-top:16px;}"
+            "li{line-height:1.7}a{color:#1d5fd0}</style></head><body><main>"
+            f"<h1>{html.escape(title)}</h1>"
+            f"<p>{html.escape(plan.subject or lead)}</p>"
+            f"{viewer}{script}"
+            f"<section><h2>{heading}</h2>"
+            f"<p>目标高度 {plan.height_mm:.0f} mm；底座 {html.escape(plan.base)}；纹理模型：{html.escape(glb.name if glb else '无')}。</p>"
+            f"<p>{color_note}</p>"
+            f"<h3>{keep_title}</h3><ul>{keeps or keep_empty}</ul>"
+            f"<h3>按要求调整</h3><ul>{changes or '<li>本次没有额外几何调整</li>'}</ul>"
+            "<p><a href=\"model_textured.glb\" download>下载纹理 GLB</a> · "
+            "<a href=\"model.stl\" download>下载可打印 STL</a> · "
+            "<a href=\"preview.svg\">打印预览</a></p>"
+            "</section></main></body></html>"
+        )
+
+    @staticmethod
+    def _reconstruction_companion(plan: ReconstructionPlan) -> dict[str, Any]:
+        labels = [item for item in plan.labels if str(item.get("text") or "").strip()][:4] or [
+            {"text": plan.title, "target": "主体"}
+        ]
+        blocks: list[dict[str, Any]] = []
+        order: list[str] = []
+        for index, item in enumerate(labels, start=1):
+            text = str(item.get("text") or "")[:4]
+            target = str(item.get("target") or "")
+            x = 24.0 + (index - 1) * (52.0 / max(1, len(labels) - 1)) if len(labels) > 1 else 50.0
+            y = 50.0
+            blocks.append(
+                {
+                    "id": f"feature_{index}",
+                    "label": f"FEATURE {index}",
+                    "label_zh": text,
+                    "note": target,
+                    "marker": [round(x, 3), round(y, 3)],
+                    "show_label": True,
+                    "primitives": [
+                        {"type": "circle", "cx": round(x, 3), "cy": round(y, 3), "r": 7.0, "width": 1.8},
+                        {"type": "text", "x": round(x - 3.2, 3), "y": round(y - 2.2, 3), "text": str(index), "height": 4.4},
+                        {"type": "braille", "x": round(x - 4.0, 3), "y": round(y + 9.0, 3), "text": text},
+                    ],
+                }
+            )
+            order.append(f"feature_{index}")
+        return {
+            "version": 1,
+            "title": "PHOTO RECONSTRUCTION",
+            "title_zh": plan.title,
+            "subtitle": f"FEATURE OVERVIEW / {len(blocks)} LABELS / NOT TO SCALE",
+            "blocks": blocks,
+            "reading_order": order,
+            "footer_lines": ["FEATURE ORDER, NOT TRUE SHAPE", "SCAN QR FOR AUDIO"],
+            "notes": [
+                "这张板只标出重建对象和特征名的阅读顺序，不还原照片细节。",
+                "物体的真实轮廓、颜色和纹理以带纹理的 GLB 与三维打印件为准。",
+            ],
+            "scale_note": "SCHEMATIC / NOT TO SCALE",
+        }
+
     # ------------------------------------------------------------------
     # Reports and bundle files
     # ------------------------------------------------------------------
 
-    def _print_settings(self, mode: str, mesh: Mesh) -> dict[str, Any]:
+    def _print_settings(self, mode: str, mesh: Mesh, paper: str | None = None) -> dict[str, Any]:
         stats = mesh.stats()
         if mode == "tactile_plate":
+            notes = "0.2 mm layers keep the 0.8 mm relief and 0.6 mm braille dots crisp; do not iron the top surface."
+            if paper and paper.upper() != "A5":
+                notes += f" 板面为 {paper.upper()}，请确认打印机热床不小于 {paper.upper()} 并预留 6 mm 边距。"
             return {
                 "orientation": "relief face up, base on the bed",
                 "nozzle_mm": 0.4,
@@ -1896,7 +3371,36 @@ class TouchLearnAgent:
                 "perimeters": 3,
                 "infill_percent": 15,
                 "supports": "none",
-                "notes": "0.2 mm layers keep the 0.8 mm relief and 0.6 mm braille dots crisp; do not iron the top surface.",
+                "paper": paper or "A5",
+                "notes": notes,
+                "size_mm": stats["size_mm"],
+            }
+        if mode == "model3d":
+            return {
+                "orientation": "base flat on the bed; print orbits and planets as previewed",
+                "nozzle_mm": 0.4,
+                "layer_height_mm": 0.16,
+                "perimeters": 3,
+                "infill_percent": 15,
+                "supports": "tree supports only under long overhangs and the sun pedestal; keep them away from braille surfaces",
+                "paper": "3D",
+                "notes": "0.16 mm layers and a 0.4 mm nozzle keep the 1.6 mm braille dots legible; verify the model fits the 220×220×250 mm build volume before slicing.",
+                "size_mm": stats["size_mm"],
+            }
+        if mode == "reconstruction":
+            return {
+                "orientation": "display base flat on the bed; reconstructed object upright as previewed",
+                "nozzle_mm": 0.4,
+                "layer_height_mm": 0.16,
+                "perimeters": 3,
+                "infill_percent": 15,
+                "supports": "tree supports under overhangs, kept away from braille dots and the QR pad",
+                "paper": "3D",
+                "notes": (
+                    "STL 是单色打印件，不保留照片颜色；需要颜色时请用原始 GLB 在多材料切片器中上色。"
+                    "AI 重建网格可能含开放边或退化面，切片前先用修复工具检查；"
+                    "0.16 mm 层高与 0.4 mm 喷嘴可保留 1.6 mm 盲文点。"
+                ),
                 "size_mm": stats["size_mm"],
             }
         return {
@@ -1969,14 +3473,23 @@ class TouchLearnAgent:
                 "",
                 "## 已知限制",
                 "",
-                "- 中文盲文（GF 0019-2018）映射模块尚未接入；当前使用 UEB 英文字母和阿拉伯数字，报告标记 `NEEDS_REVIEW`。",
+                "- 三维模型的中文名称使用 GF 0019-2018 盲文点字（1.6 mm 点径、0.8 mm 点高），优先刻在部件可触摸表面；行星和过小部件刻在底座表面，不生成竖立名牌。平面场景板仍使用 UEB 英文字母和阿拉伯数字，报告标记 `NEEDS_REVIEW`。",
                 "- GB/T 40142-2021 的公开全文只获取到封面和目录；触摸图形参数采用公开解读值，条款级核对标记为待复核。",
                 "- GB/T 15720-2008 已于 2025-11-03 废止，本报告不把它作为现行依据。",
                 "- 图片和工程图在离线模式下只作为来源留档，不凭空测量尺寸；确认后的解析式或参数才进入几何。",
                 "- 场景板只表达图块位置、连接关系和阅读顺序，不还原照片细节，也不代表真实尺寸。",
-                "",
             ]
         )
+        if metadata.get("mode") == "reconstruction":
+            lines.extend(
+                [
+                    "- 照片级重建的纹理与颜色只保留在 GLB；STL 是单色打印件。",
+                    "- AI 重建网格不是测量数据；高度按用户目标缩放，不能当作真实尺寸。",
+                    "- 文字指令的几何编辑（例如展开翅膀）取决于三维服务能力；服务不支持时会保留照片原样。",
+                    "- 重建网格可能含开放边或退化面；报告把水密性问题标为 NEEDS_REVIEW，切片前必须用修复工具检查。",
+                ]
+            )
+        lines.append("")
         (job_dir / "compliance.md").write_text("\n".join(lines), encoding="utf-8")
 
     def _write_readme(self, job_dir: Path, metadata: dict[str, Any]) -> None:
@@ -1988,8 +3501,15 @@ class TouchLearnAgent:
             f"模式：{metadata['mode']}",
             "",
             "文件",
-            "- model.stl            可直接送入切片软件",
+            "- model.stl            触觉板或三维模型，可直接送入切片软件",
             "- preview.svg          预览图（不是打印文件）",
+            "- plate_model.stl      双模式输出的配套触觉总览板（若有）",
+            "- plate_preview.svg    配套触觉板预览（若有）",
+            "- model_spec.json      三维模型的结构化规格（若有）",
+            "- model_textured.glb   照片级重建的带纹理模型（若有）",
+            "- thumbnail.png        三维服务返回的渲染缩略图（若有）",
+            "- photo_view.html      可旋转查看 GLB 的重建页面（若有）",
+            "- reconstruction.json  重建计划、指令与来源记录（若有）",
             "- qr_card.svg          A6 二维码卡片，打印后贴在预留平面",
             "- qr.png               二维码原图",
             "- audio_script.txt     讲解脚本",
@@ -1999,6 +3519,7 @@ class TouchLearnAgent:
             "- manifest.json        可复现清单与哈希",
             "",
             "打印建议",
+            f"- 板面：{print_info.get('paper')}",
             f"- 尺寸：{print_info.get('size_mm')} mm",
             f"- 摆放：{print_info.get('orientation')}",
             f"- 喷嘴：{print_info.get('nozzle_mm')} mm；层高：{print_info.get('layer_height_mm')} mm",
@@ -2065,9 +3586,13 @@ class TouchLearnAgent:
             "print": metadata.get("print"),
             "artifacts": artifacts,
             "known_limitations": [
-                "Chinese Braille (GF 0019-2018) is not implemented; the current plates use UEB letters and Arabic numerals.",
+                "3D models label parts with Chinese Braille (GF 0019-2018) directly on touchable surfaces; planets and parts too small for a name use a braille legend on the base instead of standing flags. Flat scene plates still use UEB letters and Arabic numerals.",
                 "GB/T 40142-2021 clause values are taken from public summaries; the official full text was not obtained.",
                 "Images and engineering drawings are archived as provenance, not measured automatically in offline mode.",
                 "Generated scenes are structural schematics; they do not reproduce photo detail or represent true dimensions.",
+                "3D part and planet sizes keep their real relative order but are compressed to fit a printable display piece; they are not museum-scale replicas.",
+                "Photo-real reconstruction keeps colour and texture only in the GLB; the STL is a single-material print.",
+                "A reconstructed mesh is not a measurement; its height follows the user's target and must not be read as a real dimension.",
+                "Geometry edits requested in text depend on the reconstruction provider; the local pipeline always applies height, base, braille and QR placement.",
             ],
         }

@@ -49,3 +49,11 @@ services:
         sync: false
       - key: TOUCHLEARN_VLM_MODEL
         sync: false
+      - key: TOUCHLEARN_3D_PROVIDER
+        sync: false
+      - key: TOUCHLEARN_3D_KEY
+        sync: false
+      - key: TOUCHLEARN_3D_MODEL
+        sync: false
+      - key: TOUCHLEARN_3D_FACES
+        sync: false

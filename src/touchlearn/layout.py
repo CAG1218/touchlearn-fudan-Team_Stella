@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from . import braille, font
+from . import font, tactile_braille as braille
 from .model import Diagram
 
 Point = tuple[float, float]

@@ -106,6 +106,36 @@ TokenHub 各模型对参数的支持并不完全一致，传输层已做适配�
 - `glm-5.3` 系列拒绝 `thinking`，但接受 `reasoning_effort`；关闭思考时发送 `reasoning_effort: "none"`。
 - 场景 JSON 的初始强度为 `off`。实测开启思考时 `glm-5.3-flash` 会用 145 s 仍被 `max_tokens` 截断，关闭后 8 s 左右返回完整 JSON；页面选择中/高强度时会先按用户选择执行，截断后再自动降级重试。
 
+## 三维生成
+
+文字生成 3D 和照片级重建共用一套三维服务配置。TokenHub 是最省事的路线：同一个 Key 同时提供混元 3D 与 Tripo：
+
+```dotenv
+TOUCHLEARN_3D_PROVIDER=tokenhub
+TOUCHLEARN_3D_KEY=                    # 留空复用 TOUCHLEARN_LLM_KEY
+TOUCHLEARN_3D_TEXT_MODEL=tripo-3d-3.1 # 文字生成默认模型
+TOUCHLEARN_3D_MODEL=tripo-3d-p1       # 图生 3D 默认模型（单图 + 多视图）
+TOUCHLEARN_3D_QUALITY=high            # draft / standard / high
+TOUCHLEARN_3D_GENERATIVE=1            # 0 = 回退本地结构化编译器
+```
+
+模型族与请求字段：
+
+| 模型族 | 代表模型 | 关键参数 |
+|---|---|---|
+| Tripo 3.x | `tripo-3d-3.1` | 文字：`prompt` + `face_limit`（最高 2,000,000，默认 high 档 1,500,000）+ `geometry_quality=detailed` + `texture_quality=detailed` + `pbr` / `texture` |
+| Tripo P1 | `tripo-3d-p1` | 严格按控制台账面示例：文字 `{model, prompt}`；单图 `{model, input}`；多视图 `{model, inputs:[{front,left,back,right}]}` |
+| Tripo P2 | `tripo-3d-p2` | `face_limit` 50,000；`pbr` / `texture` |
+| 混元 3D | `hy-3d-3.1` / `hy-3d-3.0` | 文字：`generate_type=Normal` + `face_count` + `enable_pbr`；图片：`image_base64` |
+| 混元 Express | `hy-3d-express` | 严格按示例只发送 `{model, prompt}` |
+| 混元 Motion | `hy-3d-motion` | **不接入**：它输出动画，不是可打印静态网格 |
+
+图生 3D 的 `input` 按控制台示例需要 HTTPS URL。部署在公网时，后端会把上传照片临时发布到 `/files/<job>/input-N.<ext>` 并把该 URL 交给 TokenHub，重建结束后立即删除；本地预览没有公网地址时退回 data URI。文件名含 `front/left/back/right`（或 `前/左/后/右`）且上传 2–4 张照片时，Tripo 自动走 `inputs` 多视图；无方向词时按文件名顺序填充 front/left/back/right。
+
+质量档位只决定面数与纹理预算，不改变协议：`draft` 约 20 万 Tripo 面 / 30 万混元面，`standard` 约 50 万 / 50 万，`high` 约 150 万 / 100 万。文字提示词会被压缩到 1024 字符以内，并明确要求“单个完整物体、不要文字/铭牌/支架/底座/场景”，底座和标题由本地后处理添加。
+
+也支持 Tripo 官方（`TOUCHLEARN_3D_PROVIDER=tripo`）和 Meshy 官方（`meshy`）接口，各自填 `TOUCHLEARN_3D_TRIPO_KEY` / `TOUCHLEARN_3D_MESHY_KEY` 或通用 `TOUCHLEARN_3D_KEY`。
+
 ## 最小配置
 
 复制 `.env.example` 为 `.env`，至少填文本模型：
@@ -138,6 +168,15 @@ TOUCHLEARN_LLM_KEY=sk-...
 | `TOUCHLEARN_LLM_EFFORT` | 初始思考强度：`low` / `medium` / `high`（内部 `off` 仅用于自动重试）；页面可随时切换 |
 | `TOUCHLEARN_SCENE_MODEL` | 场景 JSON 的初始模型；留空用文本模型或预置的 `scene_model`；页面选择优先 |
 | `TOUCHLEARN_SCENE_EFFORT` | 场景 JSON 的初始强度；DeepSeek 与 TokenHub 预置默认 `off`；页面选择优先 |
+| `TOUCHLEARN_3D_PROVIDER` | 三维服务：`tokenhub` / `tripo` / `meshy` |
+| `TOUCHLEARN_3D_KEY` | 通用三维密钥；TokenHub 留空时复用 `TOUCHLEARN_LLM_KEY` |
+| `TOUCHLEARN_3D_TEXT_MODEL` | 文字生成 3D 模型，默认 `tripo-3d-3.1` |
+| `TOUCHLEARN_3D_MODEL` | 图生 3D 模型，默认 `tripo-3d-p1` |
+| `TOUCHLEARN_3D_QUALITY` | 生成质量：`draft` / `standard` / `high` |
+| `TOUCHLEARN_3D_GENERATIVE` | `0` 关闭生成式路径，回退本地结构化编译器 |
+| `TOUCHLEARN_3D_FACES` | 面数上限，3000–2,000,000 |
+| `TOUCHLEARN_3D_TIMEOUT` | 三维任务超时秒数，默认 600 |
+| `TOUCHLEARN_3D_POLL` | 三维任务轮询间隔秒数，默认 4 |
 | `TOUCHLEARN_LLM_PROXY` | 仅当必须走代理时填写，如 `http://127.0.0.1:7890`；默认忽略系统代理 |
 | `TOUCHLEARN_ENV_FILE` | 可选的额外 `.env` 路径 |
 

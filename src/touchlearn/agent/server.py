@@ -37,6 +37,7 @@ from .accounts import (
 from .agent import TouchLearnAgent
 from .audio import available_voices
 from .llm import llm_status, load_env, providers_payload
+from .reconstruct import reconstruction_status
 from .scene import scene_templates, template_preview
 from .scene_svg import scene_to_svg
 from .vision import vision_status
@@ -59,6 +60,10 @@ def content_disposition(filename: str) -> str:
 MIME_OVERRIDES = {
     ".stl": "model/stl",
     ".obj": "text/plain; charset=utf-8",
+    ".glb": "model/gltf-binary",
+    ".gltf": "model/gltf+json",
+    ".mtl": "text/plain; charset=utf-8",
+    ".3mf": "model/3mf",
     ".svg": "image/svg+xml",
     ".wav": "audio/wav",
     ".md": "text/markdown; charset=utf-8",
@@ -68,6 +73,7 @@ MIME_OVERRIDES = {
     ".css": "text/css; charset=utf-8",
     ".txt": "text/plain; charset=utf-8",
     ".png": "image/png",
+    ".webp": "image/webp",
 }
 
 
@@ -330,6 +336,7 @@ class Handler(BaseHTTPRequestHandler):
                     "voices": self.state.voices() if authorized else [],
                     "vision": vision_status() if authorized else locked,
                     "llm": llm_status() if authorized else locked,
+                    "reconstruction": reconstruction_status() if authorized else locked,
                     "limits": {"file_mb": 30, "total_mb": 80},
                 }
             )
@@ -348,7 +355,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self._require_auth():
                 return
         if path == "/api/providers":
-            self._send_json(providers_payload())
+            payload = providers_payload()
+            payload["reconstruction"] = reconstruction_status()
+            self._send_json(payload)
             return
         if path == "/api/scene-templates":
             self._send_json({"ok": True, "templates": scene_templates()})

@@ -5,7 +5,7 @@ from __future__ import annotations
 from html import escape
 from pathlib import Path
 
-from . import braille, font
+from . import font, tactile_braille as braille
 from .layout import LayoutResult, Primitive
 
 COLORS = {
@@ -60,7 +60,7 @@ def _primitive_svg(primitive: Primitive, color: str) -> str:
         )
     if primitive.kind == "braille":
         x, y = primitive.points[0]
-        radius = braille.DOT_DIAMETER_MM / 2.0
+        radius = braille.dot_diameter(primitive.text) / 2.0
         return "".join(
             f'<circle cx="{_fmt(cx)}" cy="{_fmt(cy)}" r="{_fmt(radius)}" fill="{color}"/>'
             for cx, cy in braille.dot_centers(primitive.text, x, y)

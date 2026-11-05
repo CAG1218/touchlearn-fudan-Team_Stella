@@ -21,12 +21,28 @@ class _MockHandler(BaseHTTPRequestHandler):
         "choices": [{"message": {"content": '```json\n{"subject": "scene", "confidence": 0.8}\n```'}}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5},
     }
+    script: list[dict] | None = None
+    bodies: list[dict] = []
     last_body = None
+
+    @classmethod
+    def reset(cls, script: list[dict] | None = None) -> None:
+        cls.script = script
+        cls.bodies = []
+        cls.last_body = None
 
     def do_POST(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length") or "0")
-        type(self).last_body = json.loads(self.rfile.read(length).decode("utf-8"))
-        data = json.dumps(self.reply).encode("utf-8")
+        body = json.loads(self.rfile.read(length).decode("utf-8"))
+        type(self).last_body = body
+        type(self).bodies.append(body)
+        sequence = type(self).script
+        if sequence:
+            index = min(len(type(self).bodies) - 1, len(sequence) - 1)
+            payload = sequence[index]
+        else:
+            payload = type(self).reply
+        data = json.dumps(payload).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -50,6 +66,9 @@ class LLMTransportTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=5)
+
+    def setUp(self) -> None:
+        _MockHandler.reset()
 
     def test_endpoint_normalisation(self) -> None:
         self.assertEqual(llm._chat_endpoint("https://api.example.com"), "https://api.example.com/v1/chat/completions")
@@ -263,7 +282,73 @@ class LLMTransportTests(unittest.TestCase):
             _MockHandler.reply = original
         self.assertFalse(result.ok)
         self.assertEqual(result.finish_reason, "length")
-        self.assertIn("max_tokens", result.message)
+        self.assertIn("输出额度", result.message)
+        self.assertNotIn("max_tokens", result.message)
+
+    def test_default_budget_uses_provider_scale(self) -> None:
+        config = ProviderConfig(
+            provider="tokenhub",
+            label="mock",
+            endpoint=f"{self.base_url}/chat/completions",
+            model="deepseek-v4.1-flash",
+            timeout=5,
+        )
+        result = chat([{"role": "user", "content": "hello"}], config=config, effort="off")
+        self.assertTrue(result.ok)
+        self.assertEqual(_MockHandler.last_body["max_tokens"], 65536)
+
+    def test_zero_budget_omits_the_field(self) -> None:
+        config = ProviderConfig(
+            provider="tokenhub",
+            label="mock",
+            endpoint=f"{self.base_url}/chat/completions",
+            model="deepseek-v4.1-flash",
+            timeout=5,
+        )
+        result = chat([{"role": "user", "content": "hello"}], config=config, max_tokens=0)
+        self.assertTrue(result.ok)
+        self.assertNotIn("max_tokens", _MockHandler.last_body)
+
+    def test_environment_can_override_the_budget(self) -> None:
+        config = ProviderConfig(
+            provider="tokenhub",
+            label="mock",
+            endpoint=f"{self.base_url}/chat/completions",
+            model="deepseek-v4.1-flash",
+            timeout=5,
+        )
+        with patch.dict(os.environ, {"TOUCHLEARN_MAX_OUTPUT_TOKENS": "12345"}, clear=False):
+            result = chat([{"role": "user", "content": "hello"}], config=config)
+        self.assertTrue(result.ok)
+        self.assertEqual(_MockHandler.last_body["max_tokens"], 12345)
+
+    def test_chat_json_widens_the_budget_after_length(self) -> None:
+        _MockHandler.reset(
+            [
+                {
+                    "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+                    "usage": {"completion_tokens": 65536},
+                },
+                {
+                    "choices": [{"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}],
+                    "usage": {"completion_tokens": 20},
+                },
+            ]
+        )
+        env = {
+            "TOUCHLEARN_LLM_PROVIDER": "tokenhub",
+            "TOUCHLEARN_LLM_URL": self.base_url,
+            "TOUCHLEARN_LLM_KEY": "sk-test",
+            "TOUCHLEARN_LLM_MODEL": "deepseek-v4.1-flash",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = chat_json("system", "return json")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data, {"ok": True})
+        self.assertEqual(len(_MockHandler.bodies), 2)
+        self.assertEqual(_MockHandler.bodies[0]["max_tokens"], 65536)
+        self.assertEqual(_MockHandler.bodies[1]["max_tokens"], 131072)
+        self.assertIn("扩大输出额度", result.message)
 
     def test_vision_reuses_text_key_for_same_provider(self) -> None:
         env = {

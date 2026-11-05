@@ -12,7 +12,7 @@ import math
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from . import braille, font
+from . import font, tactile_braille as braille
 from .layout import Feature, LayoutResult, Point, Primitive
 
 Point3 = tuple[float, float, float]
@@ -264,7 +264,7 @@ def primitive_polygons(primitive: Primitive) -> list[list[Point]]:
 
     if primitive.kind == "braille":
         x, y = primitive.points[0]
-        radius = braille.DOT_DIAMETER_MM / 2.0
+        radius = braille.dot_diameter(primitive.text) / 2.0
         for cx, cy in braille.dot_centers(primitive.text, x, y):
             polygons.append(circle_polygon(cx, cy, radius, segments=16))
         return polygons

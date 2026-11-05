@@ -18,6 +18,7 @@ from typing import Any, Iterable, Sequence
 from .. import braille
 from ..geometry import Mesh, feature_polygons
 from ..layout import LayoutResult, Primitive
+from ..paper import paper_name
 from ..printability import feature_distance
 
 STATUS_PASS = "PASS"
@@ -806,13 +807,14 @@ def check_relief(
         )
 
     expected = (plate_width_mm, plate_height_mm)
+    paper = paper_name(*expected)
     size_ok = abs(size[0] - expected[0]) <= 0.5 and abs(size[1] - expected[1]) <= 0.5
     report.checks.append(
         Check(
             "plate.size",
             STATUS_PASS if size_ok else STATUS_FAIL,
             f"{size[0]:.1f}×{size[1]:.1f} mm",
-            f"板面为 A5 {expected[0]:.0f}×{expected[1]:.0f} mm" if size_ok else "板面尺寸偏离 A5",
+            f"板面为 {paper} {expected[0]:.0f}×{expected[1]:.0f} mm" if size_ok else f"板面尺寸偏离 {paper}",
         )
     )
     report.checks.append(Check("plate.margin", STATUS_PASS if margin_mm >= 6.0 else STATUS_FAIL, f"{margin_mm:.1f} mm", "四周留出 6 mm 安全边"))

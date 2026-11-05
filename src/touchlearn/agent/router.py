@@ -241,7 +241,6 @@ def _llm_classify(
         prompt,
         images=images if images else (),
         kind="vision" if images else "text",
-        max_tokens=1200,
         model=model,
         effort=effort,
     )
@@ -255,7 +254,6 @@ def _llm_classify(
             prompt,
             images=images if images else (),
             kind="vision" if images else "text",
-            max_tokens=1200,
             model=model,
             effort="off",
         )
@@ -487,7 +485,6 @@ def extract_function(
         prompt,
         images=images if images else (),
         kind="vision" if images else "text",
-        max_tokens=1400,
         model=selected_model,
         effort=effort,
     )
@@ -498,7 +495,6 @@ def extract_function(
             prompt,
             images=images if images else (),
             kind="vision" if images else "text",
-            max_tokens=1400,
             model=selected_model,
             effort="off",
         )

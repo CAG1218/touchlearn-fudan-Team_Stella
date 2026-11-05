@@ -231,7 +231,6 @@ def _llm_edit_circuit(
         CIRCUIT_EDIT_SYSTEM,
         prompt,
         kind="text",
-        max_tokens=4096,
         model=selection.get("model") or None,
         effort=selection.get("effort") or None,
     )
@@ -360,7 +359,6 @@ def recognize_circuit_image(
         prompt,
         images=images[:1],
         kind="vision",
-        max_tokens=4096,
         model=(selection.get("vision_model") or None),
         effort=selection.get("effort") or None,
     )

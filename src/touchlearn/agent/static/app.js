@@ -16,12 +16,16 @@
     robot: "机械臂",
     mesh: "三维文件",
     scene: "触觉场景",
+    model3d: "触觉 3D 模型",
+    reconstruct: "照片级 3D 重建",
     unsupported: "暂不支持",
   };
   const MODE_LABEL = {
-    tactile_plate: "A5 触觉板",
+    tactile_plate: "触觉教材板（A5–A3）",
     volumetric_model: "三维立体模型",
-    silhouette_relief: "A5 轮廓浮雕",
+    silhouette_relief: "轮廓浮雕",
+    model3d: "触觉 3D 模型",
+    reconstruction: "照片级 3D 重建",
   };
   const STATUS_LABEL = {
     PASS: "通过",
@@ -45,6 +49,7 @@
     ["print", "打印说明"],
   ];
   const SELECTION_KEY = "touchlearn.llm.selection.v1";
+  const GENERATION_MODES_KEY = "touchlearn.generation.modes.v1";
   const AUTH_TAB_KEY = "touchlearn.auth.tab.v1";
   const savedAuthTab = (() => {
     try {
@@ -64,6 +69,15 @@
     providers: null,
     models: null,
     selection: null,
+    generationModes: (() => {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(GENERATION_MODES_KEY) || "[]");
+        const modes = Array.isArray(saved) ? saved.filter((item) => item === "tactile" || item === "model3d") : [];
+        return modes.length ? Array.from(new Set(modes)) : ["tactile"];
+      } catch (error) {
+        return ["tactile"];
+      }
+    })(),
     popoverOpen: false,
     popoverView: "models",
     templates: [],
@@ -961,6 +975,53 @@
     return /\b(?:y|f\s*\(\s*x\s*\))\s*=\s*(?:$|[\s，,。；;]*(?:做成|生成|画出?|绘制|$))/i.test(text);
   }
 
+  function selectedModes() {
+    const active = $$(".mode-option.is-active")
+      .map((button) => button.dataset.mode)
+      .filter((mode) => mode === "tactile" || mode === "model3d" || mode === "reconstruct");
+    return active.length ? Array.from(new Set(active)) : ["tactile"];
+  }
+
+  function saveGenerationModes(modes) {
+    state.generationModes = modes.slice();
+    try {
+      window.localStorage.setItem(GENERATION_MODES_KEY, JSON.stringify(state.generationModes));
+    } catch (error) {
+      /* private mode / storage disabled: the in-memory choice still works */
+    }
+    applyGenerationModes();
+  }
+
+  function applyGenerationModes() {
+    const modes = state.generationModes.length ? state.generationModes : ["tactile"];
+    $$(".mode-option").forEach((button) => {
+      const active = modes.includes(button.dataset.mode);
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    const input = $("#promptInput");
+    if (input) {
+      if (modes.includes("reconstruct")) {
+        input.placeholder = "上传 1-4 张照片，说明想保留或调整什么，例如“保留羽毛纹理，把翅膀展开，高 120 毫米”…";
+      } else {
+        input.placeholder = modes.includes("model3d")
+          ? "描述你想做的触觉教材或 3D 模型…"
+          : "描述你想做的触觉教材…";
+      }
+    }
+  }
+
+  function toggleGenerationMode(mode) {
+    if (mode !== "tactile" && mode !== "model3d" && mode !== "reconstruct") return;
+    const current = selectedModes();
+    const next = current.includes(mode) ? current.filter((item) => item !== mode) : [...current, mode];
+    if (!next.length) {
+      toast("至少保留一种输出：触觉教材、触觉 3D 模型或照片级重建。", true);
+      return;
+    }
+    saveGenerationModes(next);
+  }
+
   function handleSubmit(event) {
     event.preventDefault();
     if (state.sending) return;
@@ -975,7 +1036,7 @@
       $("#promptInput").focus();
       return;
     }
-    const request = { subject: "auto", text };
+    const request = { subject: "auto", text, generation_modes: selectedModes() };
     if (state.pendingTemplate) {
       request.template = state.pendingTemplate;
       state.pendingTemplate = "";
@@ -996,7 +1057,7 @@
     }
     if (draft.subject === "robot") {
       if (!draft.output_mode) {
-        return "我读到了机械臂结构。请先选择输出形态：缩小成立体模型，还是做成 A5 浮雕触觉板。";
+        return "我读到了机械臂结构。请先选择输出形态：缩小成立体模型，还是做成浮雕触觉板（最短边 A5）。";
       }
       return draft.ready
         ? "我读到了机械臂结构，参数在下面。确认后我会生成可直接切片的 STL。"
@@ -1011,9 +1072,35 @@
       const hasCircuit = draft.fields && draft.fields.circuit && typeof draft.fields.circuit === "object";
       if (!draft.ready) return "我还不能可靠地排出这张场景。请补充结构，或选择一个离线模板。";
       if (hasCircuit) {
-        return "我把需求整理成了一张 A5 触觉场景草稿，并生成了可编辑电路。元件位置、开关状态和导线已预置，可以直接在图形编辑器里拖动，或输入一句话让智能体修改。";
+        return "我把需求整理成了一张触觉场景草稿（A5 起，按复杂度自动放大到 A4/A3），并生成了可编辑电路。元件位置、开关状态和导线已预置，可以直接在图形编辑器里拖动，或输入一句话让智能体修改。";
       }
-      return "我把需求整理成了一张 A5 触觉场景草稿。请核对图块顺序、标签和连接关系。";
+      return "我把需求整理成了一张触觉场景草稿（A5 起，按复杂度自动放大到 A4/A3）。请核对图块顺序、标签和连接关系。";
+    }
+    if (draft.subject === "reconstruct") {
+      const fields = draft.fields || {};
+      const status = fields.reconstruction || {};
+      if (!fields.image_count) {
+        return "照片级三维重建需要至少一张照片。请上传 1-4 张同一物体的照片（正面、侧面、顶面各一张效果最好）；只有文字描述时请改用“触觉3D模型”。";
+      }
+      if (!status.configured) {
+        return "照片已经收到，但服务端还没有配置三维重建接口（TOUCHLEARN_3D_KEY）。可以直接改用“触觉3D模型”由本地编译器建模，或配置密钥后重试。";
+      }
+      return `我读到了 ${Number(fields.image_count || 0)} 张照片，并整理出重建计划：${fields.subject_text || fields.title || "按照片重建"}。请确认高度、底座和盲文名称；重建后会同时给出带纹理的 GLB 和可打印 STL。`;
+    }
+    if (draft.subject === "model3d") {
+      const fields = draft.fields || {};
+      const plan = fields.generation || {};
+      if (!draft.ready) {
+        return `我读到了三维建模需求，但还不能可靠地排成模型：${plan.message || "请补充对象、部件和中文名称。"}`;
+      }
+      const summary = fields.summary || {};
+      if (summary.kind === "solar_system") {
+        return `我把需求排成了一个太阳系触觉展示模型：太阳 + ${Number(summary.planet_count || 0)} 颗行星，行星大小保持真实顺序（压缩后），名称按轨道顺序用中文盲文刻在底座外缘。确认后我会生成可切片的 STL${fields.companion_tactile ? "，并附一张触觉总览板" : ""}。`;
+      }
+      if (summary.kind === "generative") {
+        return `我会把这段描述交给${summary.provider_label || "三维生成模型"} ${summary.model || ""}（${summary.quality || "high"} 质量），生成一个完整网格，再由本地统一加盲文标题、底座、前后方向和二维码位。确认后即可开始生成。`;
+      }
+      return `我把需求排成了一个触觉三维装配模型：${Number(summary.part_count || 0)} 个部件，带底座、支撑，名称优先直接刻在部件表面。确认后我会生成可切片的 STL${fields.companion_tactile ? "，并附一张触觉总览板" : ""}。`;
     }
     return "这类请求目前不能可靠地转成可触摸的 STL。我不会为了出图而编造结构。";
   }
@@ -1031,7 +1118,11 @@
     const { wrap, body } = agentMessage();
     const wait = thinking(body, files.length ? `正在读取 ${files.length} 个文件并理解需求…` : "正在理解你的需求…");
     try {
-      const payload = { subject: request.subject || "auto", text: request.text || "" };
+      const payload = {
+        subject: request.subject || "auto",
+        text: request.text || "",
+        generation_modes: request.generation_modes || selectedModes(),
+      };
       if (request.template) payload.template = request.template;
       if (request.scene) payload.scene = request.scene;
       if (request.circuit) payload.circuit = request.circuit;
@@ -1154,7 +1245,7 @@
     const modeOptions = [];
     if (!draft.output_mode) modeOptions.push('<option value="">请选择输出形态</option>');
     modeOptions.push(`<option value="volumetric_model" ${draft.output_mode === "volumetric_model" ? "selected" : ""}>三维立体缩小模型</option>`);
-    modeOptions.push(`<option value="tactile_plate" ${draft.output_mode === "tactile_plate" ? "selected" : ""}>A5 浮雕触觉板</option>`);
+    modeOptions.push(`<option value="tactile_plate" ${draft.output_mode === "tactile_plate" ? "selected" : ""}>浮雕触觉板（A5 起）</option>`);
     return `
       <div class="field-grid">
         <div class="field full"><span>已理解的描述</span><div class="readonly-value">${escapeHtml(fields.description || "使用快速参数构建，未提供文字描述。")}</div></div>
@@ -1247,7 +1338,7 @@
         ${field("包围盒 / mm", `<div class="readonly-value mono">${escapeHtml(Array.isArray(info.bounds_mm) ? info.bounds_mm.map((value) => fmtNumber(value, 1)).join(" × ") : "—")}</div>`, true)}
         ${field("输出形态", `<select class="select" data-field="output_mode">
           <option value="volumetric_model" ${draft.output_mode === "volumetric_model" ? "selected" : ""}>缩放为立体模型</option>
-          <option value="silhouette_relief" ${draft.output_mode === "silhouette_relief" ? "selected" : ""}>A5 轮廓浮雕</option>
+          <option value="silhouette_relief" ${draft.output_mode === "silhouette_relief" ? "selected" : ""}>轮廓浮雕（A5 起）</option>
         </select>`)}
         <label class="field" data-mode-only="volumetric_model"><span>目标高度 / mm</span><input class="input" data-field="target_height" type="number" inputmode="decimal" min="20" max="220" step="5" value="${escapeHtml(fmtNumber(fields.target_height_mm || 120, 0))}"></label>
         <label class="field" data-mode-only="silhouette_relief"><span>浮雕分辨率 / mm</span><input class="input" data-field="resolution" type="number" inputmode="decimal" min="0.6" max="3" step="0.1" value="${escapeHtml(fmtNumber(fields.resolution_mm || 1, 1))}"></label>
@@ -1257,11 +1348,170 @@
     `;
   }
 
+  function renderModel3DFields(draft) {
+    const fields = draft.fields || {};
+    const summary = fields.summary || {};
+    const braille = fields.braille || {};
+    const labels = Array.isArray(braille.labels) ? braille.labels : [];
+    const isSolar = summary.kind === "solar_system";
+    const isGenerative = summary.kind === "generative";
+    const planets = Array.isArray(summary.planets) ? summary.planets : [];
+    const parts = Array.isArray(summary.parts) ? summary.parts : [];
+    const shapeLabel = { sphere: "球体", cylinder: "圆柱", box: "长方体", cone: "圆锥", frustum: "圆台", tube: "空心圆管", torus: "圆环", plate: "薄板", profile: "轮廓拉伸体" };
+    const rows = isSolar
+      ? planets.map((item, index) => `
+          <tr>
+            <td class="mono">${index + 1}</td>
+            <td>${escapeHtml(item.name_zh || item.name_en || "")}</td>
+            <td class="mono">${fmtNumber(item.radius_mm, 1)}</td>
+            <td class="mono">${fmtNumber(item.orbit_mm, 1)}</td>
+          </tr>`).join("")
+      : parts.map((item, index) => `
+          <tr>
+            <td class="mono">${index + 1}</td>
+            <td>${escapeHtml(item.name_zh || "")}</td>
+            <td>${escapeHtml(shapeLabel[item.shape] || item.shape || "")}</td>
+            <td class="mono">${escapeHtml(Array.isArray(item.position) ? item.position.map((value) => fmtNumber(value, 1)).join(" / ") : "—")}</td>
+          </tr>`).join("");
+    const table = isGenerative ? "" : rows
+      ? `<div class="table-scroll"><table class="data">
+          <thead><tr><th>顺序</th><th>${isSolar ? "行星" : "部件"}</th><th>${isSolar ? "半径 / mm" : "形状"}</th><th>${isSolar ? "轨道半径 / mm" : "相对位置"}</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`
+      : "";
+    const brailleList = labels.length
+      ? `<ul class="braille-list">${labels.map((item) => `
+          <li>
+            <b>${escapeHtml(item.text || "")}</b>
+            <span class="mono">${escapeHtml((item.pinyin || []).join(" "))}</span>
+            <span>${fmtNumber(item.width_mm, 1)} mm</span>
+            <span class="mono">${escapeHtml((item.cells || []).map((cell) => (cell || []).join("-")).join(" / "))}</span>
+          </li>`).join("")}</ul>`
+      : '<div class="callout warn">这个模型还没有中文盲文名称。请补充对象名称后重新理解。</div>';
+    const heightField = isSolar ? "" : isGenerative
+      ? field(
+        "打印高度 / mm",
+        `<input class="input" data-field="height_mm" type="number" inputmode="decimal" min="60" max="200" step="5" value="${escapeHtml(fmtNumber(fields.height_mm || 120, 0))}">`,
+      )
+      : field(
+        "目标高度 / mm",
+        `<input class="input" data-field="target_height_mm" type="number" inputmode="decimal" min="40" max="220" step="5" value="${escapeHtml(fmtNumber(fields.target_height_mm || 120, 0))}">`,
+      );
+    const titleField = isGenerative
+      ? field(
+        "盲文标题",
+        `<input class="input" data-field="title" type="text" maxlength="6" value="${escapeHtml(fields.title || "")}">`,
+      )
+      : "";
+    const baseField = isGenerative
+      ? field(
+        "底座形状",
+        `<select class="input" data-field="base">
+          <option value="disc" ${fields.base === "disc" ? "selected" : ""}>圆形</option>
+          <option value="rounded_rect" ${fields.base === "rounded_rect" ? "selected" : ""}>圆角矩形</option>
+        </select>`,
+      )
+      : "";
+    const generationLine = isGenerative
+      ? `<p class="hint-line">生成模型：${escapeHtml(summary.provider_label || summary.provider || "三维服务")} · ${escapeHtml(summary.model || "默认")} · ${escapeHtml(summary.quality || "high")} 质量。文字只描述物体本身；标题、底座、前后方向、盲文和二维码位由本地统一后处理。</p>`
+      : "";
+    return `
+      <div class="field-grid">
+        ${field("模型类型", `<div class="readonly-value">${isSolar ? "太阳系展示模型" : isGenerative ? "生成式完整网格" : "部件装配模型"}</div>`)}
+        ${field("盲文标准", `<div class="readonly-value">GF 0019-2018 · ${labels.length} 处标注</div>`)}
+        ${titleField}
+        ${heightField}
+        ${baseField}
+      </div>
+      ${table}
+      <p class="hint-line">${isSolar ? "行星直径只有 9–25 mm，名称按离太阳由近到远的顺序刻在底座外缘；从正面标题牌左侧起绕底座摸读。" : isGenerative ? "主体由三维生成模型一次输出，不再用基础几何体拼装；部件名不再刻到模型表面，只保留标题牌、底座图例和统一的前后方向。" : "部件按相对大小和位置装配，底部有底座与支撑柱；名称优先直接刻在部件表面，过小或没有合适平面的部件按编号刻在底座图例上。"}</p>
+      ${isGenerative ? "" : `<label class="check-line">
+        <input type="checkbox" data-field="companion_tactile" ${fields.companion_tactile ? "checked" : ""}>
+        <span>同时生成一张触觉总览板，先摸整体方位，再摸 3D 模型</span>
+      </label>`}
+      <div class="braille-box">
+        <strong>中文盲文标注（GF 0019-2018）</strong>
+        ${brailleList}
+      </div>
+      ${generationLine}
+      <p class="hint-line">${isGenerative ? "生成网格不是测量数据；高度按目标缩放，开放边会在合规报告里标出，切片前需要修复。" : "模型由本地确定性编译器生成：大模型只描述部件、相对大小和位置，毫米尺寸、轨道、支撑和盲文点位由编译器计算，保证可复现和可打印。"}</p>
+    `;
+  }
+
+  function renderReconstructFields(draft) {
+    const fields = draft.fields || {};
+    const status = fields.reconstruction || {};
+    const plan = fields.plan || {};
+    const labels = Array.isArray(fields.labels) ? fields.labels.slice(0, 3) : [];
+    const braille = fields.braille || {};
+    const brailleLabels = Array.isArray(braille.labels) ? braille.labels : [];
+    const keep = Array.isArray(fields.keep_features) ? fields.keep_features : [];
+    const changes = Array.isArray(fields.changes) ? fields.changes : [];
+    const imageCount = Number(fields.image_count || 0);
+    const rows = [];
+    for (let index = 0; index < 3; index += 1) {
+      const item = labels[index] || { text: "", target: "" };
+      rows.push(`
+        <tr>
+          <td class="mono">${index + 1}</td>
+          <td><input class="input" data-label-text="${index}" maxlength="3" placeholder="${index === 0 ? "必填，如：小鸟" : "可选"}" value="${escapeHtml(item.text || "")}"></td>
+          <td><input class="input" data-label-target="${index}" placeholder="如：左翼 / 尾羽" value="${escapeHtml(item.target || "")}"></td>
+        </tr>`);
+    }
+    const brailleList = brailleLabels.length
+      ? `<ul class="braille-list">${brailleLabels.map((item) => `
+          <li>
+            <b>${escapeHtml(item.text || "")}</b>
+            <span class="mono">${escapeHtml((item.pinyin || []).join(" "))}</span>
+            <span>${fmtNumber(item.width_mm, 1)} mm</span>
+          </li>`).join("")}</ul>`
+      : '<p class="hint-line">生成前会按你填写的名称编码中文盲文。</p>';
+    const list = (items, empty) => items.length
+      ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+      : `<span>${empty}</span>`;
+    return `
+      <div class="field-grid">
+        ${field("盲文标题", `<input class="input" data-field="title" maxlength="6" value="${escapeHtml(fields.title || "")}">`)}
+        ${field("重建对象", `<div class="readonly-value">${escapeHtml(fields.subject_text || fields.title || "按照片重建")}</div>`)}
+        ${field("打印高度 / mm", `<input class="input" data-field="height_mm" type="number" inputmode="decimal" min="60" max="200" step="5" value="${escapeHtml(fmtNumber(fields.height_mm || 120, 0))}">`)}
+        ${field("底座形状", `<select class="select" data-field="base">
+          <option value="disc" ${fields.base !== "rounded_rect" ? "selected" : ""}>圆形 + 前舌</option>
+          <option value="rounded_rect" ${fields.base === "rounded_rect" ? "selected" : ""}>圆角矩形 + 前舌</option>
+        </select>`)}
+        ${field("照片", `<div class="readonly-value">${imageCount ? `${imageCount} 张` : "尚未上传"}</div>`)}
+        ${field("重建服务", `<div class="readonly-value">${escapeHtml(status.label || status.provider || "未配置")}${status.configured ? " · 已配置" : " · 未配置"}</div>`)}
+      </div>
+      <div class="callout ${status.configured ? "" : "warn"}">
+        <strong>${status.configured ? "照片级重建" : "还缺重建接口"}</strong><br>
+        ${escapeHtml(status.message || (status.configured ? "照片会交给三维重建服务还原细节与纹理。" : "请配置 TOUCHLEARN_3D_KEY，或改用触觉 3D 模型。"))}
+      </div>
+      <table class="data">
+        <thead><tr><th>顺序</th><th>盲文名称（1–3 字）</th><th>指向部位</th></tr></thead>
+        <tbody>${rows.join("")}</tbody>
+      </table>
+      <div class="field-grid">
+        ${field("必须保留", list(keep, "按照片原样保留"))}
+        ${field("按要求调整", list(changes, "没有额外几何调整"))}
+      </div>
+      <label class="check-line">
+        <input type="checkbox" data-field="companion_tactile" ${fields.companion_tactile ? "checked" : ""}>
+        <span>同时生成一张触觉总览板，先摸特征名称与阅读顺序</span>
+      </label>
+      <div class="braille-box">
+        <strong>中文盲文标注（GF 0019-2018）</strong>
+        ${brailleList}
+      </div>
+      <p class="hint-line">重建会同时输出保留颜色与细节的 GLB，以及带底座、盲文标题、底座盲文图例和二维码位的单色 STL。高度、底座和盲文由本地确定；改变姿态等几何编辑取决于三维服务能力。重建网格没有可靠的特征坐标，所以特征名按编号刻在底座前缘，不在模型表面刻猜出来的名字。标题和名称各 1–3 字最稳。${plan.message ? ` ${escapeHtml(plan.message)}` : ""}</p>
+    `;
+  }
+
   function renderDraftFields(draft) {
     if (draft.subject === "function") return renderFunctionFields(draft);
     if (draft.subject === "robot") return renderRobotFields(draft);
     if (draft.subject === "scene") return renderSceneFields(draft);
     if (draft.subject === "mesh") return renderMeshFields(draft);
+    if (draft.subject === "model3d") return renderModel3DFields(draft);
+    if (draft.subject === "reconstruct") return renderReconstructFields(draft);
     return `
       <div class="callout bad">
         <strong>智能体的判断</strong><br>
@@ -1297,7 +1547,11 @@
     const summary = draft.fields && draft.fields.summary;
     const extraPills = draft.subject === "scene" && summary
       ? `<span class="pill">${Number(summary.block_count || 0)} 个图块</span><span class="pill">${Number(summary.primitive_count || 0)} 个图元</span>`
-      : "";
+      : draft.subject === "model3d" && summary
+        ? `${summary.kind === "solar_system" ? `<span class="pill">${Number(summary.planet_count || 0)} 颗行星</span>` : summary.kind === "generative" ? `<span class="pill info">${escapeHtml(summary.model || "生成式三维")}</span>` : `<span class="pill">${Number(summary.part_count || 0)} 个部件</span>`}<span class="pill">${Number((draft.fields && draft.fields.braille && draft.fields.braille.labels || []).length)} 处盲文标注</span>`
+        : draft.subject === "reconstruct"
+          ? `<span class="pill">${Number(draft.fields && draft.fields.image_count || 0)} 张照片</span><span class="pill">${Number(draft.fields && draft.fields.height_mm || 120)} mm</span><span class="pill">${Number((draft.fields && draft.fields.braille && draft.fields.braille.labels || []).length)} 处底座标注</span>`
+          : "";
     const generation = draft.fields && draft.fields.generation;
     const generationPill = generation && generation.provider
       ? `<span class="pill info">${escapeHtml(generation.provider)}${generation.model ? ` · ${escapeHtml(generation.model)}` : ""}</span>`
@@ -1708,6 +1962,54 @@
           reason = "目标高度需在 30–220 mm 之间。";
         }
       }
+    } else if (draft.subject === "reconstruct") {
+      const fields = draft.fields || {};
+      const status = fields.reconstruction || {};
+      if (!fields.image_count) {
+        ok = false;
+        reason = "照片级重建需要至少一张照片；只有文字时请改用“触觉3D模型”。";
+      } else if (!status.configured) {
+        ok = false;
+        reason = "服务端未配置 TOUCHLEARN_3D_KEY，无法调用照片级重建。";
+      } else {
+        const height = card.querySelector('[data-field="height_mm"]');
+        const title = card.querySelector('[data-field="title"]');
+        const firstLabel = card.querySelector('[data-label-text="0"]');
+        if (!title || !title.value.trim()) {
+          ok = false;
+          reason = "请填写 1–6 个字的盲文标题。";
+        } else if (!firstLabel || !firstLabel.value.trim()) {
+          ok = false;
+          reason = "请至少填写一个 1–4 字的盲文名称。";
+        } else if (!height || !Number.isFinite(Number(height.value)) || Number(height.value) < 60 || Number(height.value) > 200) {
+          ok = false;
+          reason = "打印高度需在 60–200 mm 之间。";
+        }
+      }
+    } else if (draft.subject === "model3d") {
+      const fields = draft.fields || {};
+      const provider = fields.provider_generation || {};
+      const generative = Boolean(provider.enabled);
+      if (!draft.ready || (!generative && !fields.spec)) {
+        ok = false;
+        reason = (fields.generation && fields.generation.message) || "这个三维需求还没有可靠的建模方案，请补充对象和部件描述。";
+      } else if (generative) {
+        const title = card.querySelector('[data-field="title"]');
+        const height = card.querySelector('[data-field="height_mm"]');
+        if (!title || !title.value.trim() || title.value.trim().length > 6) {
+          ok = false;
+          reason = "请填写 1–6 个字的盲文标题。";
+        } else if (!height || !Number.isFinite(Number(height.value)) || Number(height.value) < 60 || Number(height.value) > 200) {
+          ok = false;
+          reason = "打印高度需在 60–200 mm 之间。";
+        }
+      } else {
+        const target = card.querySelector('[data-field="target_height_mm"]');
+        if (target && (!Number.isFinite(Number(target.value)) || Number(target.value) < 40 || Number(target.value) > 220)) {
+          ok = false;
+          reason = "目标高度需在 40–220 mm 之间。";
+        }
+      }
     } else if (draft.subject === "function") {
       const expression = card.querySelector('[data-field="expression"]');
       const preview = functionPreviewState(card);
@@ -1791,7 +2093,66 @@
   function collectOverrides(draft, card) {
     const fields = {};
     let outputMode = draft.output_mode || "";
-    if (draft.subject === "function") {
+    if (draft.subject === "reconstruct") {
+      const source = draft.fields || {};
+      const titleInput = card.querySelector('[data-field="title"]');
+      const title = titleInput ? titleInput.value.trim() : "";
+      if (!title) throw new Error("请填写盲文标题。");
+      const labels = [];
+      $$("[data-label-text]", card).forEach((input) => {
+        const text = input.value.trim();
+        if (!text) return;
+        if (!/^[\u4e00-\u9fa5A-Za-z0-9]{1,3}$/.test(text)) {
+          throw new Error("每个盲文名称需为 1–4 个汉字或字母数字。");
+        }
+        const index = input.dataset.labelText;
+        const target = card.querySelector(`[data-label-target="${index}"]`);
+        labels.push({ text, target: target ? target.value.trim() : "" });
+      });
+      if (!labels.length) throw new Error("请至少填写一个 1–4 字的盲文名称。");
+      const height = numberFrom(card, "height_mm", "打印高度");
+      const base = card.querySelector('[data-field="base"]');
+      const companion = card.querySelector('[data-field="companion_tactile"]');
+      fields.title = title;
+      fields.height_mm = height;
+      fields.base = base ? base.value : (source.base || "disc");
+      fields.labels = labels.slice(0, 3);
+      fields.companion_tactile = companion ? companion.checked : Boolean(source.companion_tactile);
+      fields.plan = source.plan || {};
+      fields.keep_features = source.keep_features || [];
+      fields.changes = source.changes || [];
+      fields.subject_text = source.subject_text || "";
+      fields.source_text = source.source_text || "";
+      outputMode = "reconstruction";
+    } else if (draft.subject === "model3d") {
+      const source = draft.fields || {};
+      const provider = source.provider_generation || {};
+      if (provider.enabled) {
+        const titleInput = card.querySelector('[data-field="title"]');
+        const title = titleInput ? titleInput.value.trim() : "";
+        if (!title) throw new Error("请填写盲文标题。");
+        if (title.length > 6) throw new Error("盲文标题最多 6 个字。");
+        const height = numberFrom(card, "height_mm", "打印高度");
+        const base = card.querySelector('[data-field="base"]');
+        fields.title = title;
+        fields.height_mm = height;
+        fields.base = base ? base.value : (source.base || "disc");
+        fields.labels = [{ text: title, target: "主体" }];
+        fields.source_text = source.source_text || "";
+        outputMode = "model3d";
+      } else {
+        if (!source.spec || typeof source.spec !== "object") {
+          throw new Error("还没有可生成的三维模型规格，请重新理解需求。");
+        }
+        fields.spec = JSON.parse(JSON.stringify(source.spec));
+        fields.source_text = source.source_text || "";
+        const companion = card.querySelector('[data-field="companion_tactile"]');
+        fields.companion_tactile = companion ? companion.checked : Boolean(source.companion_tactile);
+        const target = card.querySelector('[data-field="target_height_mm"]');
+        if (target) fields.target_height_mm = numberFrom(card, "target_height_mm", "目标高度");
+        outputMode = "model3d";
+      }
+    } else if (draft.subject === "function") {
       const expression = card.querySelector('[data-field="expression"]').value.trim();
       if (!expression) throw new Error("请填写函数解析式。");
       const preview = functionPreviewState(card);
@@ -1926,10 +2287,12 @@
   /* ------------------------------------------------------------------ */
 
   function jobTitle(subject, mode) {
-    if (subject === "function") return "函数图像 · A5 触觉板";
-    if (subject === "robot") return mode === "volumetric_model" ? "机械臂 · 三维立体模型" : "机械臂 · A5 浮雕触觉板";
-    if (subject === "scene") return "触觉场景 · A5 触觉板";
-    if (subject === "mesh") return mode === "silhouette_relief" ? "三维文件 · A5 轮廓浮雕" : "三维文件 · 缩放立体模型";
+    if (subject === "function") return "函数图像 · 触觉教材板";
+    if (subject === "robot") return mode === "volumetric_model" ? "机械臂 · 三维立体模型" : "机械臂 · 浮雕触觉板";
+    if (subject === "scene") return "触觉场景 · 触觉教材板";
+    if (subject === "mesh") return mode === "silhouette_relief" ? "三维文件 · 轮廓浮雕" : "三维文件 · 缩放立体模型";
+    if (subject === "model3d") return "触觉 3D 模型";
+    if (subject === "reconstruct") return "照片级 3D 重建";
     return "触觉产物";
   }
 
@@ -2090,6 +2453,20 @@
     const sourceParts = [];
     if (extraction.provider) sourceParts.push(extraction.provider);
     if (extraction.model) sourceParts.push(extraction.model);
+    const reconstruction = fields.reconstruction || {};
+    const providerGeneration = fields.provider_generation || {};
+    if (ui.job && ui.job.mode === "reconstruction") {
+      sourceParts.length = 0;
+      if (reconstruction.label || reconstruction.provider) sourceParts.push(reconstruction.label || reconstruction.provider);
+      if (reconstruction.model) sourceParts.push(reconstruction.model);
+      sourceParts.push("照片级重建服务");
+    } else if (ui.job && ui.job.mode === "model3d" && providerGeneration.enabled) {
+      sourceParts.length = 0;
+      if (providerGeneration.provider_label || providerGeneration.provider) sourceParts.push(providerGeneration.provider_label || providerGeneration.provider);
+      if (providerGeneration.model) sourceParts.push(providerGeneration.model);
+      if (providerGeneration.quality) sourceParts.push(`${providerGeneration.quality} 质量`);
+      sourceParts.push("文字生成三维模型");
+    }
     const source = sourceParts.length ? sourceParts.join(" / ") : "本地解析或图形编辑器";
     const report = ui.details.report || {};
     const verdict = report.standards_clear
@@ -2098,13 +2475,16 @@
         ? "可打印，存在偏离项"
         : "未通过";
     const hash = (stl && stl.sha256) || "";
+    const isModel3D = ui.job && ui.job.mode === "model3d";
+    const isReconstruct = ui.job && ui.job.mode === "reconstruction";
+    const isGenerated3D = isModel3D && Boolean(providerGeneration.enabled);
     return `
       <section class="evidence-card">
         <div class="evidence-head">
           <span class="eyebrow">MANUFACTURING EVIDENCE</span>
-          <strong>这块板不是大模型画出来的 mesh</strong>
+          <strong>${isReconstruct ? "纹理来自照片级重建服务，打印结构由本地组装" : isGenerated3D ? "主体来自三维生成模型，盲文与底座由本地组装" : isModel3D ? "这个模型由本地确定性编译器生成" : "这块板不是大模型画出来的 mesh"}</strong>
         </div>
-        <p class="evidence-note">大模型只负责理解与结构化；毫米坐标、网格和 PASS/FAIL 由本地确定性内核计算。下面这些值可以复核。</p>
+        <p class="evidence-note">${isReconstruct ? "大模型只负责读图与写重建计划；纹理网格由专门的三维重建服务生成，底座、支撑、盲文和 PASS/FAIL 由本地确定性内核计算。" : isGenerated3D ? "文字只描述物体本身；完整网格由三维生成模型输出，标题、底座、方向、盲文和 PASS/FAIL 由本地确定性内核计算。" : "大模型只负责理解与结构化；毫米坐标、网格和 PASS/FAIL 由本地确定性内核计算。"}下面这些值可以复核。</p>
         <div class="evidence-grid">
           <div><span>语义来源</span><b>${escapeHtml(source)}</b></div>
           <div><span>几何内核</span><b>TouchLearn ${escapeHtml(software.agent_version || "—")} · Python ${escapeHtml(software.python || "—")}</b></div>
@@ -2121,11 +2501,42 @@
   function previewPanel(ui) {
     const base = `/files/${encodeURIComponent(ui.jobId)}`;
     const mode = ui.job.mode;
-    const hint = mode === "tactile_plate"
-      ? "A5 触觉板：浮雕面朝上、底座贴床，勿开启顶面熨烫。预览 SVG 与 STL 来自同一份几何，不是另画的示意图。"
-      : "立体模型：预览为等轴测投影；切片时请检查支撑与摆放方向。预览与 STL 来自同一份几何。";
+    let hint = "立体模型：预览为等轴测投影；切片时请检查支撑与摆放方向。预览与 STL 来自同一份几何。";
+    if (mode === "tactile_plate") {
+      hint = "触觉教材板（A5 起，按内容自动放大到 A4/A3）：浮雕面朝上、底座贴床，勿开启顶面熨烫。预览 SVG 与 STL 来自同一份几何，不是另画的示意图。";
+    } else if (mode === "model3d") {
+      const artifacts = (ui.details && ui.details.manifest && ui.details.manifest.artifacts) || [];
+      const generated = artifacts.some((item) => item && item.name === "model_view.html");
+      hint = generated
+        ? "生成式 3D 模型：主体由三维生成模型一次输出，底座贴床；标题、底座、前后方向和盲文由本地统一添加。AI 网格可能含开放边，切片前请先修复。"
+        : "触觉 3D 模型：底座贴床，行星/部件由立柱支撑在轨道或底板上；名称用 GF 0019-2018 中文盲文优先刻在部件表面，行星和过小部件刻在底座表面。预览与 STL 来自同一份几何。";
+    } else if (mode === "reconstruction") {
+      hint = "照片级 3D 重建：带纹理的 GLB 保留颜色与细节；STL 是带底座、盲文标题、底座盲文图例和二维码位的单色打印件。AI 重建网格可能含开放边，切片前请先修复。";
+    }
+    const artifacts = (ui.details && ui.details.manifest && ui.details.manifest.artifacts) || [];
+    const hasGlb = artifacts.some((item) => item && item.name === "model_textured.glb");
+    const hasPhotoView = artifacts.some((item) => item && item.name === "photo_view.html");
+    const hasModelView = artifacts.some((item) => item && item.name === "model_view.html");
+    const viewerPage = hasPhotoView ? "photo_view.html" : hasModelView ? "model_view.html" : "";
+    const textured = hasGlb
+      ? `<div class="action-row">
+          <a class="btn" href="${base}/model_textured.glb?download=1" download="touchlearn-${ui.jobId}-model_textured.glb">${icon("download")}下载纹理 GLB</a>
+          ${viewerPage ? `<a class="btn ghost" href="${base}/${viewerPage}" target="_blank" rel="noopener">${icon("cube")}旋转查看纹理模型</a>` : ""}
+        </div>
+        <p class="hint-line">GLB 保留颜色与材质，可在支持 glTF 的查看器或多材料切片器中打开；STL 不携带颜色。</p>`
+      : "";
+    const hasCompanion = artifacts.some((item) => item && item.name === "plate_model.stl");
+    const companion = hasCompanion
+      ? `<div class="action-row">
+          <a class="btn" href="${base}/plate_model.stl?download=1" download="touchlearn-${ui.jobId}-plate_model.stl">${icon("download")}下载配套触觉板 STL</a>
+          <a class="btn ghost" href="${base}/plate_preview.svg" target="_blank" rel="noopener">${icon("external")}查看配套触觉板预览</a>
+        </div>
+        <p class="hint-line">配套触觉板用二维图块表达整体方位、轨道顺序和名称索引；先摸板建立方位，再摸 3D 模型。</p>`
+      : "";
     return `
       <div class="preview-frame"><img src="${base}/preview.svg" alt="触觉产物预览"></div>
+      ${textured}
+      ${companion}
       <div class="action-row">
         <a class="btn primary" href="${base}/model.stl?download=1" download="touchlearn-${ui.jobId}-model.stl">${icon("download")}下载 STL</a>
         <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip" download="touchlearn-${ui.jobId}.zip">${icon("download")}下载整包 ZIP</a>
@@ -2259,6 +2670,7 @@
   function orientationLabel(value) {
     if (!value) return "—";
     if (String(value).includes("relief face up")) return "浮雕面朝上，底座贴床";
+    if (String(value).includes("base flat on the bed")) return "底座贴床，轨道与行星按预览摆放";
     if (String(value).includes("as previewed")) return "按预览方向摆放，底座贴床";
     return value;
   }
@@ -2266,6 +2678,7 @@
   function supportsLabel(value) {
     if (!value) return "—";
     if (value === "none") return "无";
+    if (String(value).includes("long overhangs")) return "仅在长悬垂和太阳底座下使用树状支撑，避开盲文表面";
     if (String(value).includes("tree supports")) return "关节、夹爪和悬垂处使用树状支撑";
     return value;
   }
@@ -2274,6 +2687,9 @@
     if (!value) return "";
     if (String(value).includes("do not iron")) {
       return "0.2 mm 层高可保留 0.8 mm 浮雕与 0.6 mm 盲文点；不要开启顶面熨烫。";
+    }
+    if (String(value).includes("1.6 mm braille dots")) {
+      return "0.16 mm 层高和 0.4 mm 喷嘴可保留 1.6 mm 盲文点；打印前确认模型在 220×220×250 mm 成型空间内。";
     }
     if (String(value).includes("standards report flags overhang")) {
       return "请在切片软件中检查预览；报告把超过 5% 的悬垂标为工艺提示，而不是几何错误。";
@@ -2300,6 +2716,7 @@
     const mesh = (manifest.geometry && manifest.geometry.mesh) || {};
     const size = print.size_mm || mesh.size_mm;
     const items = [
+      ["板面 / 形态", print.paper || "—"],
       ["尺寸 / mm", Array.isArray(size) ? size.map((value) => fmtNumber(value, 1)).join(" × ") : "—"],
       ["摆放方向", orientationLabel(print.orientation)],
       ["喷嘴", print.nozzle_mm ? `${print.nozzle_mm} mm` : "—"],
@@ -3233,10 +3650,10 @@
       return;
     }
     clearComposer();
-    const text = `使用离线模板「${entry.label}」：${entry.description || ""}。请按这个结构做成 A5 触觉板。`;
+    const text = `使用离线模板「${entry.label}」：${entry.description || ""}。请按这个结构做成触觉教材板（最短边 A5，可自动放大）。`;
     runTurn(
       { subject: "auto", text, template: entry.id },
-      { userText: `用「${entry.label}」模板做一块 A5 触觉板`, files: [] },
+      { userText: `用「${entry.label}」模板做一块触觉教材板`, files: [] },
     );
   }
 
@@ -3756,12 +4173,12 @@
       toast("已应用到草稿；生成时会按这份电路重新编译。");
       return;
     }
-    const text = editor.prompt || "把这份串联电路做成 A5 触觉板，标出电池、开关、电阻和灯泡。";
+    const text = editor.prompt || "把这份串联电路做成触觉教材板，标出电池、开关、电阻和灯泡。";
     editor.applied = true;
     closeSceneEditor({ silent: true });
     runTurn(
       { subject: "scene", text, circuit, scene },
-      { userText: "用图形编辑器里的串联电路做一块 A5 触觉板", files: [] },
+      { userText: "用图形编辑器里的串联电路做一块触觉教材板", files: [] },
     );
   }
 
@@ -4234,6 +4651,10 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
     $("#settingsBtn").addEventListener("click", openSettings);
     $("#templateBtn").addEventListener("click", openTemplates);
     $("#modelChip").addEventListener("click", toggleModelPopover);
+    $$(".mode-option").forEach((button) => {
+      button.addEventListener("click", () => toggleGenerationMode(button.dataset.mode));
+    });
+    applyGenerationModes();
 
     $("#sceneEditorClose").addEventListener("click", () => closeSceneEditor());
     $("#sceneEditorApply").addEventListener("click", applySceneEditor);

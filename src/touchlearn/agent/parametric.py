@@ -404,14 +404,18 @@ def _footer(
     previews even though the mesh itself was valid.
     """
     feature = builder.feature("footer", "footer")
-    builder.text(feature, margin, height - margin - 4.5, "TOUCHLEARN", 4.0)
-    available = max(qr_rect[0] - margin, 20.0)
+    # Text bboxes include half a stroke width on each side.  Starting exactly on
+    # the margin line pushed the footer 0.5 mm into the 6 mm edge reserve, which
+    # the printability check reports as an error.
+    x = margin + 0.5
+    builder.text(feature, x, height - margin - 4.5, "TOUCHLEARN", 4.0)
+    available = max(qr_rect[0] - x - 1.0, 20.0)
     baselines = (height - margin - 12.0, height - margin - 19.0)
     for text, baseline in zip(lines[:2], baselines):
         if not text:
             continue
         fitted, size = _fit_text(text, available, 3.2, 2.6)
-        builder.text(feature, margin, baseline, fitted, size)
+        builder.text(feature, x, baseline, fitted, size)
 
 
 def _format_number(value: float) -> str:

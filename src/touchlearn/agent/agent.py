@@ -338,6 +338,29 @@ def _short_title(value: str) -> str:
     return text[:6] or "模型"
 
 
+def _validate_print_labels(title: str, labels: list[dict[str, str]]) -> None:
+    """Reject titles the Chinese braille table cannot spell.
+
+    The plaque must never print a different name than the one shown in the
+    app.  Checking before the provider call turns an unlisted character into
+    an immediate, readable error instead of a three-minute wait followed by a
+    failed job.
+    """
+    texts = [title]
+    for item in labels:
+        text = str(item.get("text") or "").strip()
+        if text and text not in texts:
+            texts.append(text)
+    for text in texts:
+        try:
+            cnbraille.readings(text)
+        except cnbraille.BrailleError as error:
+            raise ValueError(
+                f"标题或标签“{text}”含有中文盲文表（GF 0019-2018）未收录的字符：{error}。"
+                "请改用常用汉字后重试，避免底座印出与名称不符的盲文。"
+            ) from error
+
+
 def _generation_prompt(text: str, spec: dict[str, Any], title: str) -> str:
     """Write one prompt for the generative provider.
 
@@ -2736,6 +2759,7 @@ class TouchLearnAgent:
         ][:3]
         if not labels:
             labels = [{"text": title, "target": "主体"}]
+        _validate_print_labels(title, labels)
 
         plan = ReconstructionPlan(
             ok=True,
@@ -2989,6 +3013,7 @@ class TouchLearnAgent:
         )
         if not plan.labels:
             plan.labels = [{"text": plan.title, "target": "主体"}]
+        _validate_print_labels(plan.title, plan.labels)
 
         extensions = {".png", ".jpg", ".jpeg", ".webp"}
         images = [
@@ -3527,14 +3552,38 @@ class TouchLearnAgent:
             f"- 支撑：{print_info.get('supports')}",
             f"- 备注：{print_info.get('notes')}",
             "",
-            "二维码",
-            "二维码指向本机音频页面。手机与电脑需在同一局域网，且本地服务正在运行。",
-            "如果只在离线环境使用，可直接打开 audio.html 播放 narration.wav。",
-            "",
-            "合规",
-            "先看 compliance.md。printable=true 不代表完全符合所有标准条款；DEVIATION 和 NEEDS_REVIEW 需要人工确认。",
-            "",
         ]
+        braille = ((metadata.get("geometry") or {}).get("meta") or {}).get("braille") or {}
+        if braille:
+            lines.extend(
+                [
+                    "盲文对照（GF 0019-2018）",
+                    f"- 标题：{braille.get('title')}（{' '.join(braille.get('pinyin') or [])}），共 {braille.get('title_dots')} 个点",
+                    f"- 铭牌排版：{' / '.join(braille.get('title_lines') or [])}",
+                ]
+            )
+            for row in braille.get("title_cells") or []:
+                cells = " / ".join("-".join(str(dot) for dot in cell) or "空" for cell in row.get("cells") or [])
+                pinyin = f"  {row.get('pinyin')}" if row.get("pinyin") else ""
+                lines.append(f"  {row.get('char')}{pinyin}  {cells}")
+            lines.append("  点格顺序：左上 1、左中 2、左下 3；右上 4、右中 5、右下 6。")
+            for item in braille.get("labels") or []:
+                suffix = "（名称过长，图例只放下了部分字符）" if item.get("truncated") else ""
+                lines.append(f"- 图例 {item.get('legend_index')}：{item.get('text')} → {item.get('legend_line')}{suffix}")
+            if braille.get("title_truncated"):
+                lines.append("- 注意：标题过长，当前底座只放下了部分字符，请缩短标题后重新生成。")
+            lines.append("")
+        lines.extend(
+            [
+                "二维码",
+                "二维码指向本机音频页面。手机与电脑需在同一局域网，且本地服务正在运行。",
+                "如果只在离线环境使用，可直接打开 audio.html 播放 narration.wav。",
+                "",
+                "合规",
+                "先看 compliance.md。printable=true 不代表完全符合所有标准条款；DEVIATION 和 NEEDS_REVIEW 需要人工确认。",
+                "",
+            ]
+        )
         (job_dir / "README.txt").write_text("\n".join(lines), encoding="utf-8")
 
     def _manifest(

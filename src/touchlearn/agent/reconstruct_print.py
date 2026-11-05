@@ -42,6 +42,11 @@ MIN_BASE_RADIUS_MM = 58.0
 MAX_BASE_RADIUS_MM = 88.0
 TAB_EXTRA_MM = 40.0
 MAX_LEGEND_LABELS = 6
+# The front plaque carries the title in one, two or three braille lines.  A
+# six-character title on the smallest base needs three 2-character lines.
+MAX_TITLE_LINES = 3
+BRAILLE_LINE_GAP_MM = 1.2
+PLAQUE_DEPTH_MM = 26.0
 
 
 @dataclass
@@ -67,11 +72,55 @@ def _transform(mesh: Mesh, scale: float, dx: float, dy: float, dz: float) -> Mes
     )
 
 
+def _clean_label(text: str) -> str:
+    value = "".join(ch for ch in (text or "") if "\u4e00" <= ch <= "\u9fff" or ch.isalnum())
+    return value or "模型"
+
+
+def _fits(text: str, max_width: float) -> bool:
+    return cnbraille.width(text, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM) <= max_width
+
+
 def _fit_braille(text: str, max_width: float) -> str:
-    value = "".join(ch for ch in (text or "") if "\u4e00" <= ch <= "\u9fff" or ch.isalnum()) or "模型"
-    while len(value) > 1 and cnbraille.width(value, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM) > max_width:
+    """Legacy single-line fit used for short feature names."""
+    value = _clean_label(text)
+    while len(value) > 1 and not _fits(value, max_width):
         value = value[:-1]
     return value
+
+
+def _wrap_braille(text: str, max_width: float, max_lines: int = MAX_TITLE_LINES) -> tuple[list[str], bool]:
+    """Split a title into balanced lines that stay inside the plaque.
+
+    The title is never silently trimmed.  If even the maximum number of lines
+    cannot hold it, the caller receives ``truncated=True`` so the manifest and
+    the web decoder can say so explicitly.
+    """
+    value = _clean_label(text)
+    if len(value) <= 1 or _fits(value, max_width):
+        return [value], False
+    # Try 2..max_lines lines with the most even character split.  Even splits
+    # read better than a greedy 3+1 on a four-character title.
+    for line_count in range(2, min(max_lines, len(value)) + 1):
+        base, extra = divmod(len(value), line_count)
+        sizes = [base + (1 if index < extra else 0) for index in range(line_count)]
+        lines: list[str] = []
+        position = 0
+        for size in sizes:
+            lines.append(value[position : position + size])
+            position += size
+        if all(_fits(line, max_width) for line in lines):
+            return lines, False
+    # Last resort: pack as much as possible, then report the remainder.
+    lines = []
+    rest = value
+    while rest and len(lines) < max_lines:
+        take = len(rest)
+        while take > 1 and not _fits(rest[:take], max_width):
+            take -= 1
+        lines.append(rest[:take])
+        rest = rest[take:]
+    return lines, bool(rest)
 
 
 def _rounded_rect(width: float, depth: float, radius: float, segments: int = 8) -> list[tuple[float, float]]:
@@ -145,7 +194,11 @@ def compose_printable(
         scale = MAX_FOOTPRINT_MM / max(size[0], size[1], 1e-6)
     dx = -((bounds[0] + bounds[3]) / 2.0) * scale
     dy = -((bounds[1] + bounds[4]) / 2.0) * scale
-    model = _transform(source, scale, dx, dy, -bounds[2] * scale)
+    # The plinth top is fixed by the base constants, so the model can be
+    # translated in the same pass as the scale.  Keeping it out of a second
+    # list comprehension saves a full copy of a million-triangle mesh.
+    model_offset = BASE_THICKNESS_MM + PLINTH_HEIGHT_MM - 0.1
+    model = _transform(source, scale, dx, dy, -bounds[2] * scale + model_offset)
     if model.volume() < 0:
         model = Mesh([(a, c, b) for a, b, c in model.triangles])
     model_bounds = model.bounds()
@@ -155,7 +208,7 @@ def compose_printable(
     top = BASE_THICKNESS_MM
     base_radius = _clamp(footprint_radius + float(plan.margin_mm or 10.0), MIN_BASE_RADIUS_MM, MAX_BASE_RADIUS_MM)
 
-    title_text = _fit_braille(str(title or plan.title or "模型"), 60.0)
+    title_text = _clean_label(str(title or plan.title or "模型"))
     labels = [dict(item) for item in (plan.labels or []) if str(item.get("text") or "").strip()]
     if not labels:
         labels = [{"text": title_text, "target": "主体"}]
@@ -170,17 +223,24 @@ def compose_printable(
     legend_meta: list[dict[str, Any]] = []
     extra = [item for item in labels if str(item.get("text") or "") != title_text][:MAX_LEGEND_LABELS]
     for index, item in enumerate(extra, start=1):
-        text = _fit_braille(str(item.get("text") or ""), 54.0)
-        line = f"{index}{text}"
+        full_text = _clean_label(str(item.get("text") or ""))
+        text = _fit_braille(full_text, 54.0)
+        # A space cell separates the UEB number from the first Chinese
+        # syllable; without it the number sign visually merges into the name.
+        line = f"{index} {text}"
         legend_lines.append(line)
+        line_cells = [list(cell) for cell in cnbraille.encode_text(line)]
         legend_meta.append(
             {
                 "text": text,
+                "full_text": full_text,
+                "truncated": text != full_text,
                 "target": item.get("target") or "",
                 "legend_index": index,
                 "legend_line": line,
-                "cells": [list(cell) for cell in cnbraille.encode_text(line)],
-                "dots": 0,
+                "cells": line_cells,
+                "dots": sum(len(cell) for cell in line_cells),
+                "reading": cnbraille.describe_text(line),
                 "placement": "base_legend",
             }
         )
@@ -190,7 +250,9 @@ def compose_printable(
     tab_extra = 52.0 if plan.base == "rounded_rect" else TAB_EXTRA_MM
     tab_front = -(base_radius + tab_extra)
     join_y = (-base_radius * 0.81 + 2.0) if plan.base == "rounded_rect" else (-0.68 * base_radius)
-    legend_front = tab_front + 26.0
+    # Keep this in sync with the plaque layout below: plaque starts 4 mm
+    # behind the tab edge, is PLAQUE_DEPTH_MM deep, then a 4 mm gap.
+    legend_front = tab_front + 4.0 + PLAQUE_DEPTH_MM + 4.0
     max_legend_depth = max(LEGEND_ROW_MM, join_y - legend_front - 2.0)
     max_legend_rows = max(1, int((max_legend_depth - 4.0) // LEGEND_ROW_MM))
     legend_max_width = 0.0
@@ -210,10 +272,9 @@ def compose_printable(
     plinth_top = top + PLINTH_HEIGHT_MM
     _cylinder(mesh, (0.0, 0.0, top - 0.1), (0.0, 0.0, plinth_top), plinth_radius, segments=48)
 
-    model_offset = plinth_top - 0.1
-    mesh.triangles.extend(
-        [((a[0], a[1], a[2] + model_offset), (b[0], b[1], b[2] + model_offset), (c[0], c[1], c[2] + model_offset)) for a, b, c in model.triangles]
-    )
+    # ``model`` already carries the plinth offset; share its triangle tuples
+    # instead of allocating a third copy of the vertex data.
+    mesh.triangles.extend(model.triangles)
 
     # Title plaque and QR pad share the front tab.  Widths shrink together so a
     # small base never produces an overhanging label.
@@ -223,13 +284,33 @@ def compose_printable(
     # and uses tighter side margins rather than truncating the name.
     qr_size = 30.0 if tab_half * 2.0 >= 104.0 else 28.0
     plaque_width = _clamp(tab_half * 2.0 - qr_size - 8.0, 32.0, 72.0)
-    plaque_depth = 18.0
+    plaque_depth = PLAQUE_DEPTH_MM
     plaque_left = -tab_half + 2.0
     plaque_front = tab_front + 4.0
     _box_xy(mesh, plaque_left, plaque_front, plaque_width, plaque_depth, top - 0.1, top + 2.2, chamfer=2.0)
-    _emboss_text_on_top(mesh, "AI 3D", plaque_left + 4.0, plaque_front + 4.5, top + 2.0, top + 2.9, 4.0)
-    plaque_text = _fit_braille(title_text, plaque_width - 6.0)
-    _braille_on_top(mesh, plaque_text, plaque_left + 5.0, plaque_front + 10.5, top + 2.0, top + 2.75)
+
+    # Wrap instead of trimming: the printed plaque must spell the name the
+    # user typed.  A four-character title becomes two balanced lines, which
+    # also makes the cell groups much easier to inspect by eye.
+    title_lines, title_truncated = _wrap_braille(title_text, plaque_width - 6.0)
+    line_step = cnbraille.height() + BRAILLE_LINE_GAP_MM
+    if len(title_lines) <= 2:
+        _emboss_text_on_top(mesh, "AI 3D", plaque_left + 4.0, plaque_front + 2.0, top + 2.0, top + 2.9, 4.0)
+        first_line_y = plaque_front + 9.0
+    else:
+        # Three short lines need the whole plaque; drop the decorative header.
+        first_line_y = plaque_front + 2.0
+    for line_index, line in enumerate(title_lines):
+        line_width = cnbraille.width(line, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM)
+        line_x = plaque_left + max(2.0, (plaque_width - line_width) / 2.0)
+        _braille_on_top(
+            mesh,
+            line,
+            line_x,
+            first_line_y + line_index * line_step,
+            top + 2.0,
+            top + 2.75,
+        )
 
     qr_left = tab_half - 4.0 - qr_size
     qr_front = tab_front + 4.0
@@ -249,6 +330,10 @@ def compose_printable(
 
     bounds = mesh.bounds()
     size_mm = [bounds[3] - bounds[0], bounds[4] - bounds[1], bounds[5] - bounds[2]]
+    # One topology pass, shared by the manifest, print settings and compliance
+    # report.  Recomputing it for a million-triangle mesh used to triple both
+    # the runtime and the peak memory.
+    mesh_stats = mesh.stats()
     meta = {
         "kind": "reconstruction",
         "strategy": "provider_reconstruction_plus_deterministic_print",
@@ -265,9 +350,15 @@ def compose_printable(
         "build_volume_mm": list(BUILD_VOLUME_MM),
         "braille": {
             "standard": "GF 0019-2018",
-            "title": plaque_text,
+            "title": title_text,
+            "title_lines": title_lines,
+            "title_cells": cnbraille.describe_text(title_text),
+            "title_dots": sum(len(cell) for cell in cnbraille.encode_text(title_text)),
+            "title_truncated": title_truncated,
+            "pinyin": cnbraille.readings(title_text),
             "dot_diameter_mm": cnbraille.DOT_DIAMETER_MM,
             "dot_height_mm": BRAILLE_DOT_HEIGHT_MM,
+            "cell_spacing_mm": cnbraille.CELL_SPACING_MM,
             "labels": legend_meta,
             "label_strategy": "base_legend",
             "note": "中文盲文按 GF 0019-2018 编码；标题在正面名牌，特征名按编号刻在底座前缘的盲文图例上。重建网格表面无法确定特征坐标，所以不在模型表面刻猜出来的名字，也不生成竖立名牌。",
@@ -280,9 +371,11 @@ def compose_printable(
         },
         "standing_flags": 0,
         "qr_pad_mm": qr_size,
-        "watertight": mesh.is_watertight(),
-        "triangles": mesh.triangle_count(),
-        "volume_mm3": round(mesh.volume(), 3),
+        "watertight": mesh_stats["watertight"],
+        "open_edges": mesh_stats["open_edges"],
+        "nonmanifold_edges": mesh_stats["nonmanifold_edges"],
+        "triangles": mesh_stats["triangles"],
+        "volume_mm3": mesh_stats["volume_mm3"],
         "scale_note": "AI 重建网格按目标高度缩放；GLB 保留纹理，STL 为单色打印。",
         "fits_build_volume": all(
             size_mm[index] <= BUILD_VOLUME_MM[index] for index in range(3)

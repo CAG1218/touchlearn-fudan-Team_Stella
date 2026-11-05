@@ -9,8 +9,8 @@ with no compiled dependencies.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Iterable, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Sequence
 
 from . import font, tactile_braille as braille
 from .layout import Feature, LayoutResult, Point, Primitive
@@ -120,26 +120,75 @@ def triangulate(polygon: Sequence[Point]) -> list[tuple[Point, Point, Point]]:
 @dataclass
 class Mesh:
     triangles: list[Triangle]
+    # Derived values are cached per mesh.  The cache is keyed on the triangle
+    # count, which is enough for this codebase: every in-place mutation appends
+    # or extends, and replacing/removing triangles always changes the count.
+    _memo: dict[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _memo_count: int = field(default=-1, init=False, repr=False, compare=False)
+
+    def _cache(self) -> dict[str, Any]:
+        count = len(self.triangles)
+        if count != self._memo_count:
+            self._memo.clear()
+            self._memo_count = count
+        return self._memo
 
     def bounds(self) -> tuple[float, float, float, float, float, float]:
-        if not self.triangles:
+        cache = self._cache()
+        cached = cache.get("bounds")
+        if cached is None:
+            cached = self._compute_bounds()
+            cache["bounds"] = cached
+        return cached
+
+    def _compute_bounds(self) -> tuple[float, float, float, float, float, float]:
+        triangles = self.triangles
+        if not triangles:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        xs = [vertex[0] for triangle in self.triangles for vertex in triangle]
-        ys = [vertex[1] for triangle in self.triangles for vertex in triangle]
-        zs = [vertex[2] for triangle in self.triangles for vertex in triangle]
-        return (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+        first = triangles[0][0]
+        min_x = max_x = first[0]
+        min_y = max_y = first[1]
+        min_z = max_z = first[2]
+        # One pass, no three giant coordinate lists.  The old list-comprehension
+        # version allocated ~300 MB for a million-triangle mesh.
+        for triangle in triangles:
+            for x, y, z in triangle:
+                if x < min_x:
+                    min_x = x
+                elif x > max_x:
+                    max_x = x
+                if y < min_y:
+                    min_y = y
+                elif y > max_y:
+                    max_y = y
+                if z < min_z:
+                    min_z = z
+                elif z > max_z:
+                    max_z = z
+        return (min_x, min_y, min_z, max_x, max_y, max_z)
 
     def volume(self) -> float:
-        total = 0.0
-        for a, b, c in self.triangles:
-            total += (
-                a[0] * (b[1] * c[2] - b[2] * c[1])
-                - a[1] * (b[0] * c[2] - b[2] * c[0])
-                + a[2] * (b[0] * c[1] - b[1] * c[0])
-            )
-        return total / 6.0
+        cache = self._cache()
+        cached = cache.get("volume")
+        if cached is None:
+            total = 0.0
+            for a, b, c in self.triangles:
+                total += (
+                    a[0] * (b[1] * c[2] - b[2] * c[1])
+                    - a[1] * (b[0] * c[2] - b[2] * c[0])
+                    + a[2] * (b[0] * c[1] - b[1] * c[0])
+                )
+            cached = total / 6.0
+            cache["volume"] = cached
+        return cached
 
     def edge_counts(self) -> dict[tuple[Point3, Point3], int]:
+        """Diagnostic per-edge counts.
+
+        This keeps the historical tuple-keyed return type, but it is expensive
+        for large meshes; :meth:`topology` is the memory-efficient path used by
+        compliance checks.
+        """
         counts: dict[tuple[Point3, Point3], int] = {}
         for a, b, c in self.triangles:
             for first, second in ((a, b), (b, c), (c, a)):
@@ -147,20 +196,71 @@ class Mesh:
                 counts[key] = counts.get(key, 0) + 1
         return counts
 
+    def topology(self) -> dict[str, int | bool]:
+        """Return watertightness summary from a single edge pass.
+
+        Vertices are mapped to compact integer IDs and each undirected edge is
+        folded into one 64-bit integer key.  A million-triangle mesh therefore
+        needs one small edge dictionary instead of ~1.5 million nested float
+        tuples, which is what made the old implementation exceed 4 GiB.
+        """
+        cache = self._cache()
+        cached = cache.get("topology")
+        if cached is None:
+            cached = self._compute_topology()
+            cache["topology"] = cached
+        return cached
+
+    def _compute_topology(self) -> dict[str, int | bool]:
+        vertex_ids: dict[Point3, int] = {}
+        edge_counts: dict[int, int] = {}
+        for a, b, c in self.triangles:
+            ia = vertex_ids.get(a)
+            if ia is None:
+                ia = len(vertex_ids)
+                vertex_ids[a] = ia
+            ib = vertex_ids.get(b)
+            if ib is None:
+                ib = len(vertex_ids)
+                vertex_ids[b] = ib
+            ic = vertex_ids.get(c)
+            if ic is None:
+                ic = len(vertex_ids)
+                vertex_ids[c] = ic
+            for first, second in ((ia, ib), (ib, ic), (ic, ia)):
+                key = (first << 32) | second if first < second else (second << 32) | first
+                edge_counts[key] = edge_counts.get(key, 0) + 1
+        open_edges = 0
+        nonmanifold_edges = 0
+        for count in edge_counts.values():
+            if count == 1:
+                open_edges += 1
+            elif count > 2:
+                nonmanifold_edges += 1
+        return {
+            "watertight": open_edges == 0 and nonmanifold_edges == 0,
+            "open_edges": open_edges,
+            "nonmanifold_edges": nonmanifold_edges,
+            "edges": len(edge_counts),
+        }
+
     def is_watertight(self) -> bool:
-        return all(count == 2 for count in self.edge_counts().values())
+        return bool(self.topology()["watertight"])
 
     def triangle_count(self) -> int:
         return len(self.triangles)
 
     def stats(self) -> dict[str, float | int | bool]:
         bounds = self.bounds()
+        topology = self.topology()
         return {
             "triangles": self.triangle_count(),
             "bounds_mm": [round(value, 3) for value in bounds],
             "size_mm": [round(bounds[3] - bounds[0], 3), round(bounds[4] - bounds[1], 3), round(bounds[5] - bounds[2], 3)],
             "volume_mm3": round(self.volume(), 3),
-            "watertight": self.is_watertight(),
+            "watertight": topology["watertight"],
+            "open_edges": topology["open_edges"],
+            "nonmanifold_edges": topology["nonmanifold_edges"],
         }
 
 

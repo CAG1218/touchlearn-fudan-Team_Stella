@@ -2697,6 +2697,66 @@
     return value;
   }
 
+  function brailleCellHtml(cell) {
+    // Visual order of the six dots: 1 4 / 2 5 / 3 6.
+    const order = [1, 4, 2, 5, 3, 6];
+    const dots = new Set(Array.isArray(cell) ? cell : []);
+    const title = dots.size ? `点 ${Array.from(dots).join("-")}` : "空单元";
+    return `<span class="braille-cell" title="${escapeHtml(title)}">${order
+      .map((dot) => `<i class="${dots.has(dot) ? "on" : ""}"></i>`)
+      .join("")}</span>`;
+  }
+
+  function brailleRowsHtml(rows) {
+    if (!Array.isArray(rows) || !rows.length) return "";
+    return rows
+      .map((row) => {
+        const label = row.kind === "space" ? "空格" : escapeHtml(row.char || "");
+        const pinyin = row.pinyin ? `<small>${escapeHtml(row.pinyin)}</small>` : "";
+        const cells = (row.cells || []).map(brailleCellHtml).join("");
+        return `<div class="braille-char"><b>${label}</b>${pinyin}<span class="braille-cells">${cells}</span></div>`;
+      })
+      .join("");
+  }
+
+  function brailleDecoder(braille) {
+    if (!braille) return "";
+    const titleCells = Array.isArray(braille.title_cells) ? braille.title_cells : [];
+    const labels = Array.isArray(braille.labels) ? braille.labels : [];
+    if (!titleCells.length && !labels.length) return "";
+    const truncation = braille.title_truncated
+      ? '<div class="callout warn">标题太长，当前底座只能放下部分字符；这不是乱码，但请缩短标题后重新生成。</div>'
+      : "";
+    const titleLines = Array.isArray(braille.title_lines) ? braille.title_lines : [];
+    const layout = titleLines.length
+      ? `<p class="hint-line">铭牌排版：${titleLines.map((line) => escapeHtml(line)).join(" / ")}</p>`
+      : "";
+    const labelList = labels.length
+      ? `<div class="braille-label-list">${labels
+          .map(
+            (item) => `
+          <div class="braille-label">
+            <strong>${escapeHtml(String(item.legend_index || ""))}. ${escapeHtml(item.text || "")}</strong>
+            ${item.truncated ? '<small class="braille-warn">名称过长，图例只放下了部分字符</small>' : ""}
+            <span class="mono">${(item.cells || []).map((cell) => (cell || []).join("-") || "空").join(" / ")}</span>
+            <div class="braille-decode-row">${brailleRowsHtml(item.reading)}</div>
+          </div>`
+          )
+          .join("")}</div>`
+      : "";
+    return `
+      <div class="braille-decoder">
+        <h3>盲文对照（给明眼人看）</h3>
+        <p class="hint-line">每个 2×3 点格是一个盲文单元，点按 1–6 编号；同一格里的点组合对应一个声母、韵母或声调，不是随机装饰。${escapeHtml(braille.standard || "GF 0019-2018")} 的声调省略规则也会让不同音节的格数不一样。</p>
+        ${truncation}
+        ${layout}
+        <div class="braille-decode-row">${brailleRowsHtml(titleCells)}</div>
+        ${labelList}
+        <p class="hint-line">点格顺序：左上 1、左中 2、左下 3；右上 4、右中 5、右下 6。空单元表示词间空格。</p>
+      </div>
+    `;
+  }
+
   function printPanel(ui) {
     if (!ui.details) {
       ensureJobDetails(ui);
@@ -2714,6 +2774,7 @@
     }
     const print = manifest.print || {};
     const mesh = (manifest.geometry && manifest.geometry.mesh) || {};
+    const braille = (manifest.geometry && manifest.geometry.meta && manifest.geometry.meta.braille) || {};
     const size = print.size_mm || mesh.size_mm;
     const items = [
       ["板面 / 形态", print.paper || "—"],
@@ -2731,6 +2792,7 @@
         ${items.map(([key, value]) => `<div class="print-item"><span class="k">${escapeHtml(key)}</span><span class="v">${escapeHtml(value)}</span></div>`).join("")}
       </div>
       <p class="hint-line">${escapeHtml(printNote(print.notes) || "请按切片软件预览确认摆放方向与支撑。")}</p>
+      ${brailleDecoder(braille)}
       <div class="action-row">
         <a class="btn" href="/files/${encodeURIComponent(ui.jobId)}/README.txt?download=1" download="touchlearn-${ui.jobId}-README.txt">${icon("download")}下载打印说明</a>
         <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip" download="touchlearn-${ui.jobId}.zip">${icon("download")}下载整包 ZIP</a>

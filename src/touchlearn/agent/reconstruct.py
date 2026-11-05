@@ -1572,7 +1572,7 @@ _TYPE_COUNT = {
 }
 
 
-def _glb_chunks(raw: bytes) -> tuple[dict[str, Any], bytes]:
+def _glb_chunks(raw: bytes) -> tuple[dict[str, Any], memoryview]:
     if len(raw) < 20:
         raise ReconstructionError("GLB 文件不完整。")
     magic, version, length = struct.unpack_from("<4sII", raw, 0)
@@ -1580,16 +1580,19 @@ def _glb_chunks(raw: bytes) -> tuple[dict[str, Any], bytes]:
         raise ReconstructionError("不是 glTF 2.0 二进制文件。")
     offset = 12
     document: dict[str, Any] | None = None
-    binary = b""
+    binary: memoryview = memoryview(b"")
     while offset + 8 <= min(length, len(raw)):
         chunk_length, chunk_type = struct.unpack_from("<II", raw, offset)
         offset += 8
-        chunk = raw[offset : offset + chunk_length]
+        start = offset
+        end = min(offset + chunk_length, len(raw))
         offset += chunk_length
         if chunk_type == 0x4E4F534A:
-            document = json.loads(chunk.decode("utf-8").rstrip("\x00 "))
+            document = json.loads(raw[start:end].decode("utf-8").rstrip("\x00 "))
         elif chunk_type == 0x004E4942:
-            binary = chunk
+            # A memoryview avoids copying the whole binary chunk; the GLB's
+            # raw bytes stay alive for the duration of the parse.
+            binary = memoryview(raw)[start:end]
     if document is None:
         raise ReconstructionError("GLB 缺少 JSON 块。")
     required = document.get("extensionsRequired") or []
@@ -1620,6 +1623,80 @@ def _accessor_values(document: dict[str, Any], binary: bytes, index: int) -> lis
             break
         values.append(tuple(float(value) for value in unpack(binary, offset)))
     return values
+
+
+def _accessor_indices(document: dict[str, Any], binary: bytes, index: int) -> list[int]:
+    """Read an index accessor without one throwaway tuple per value.
+
+    A 1M-face GLB stores roughly 3M indices.  Going through
+    ``_accessor_values`` would allocate 3M single-element tuples (about 240 MB
+    on CPython) before the ints are extracted; this reader fills the int list
+    directly.
+    """
+    accessors = document.get("accessors") or []
+    views = document.get("bufferViews") or []
+    if index < 0 or index >= len(accessors):
+        raise ReconstructionError("GLB 访问器索引越界。")
+    accessor = accessors[index]
+    view = views[int(accessor.get("bufferView", -1))]
+    component = int(accessor.get("componentType", 5126))
+    fmt, size = _COMPONENT.get(component, ("f", 4))
+    count = int(accessor.get("count", 0))
+    stride = int(view.get("byteStride") or size)
+    start = int(view.get("byteOffset") or 0) + int(accessor.get("byteOffset") or 0)
+    unpack = struct.Struct("<" + fmt).unpack_from
+    values: list[int] = []
+    append = values.append
+    for item in range(count):
+        offset = start + item * stride
+        if offset + size > len(binary):
+            break
+        append(int(unpack(binary, offset)[0]))
+    return values
+
+
+def _accessor_points(
+    document: dict[str, Any],
+    binary: bytes,
+    index: int,
+    matrix: list[float],
+) -> list[tuple[float, float, float]]:
+    """Read POSITION values and apply the node transform in one pass.
+
+    The result is already converted from glTF's Y-up to the Z-up frame used by
+    the STL kernel.  Producing the final points directly avoids a second
+    million-element tuple list, which matters at the ``high`` preset.
+    """
+    accessors = document.get("accessors") or []
+    views = document.get("bufferViews") or []
+    if index < 0 or index >= len(accessors):
+        raise ReconstructionError("GLB 访问器索引越界。")
+    accessor = accessors[index]
+    view = views[int(accessor.get("bufferView", -1))]
+    component = int(accessor.get("componentType", 5126))
+    fmt, size = _COMPONENT.get(component, ("f", 4))
+    count = int(accessor.get("count", 0))
+    width = _TYPE_COUNT.get(str(accessor.get("type") or "SCALAR"), 1)
+    stride = int(view.get("byteStride") or size * width)
+    start = int(view.get("byteOffset") or 0) + int(accessor.get("byteOffset") or 0)
+    unpack = struct.Struct("<" + fmt * width).unpack_from
+    m0, m1, m2 = matrix[0], matrix[1], matrix[2]
+    m4, m5, m6 = matrix[4], matrix[5], matrix[6]
+    m8, m9, m10 = matrix[8], matrix[9], matrix[10]
+    m12, m13, m14 = matrix[12], matrix[13], matrix[14]
+    points: list[tuple[float, float, float]] = []
+    append = points.append
+    for item in range(count):
+        offset = start + item * stride
+        if offset + size * width > len(binary):
+            break
+        raw = unpack(binary, offset)
+        x, y, z = float(raw[0]), float(raw[1]), float(raw[2])
+        wx = m0 * x + m4 * y + m8 * z + m12
+        wy = m1 * x + m5 * y + m9 * z + m13
+        wz = m2 * x + m6 * y + m10 * z + m14
+        append((wx, -wz, wy))
+    return points
 
 
 def _node_matrix(node: dict[str, Any]) -> list[float]:
@@ -1657,15 +1734,6 @@ def _multiply(a: list[float], b: list[float]) -> list[float]:
         for column in range(4):
             result[column * 4 + row] = sum(a[index * 4 + row] * b[column * 4 + index] for index in range(4))
     return result
-
-
-def _apply(matrix: list[float], point: tuple[float, float, float]) -> tuple[float, float, float]:
-    x, y, z = point
-    return (
-        matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
-        matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
-        matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
-    )
 
 
 def read_glb_mesh(path: str | Path) -> tuple[Mesh, dict[str, Any]]:
@@ -1712,9 +1780,9 @@ def read_glb_mesh(path: str | Path) -> tuple[Mesh, dict[str, Any]]:
                     continue
                 if "TEXCOORD_0" in attributes:
                     has_uv = True
-                positions = [_apply(world, value[:3]) for value in _accessor_values(document, binary, int(attributes["POSITION"]))]
+                positions = _accessor_points(document, binary, int(attributes["POSITION"]), world)
                 if "indices" in primitive:
-                    indices = [int(value[0]) for value in _accessor_values(document, binary, int(primitive["indices"]))]
+                    indices = _accessor_indices(document, binary, int(primitive["indices"]))
                 else:
                     indices = list(range(len(positions)))
                 primitive_count += 1
@@ -1722,9 +1790,8 @@ def read_glb_mesh(path: str | Path) -> tuple[Mesh, dict[str, Any]]:
                     a, b, c = indices[start : start + 3]
                     if a >= len(positions) or b >= len(positions) or c >= len(positions):
                         continue
-                    pa, pb, pc = positions[a], positions[b], positions[c]
-                    # glTF is Y-up: (x, y, z) -> (x, -z, y)
-                    triangles.append(((pa[0], -pa[2], pa[1]), (pb[0], -pb[2], pb[1]), (pc[0], -pc[2], pc[1])))
+                    # The points are already in the Z-up print frame.
+                    triangles.append((positions[a], positions[b], positions[c]))
                     if len(triangles) > MAX_TRIANGLES:
                         raise ReconstructionError("重建网格三角形过多，无法在浏览器端处理。")
         for child in node.get("children") or []:

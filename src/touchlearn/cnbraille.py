@@ -449,3 +449,66 @@ def describe(text: str) -> list[dict[str, object]]:
                 }
             )
     return rows
+
+
+def describe_text(text: str) -> list[dict[str, object]]:
+    """Show every printed cell, including digits, punctuation and spaces.
+
+    ``describe`` only covers Chinese characters, which is enough for a
+    title but not for a numbered legend such as ``1 翅膀``.  This helper is
+    what the print-instructions decoder uses, so a sighted reader can match
+    every dot group back to a syllable instead of guessing.
+    """
+    table = pinyin_table()
+    rows: list[dict[str, object]] = []
+    ascii_run: list[str] = []
+
+    def flush_ascii() -> None:
+        if not ascii_run:
+            return
+        chunk = "".join(ascii_run)
+        rows.append(
+            {
+                "char": chunk,
+                "kind": "ascii",
+                "pinyin": "",
+                "cells": [list(cell) for cell in _digits_and_ascii(chunk)],
+            }
+        )
+        ascii_run.clear()
+
+    for character in text:
+        if character == " ":
+            flush_ascii()
+            rows.append({"char": "空格", "kind": "space", "pinyin": "", "cells": [[]]})
+        elif "\u4e00" <= character <= "\u9fff":
+            flush_ascii()
+            reading = table.get(character)
+            if not reading:
+                raise BrailleError(f"拼音表未收录字符：{character}")
+            syllable = encode_syllable(reading)
+            rows.append(
+                {
+                    "char": character,
+                    "kind": "han",
+                    "pinyin": reading,
+                    "initial": syllable.initial,
+                    "final": syllable.final,
+                    "tone": syllable.tone,
+                    "cells": [list(cell) for cell in syllable.cells],
+                }
+            )
+        elif character.isascii():
+            ascii_run.append(character)
+        else:
+            flush_ascii()
+            rows.append(
+                {
+                    "char": character,
+                    "kind": "punct",
+                    "pinyin": "",
+                    "cells": [list(cell) for cell in encode_text(character)],
+                }
+            )
+    flush_ascii()
+    return rows

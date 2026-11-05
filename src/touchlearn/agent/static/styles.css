@@ -2917,6 +2917,76 @@ body.viewer-lock { overflow: hidden; }
 .braille-list b { color: var(--ink); font-size: 12px; }
 .braille-list .mono { font-size: 10.5px; }
 
+.braille-decoder {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.braille-decoder h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.braille-decode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 8px 0;
+}
+
+.braille-char {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 34px;
+}
+
+.braille-char b { color: var(--ink); font-size: 13px; }
+.braille-char small { color: var(--muted); font-size: 10px; }
+
+.braille-cells { display: flex; gap: 3px; }
+
+.braille-cell {
+  display: grid;
+  grid-template-columns: repeat(2, 6px);
+  grid-template-rows: repeat(3, 6px);
+  gap: 2px;
+}
+
+.braille-cell i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+
+.braille-cell i.on {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.braille-label-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.braille-label {
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.braille-label strong { display: block; margin-bottom: 2px; font-size: 12px; }
+.braille-warn { display: block; margin-bottom: 2px; color: var(--warn); font-size: 10.5px; }
+.braille-label > .mono { display: block; margin-bottom: 4px; font-size: 10.5px; color: var(--muted); }
+
 @media (max-width: 520px) {
   .evidence-grid { grid-template-columns: 1fr; }
 }

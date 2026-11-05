@@ -301,6 +301,33 @@ class PrintableCompositionTests(unittest.TestCase):
         self.assertEqual([item["text"] for item in result.meta["braille"]["labels"]], ["头部", "手臂"])
         self.assertTrue(result.meta["fits_build_volume"])
 
+    def test_long_title_wraps_instead_of_being_truncated(self) -> None:
+        # The old plaque silently dropped characters, so the app showed
+        # "站立小狗" while the print said "站立小".  The title must now be
+        # balanced over lines with no character lost.
+        plan = ReconstructionPlan(ok=True, title="站立小狗", height_mm=100.0)
+        braille = compose_printable(_box(30.0, 30.0, 60.0), plan).meta["braille"]
+        self.assertEqual(braille["title"], "站立小狗")
+        self.assertEqual("".join(braille["title_lines"]), "站立小狗")
+        self.assertFalse(braille["title_truncated"])
+        self.assertEqual(braille["pinyin"], ["zhan4", "li4", "xiao3", "gou3"])
+        self.assertEqual([row["char"] for row in braille["title_cells"]], list("站立小狗"))
+        self.assertEqual(braille["title_dots"], 28)
+
+    def test_legend_line_separates_number_and_reports_real_dots(self) -> None:
+        # Without a space cell the number sign merges into the first syllable,
+        # which made the legend look like random dots.
+        plan = ReconstructionPlan(
+            ok=True,
+            title="小鸟",
+            labels=[{"text": "翅膀", "target": "主体"}],
+        )
+        item = compose_printable(_box(20.0, 12.0, 40.0), plan).meta["braille"]["labels"][0]
+        self.assertTrue(item["legend_line"].startswith("1 "))
+        self.assertGreater(item["dots"], 0)
+        self.assertEqual(item["reading"][0]["char"], "1")
+        self.assertEqual(item["placement"], "base_legend")
+
     def test_wide_mesh_is_capped_to_the_printable_footprint(self) -> None:
         plan = ReconstructionPlan(ok=True, title="板", height_mm=200.0, base="disc")
         result = compose_printable(_box(400.0, 20.0, 10.0), plan)

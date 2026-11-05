@@ -1,9 +1,12 @@
-# 把 v0.3.3 更新到阿里云 ECS
+# 把 v0.3.4 更新到阿里云 ECS
 
-目标服务器：`47.103.61.115`（上海，2 vCPU / 2 GiB，IP 模式，端口 8765）
+目标服务器：`47.103.61.115`（上海，2 vCPU / 4 GiB + 2 GiB swap，IP 模式，端口 8765）
 
 这次更新包含：
 
+- 修复底座盲文标题被静默截断的问题，四字标题自动换成 1–3 行；打印卡和 README 新增盲文点号/拼音对照
+- 水密、体积、包围盒改为缓存单趟计算，GLB 解析去掉整块二进制复制；`high`（约 100 万面）在 4 GiB 上可稳定完成
+- 标题含盲文表未收录的生僻字时，在调用三维服务前直接报错，避免白等 3–4 分钟
 - 触觉 3D 模型默认接入 TokenHub 文字生成 3D（默认 `tripo-3d-3.1`，最高 150 万面）
 - 生成后由本地统一加标题、底座、方向适配、中文盲文和二维码位
 - 照片级 3D 重建继续使用 TokenHub（默认 `tripo-3d-p1`，支持单图与多视图，可与文本模型共用 Key）
@@ -13,10 +16,10 @@
 
 ## 1. 本机上传发布包
 
-发布包已经生成：`touchlearn-0.3.3.tar.gz`。
+发布包已经生成：`touchlearn-0.3.4.tar.gz`。
 
 ```bash
-scp touchlearn-0.3.3.tar.gz root@47.103.61.115:/root/
+scp touchlearn-0.3.4.tar.gz root@47.103.61.115:/root/
 ```
 
 如果本机没有配置 SSH 密钥，`scp` 会提示输入服务器密码。
@@ -55,14 +58,14 @@ docker run --rm \
 
 ```bash
 cd "$APP_DIR"
-tar -xzf /root/touchlearn-0.3.3.tar.gz -C "$APP_DIR"
+tar -xzf /root/touchlearn-0.3.4.tar.gz -C "$APP_DIR"
 ```
 
 解压后确认版本：
 
 ```bash
 grep '__version__' src/touchlearn/__init__.py
-# 应输出 __version__ = "0.3.3"
+# 应输出 __version__ = "0.3.4"
 ```
 
 ## 5. 修改 `deploy/.env`
@@ -103,6 +106,7 @@ TOUCHLEARN_3D_POLL=4
 - `TOUCHLEARN_3D_KEY` 留空即可，TokenHub 会自动复用 `TOUCHLEARN_LLM_KEY`。
 - 文字生成 3D 默认走 `tripo-3d-3.1`（最高 150 万面，detailed 几何与纹理）；也可以改成 `hy-3d-3.1`、`hy-3d-3.0`、`tripo-3d-p1`、`tripo-3d-p2` 或 `hy-3d-express`。
 - `TOUCHLEARN_3D_QUALITY` 控制面数与纹理档位：`draft`、`standard`、`high`（默认）。`TOUCHLEARN_3D_FACES` 只影响图生 3D。
+- 本次升级验收请先把 `.env` 设为 `TOUCHLEARN_3D_QUALITY=high`，新建一个任务确认 66% 能走到 100%；验证完如果担心并发内存，可以改回 `standard` 并重新 `up -d`（不需要重新构建镜像）。
 - 设 `TOUCHLEARN_3D_GENERATIVE=0` 可强制回退到本地结构化编译器（太阳系与离线演示仍会自动走这条）。
 - 图生 3D 默认 `tripo-3d-p1`：1 张照片走单图；2–4 张且文件名含 `front/left/back/right`（或 `前/左/后/右`）时自动走多视图 `inputs`。`hy-3d-3.1` 走 `image_base64` 单图。
 - Tripo 示例用 HTTPS 图片 URL。服务器已设置 `TOUCHLEARN_PUBLIC_URL=http://47.103.61.115:8765`，构建时会把照片临时发布到 `/files/<job>/input-N.<ext>`，重建结束立即删除；不要把这个地址改成 `127.0.0.1`，否则会退回 data URI。
@@ -131,7 +135,7 @@ curl -s http://127.0.0.1:8765/api/health | python3 -m json.tool
 ```json
 {
   "ok": true,
-  "version": "0.3.3",
+  "version": "0.3.4",
   "public_base_url": "http://47.103.61.115:8765"
 }
 ```
@@ -200,4 +204,4 @@ PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 
 **任务超时**：默认 600 秒。排队高峰可能超过，任务 ID 24 小时内有效；把 `TOUCHLEARN_3D_TIMEOUT` 调到 900 再重试。
 
-**内存不足**：2 GiB 机器解析 30 万面 GLB 约占 300–500 MB。`high` 档文字生成默认 150 万面，峰值内存会明显上升；多人同时生成时把 `TOUCHLEARN_3D_QUALITY` 降到 `standard` 或 `draft`，或把容器内存上限调高。
+**内存不足**：本机 98 万面索引 GLB 端到端峰值约 942 MB，非索引最坏情况约 1.38 GB。4 GiB + 2 GiB swap 足够跑一个 `high` 任务，但不要并发两个；多人同时生成时把 `TOUCHLEARN_3D_QUALITY` 降到 `standard` 或 `draft`，或把容器内存上限调高。

@@ -128,11 +128,11 @@ systemctl enable --now docker
 
 git clone https://github.com/CAG1218/touchlearn-fudan-Team_Stella.git
 cd touchlearn-fudan-Team_Stella
-docker build -t touchlearn:0.3.3 .
+docker build -t touchlearn:0.3.4 .
 docker run -d --name touchlearn-test -p 8765:8765 \
   -e TOUCHLEARN_AUTH_DEV_MODE=true \
   -v touchlearn-outputs:/app/outputs \
-  touchlearn:0.3.3
+  touchlearn:0.3.4
 ```
 
 浏览器打开 `http://服务器IP:8765`，用手机蜂窝网络也试一次。开发模式会把验证码直接显示在页面上，只用于自己验证；确认能收到、能登录、能上传、能生成、能下载 STL 后，正式部署必须切回真实 SMTP/短信通道。

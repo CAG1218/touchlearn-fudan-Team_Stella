@@ -1,3 +1,3 @@
 """TouchLearn: semantic STEM diagrams to tactile 3D prints."""
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"

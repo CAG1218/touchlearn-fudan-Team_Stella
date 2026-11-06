@@ -2623,9 +2623,11 @@
     const audio = (manifest && manifest.audio) || {};
     const script = ui.details.script || "";
     const base = `/files/${encodeURIComponent(ui.jobId)}`;
-    const wavReady = Boolean(audio.wav_ready);
-    const player = wavReady
-      ? `<audio controls preload="metadata" src="${base}/narration.wav"></audio>`
+    const audioFile = audio.audio_file || (audio.wav_ready ? "narration.wav" : "");
+    const audioReady = Boolean(audioFile);
+    const audioLabel = audioFile.endsWith(".mp3") ? "下载 MP3" : "下载 WAV";
+    const player = audioReady
+      ? `<audio controls preload="metadata" src="${base}/${encodeURIComponent(audioFile)}"></audio>`
       : `
         <div class="callout">
           当前服务器没有可用的语音合成${audio.tts_message ? `（${escapeHtml(audio.tts_message)}）` : ""}。可以先用浏览器朗读讲解稿。
@@ -2635,7 +2637,7 @@
     return `
       ${player}
       <div class="action-row">
-        ${wavReady ? `<a class="btn" href="${base}/narration.wav?download=1" download="touchlearn-${ui.jobId}-narration.wav">${icon("download")}下载 WAV</a>` : ""}
+        ${audioReady ? `<a class="btn" href="${base}/${encodeURIComponent(audioFile)}?download=1" download="touchlearn-${ui.jobId}-${audioFile}">${icon("download")}${audioLabel}</a>` : ""}
         <a class="btn" href="${base}/audio_script.txt?download=1" download="touchlearn-${ui.jobId}-audio_script.txt">${icon("download")}下载讲解稿</a>
         <a class="btn" href="/audio/${encodeURIComponent(ui.jobId)}/" target="_blank" rel="noopener">${icon("external")}手机版音频页</a>
       </div>
@@ -4316,7 +4318,7 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
       <div class="setting-group">
         <h3>讲解语音</h3>
         ${settingRow("系统语音", voiceText)}
-        <p class="setting-note">Windows 本机优先使用系统 TTS 生成 WAV；云端 Linux 没有语音时，讲解页会自动降级为浏览器朗读，讲解稿仍可下载。</p>
+        <p class="setting-note">Windows 本机优先用系统 SAPI 生成 WAV；Linux 容器用 edge-tts 生成 MP3。两者都不可用时，讲解页会自动降级为浏览器朗读，讲解稿仍可下载。可用 <code>TOUCHLEARN_TTS_ENGINE=sapi|edge</code> 强制引擎，<code>TOUCHLEARN_TTS_VOICE</code> 更换 edge 音色。</p>
       </div>
       <div class="setting-group">
         <h3>快捷入口</h3>

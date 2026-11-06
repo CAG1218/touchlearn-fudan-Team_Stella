@@ -1,25 +1,25 @@
-# 把 v0.3.4 更新到阿里云 ECS
+# 把 v0.3.5 更新到阿里云 ECS
 
 目标服务器：`47.103.61.115`（上海，2 vCPU / 4 GiB + 2 GiB swap，IP 模式，端口 8765）
 
 这次更新包含：
 
-- 修复底座盲文标题被静默截断的问题，四字标题自动换成 1–3 行；打印卡和 README 新增盲文点号/拼音对照
-- 水密、体积、包围盒改为缓存单趟计算，GLB 解析去掉整块二进制复制；`high`（约 100 万面）在 4 GiB 上可稳定完成
-- 标题含盲文表未收录的生僻字时，在调用三维服务前直接报错，避免白等 3–4 分钟
-- 触觉 3D 模型默认接入 TokenHub 文字生成 3D（默认 `tripo-3d-3.1`，最高 150 万面）
-- 生成后由本地统一加标题、底座、方向适配、中文盲文和二维码位
-- 照片级 3D 重建继续使用 TokenHub（默认 `tripo-3d-p1`，支持单图与多视图，可与文本模型共用 Key）
-- 触觉教材 / 触觉 3D 模型 / 照片级重建三模式
+- 服务端语音合成：Linux 容器用 edge-tts 生成 `narration.mp3`（中文 `zh-CN-XiaoxiaoNeural`），不再退回浏览器朗读
+- Windows 本机仍优先走系统 SAPI 生成 `narration.wav`；`TOUCHLEARN_TTS_ENGINE=auto|sapi|edge` 可强制引擎
+- 音频文件统一由 `manifest.audio.audio_file` / `audio_format` / `engine` 描述，前端按扩展名播放和下载
+- 静态文件支持 HTTP Range（206 / 416），修复 iOS Safari 上 `<audio>` 无法拖动进度、偶发不播放
+- 讲解脚本与音频同时生成才算合规 PASS；音频失败时保留脚本并明确提示原因
+
+上一版（v0.3.4）包含：盲文标题不截断、水密/体积单趟计算、TokenHub 文字生成 3D 与照片级重建、三模式并行。
 
 下面命令都在服务器上执行，只有第 1 步在本机执行。
 
 ## 1. 本机上传发布包
 
-发布包已经生成：`touchlearn-0.3.4.tar.gz`。
+发布包已经生成：`touchlearn-0.3.5.tar.gz`。
 
 ```bash
-scp touchlearn-0.3.4.tar.gz root@47.103.61.115:/root/
+scp touchlearn-0.3.5.tar.gz root@47.103.61.115:/root/
 ```
 
 如果本机没有配置 SSH 密钥，`scp` 会提示输入服务器密码。
@@ -58,14 +58,14 @@ docker run --rm \
 
 ```bash
 cd "$APP_DIR"
-tar -xzf /root/touchlearn-0.3.4.tar.gz -C "$APP_DIR"
+tar -xzf /root/touchlearn-0.3.5.tar.gz -C "$APP_DIR"
 ```
 
 解压后确认版本：
 
 ```bash
 grep '__version__' src/touchlearn/__init__.py
-# 应输出 __version__ = "0.3.4"
+# 应输出 __version__ = "0.3.5"
 ```
 
 ## 5. 修改 `deploy/.env`
@@ -99,6 +99,11 @@ TOUCHLEARN_3D_GENERATIVE=1
 TOUCHLEARN_3D_FACES=300000
 TOUCHLEARN_3D_TIMEOUT=600
 TOUCHLEARN_3D_POLL=4
+
+# 讲解语音：auto 在 Linux 上用 edge-tts；也可强制 sapi / edge
+TOUCHLEARN_TTS_ENGINE=auto
+# 留空使用 zh-CN-XiaoxiaoNeural；也可换成 zh-CN-YunxiNeural 等
+TOUCHLEARN_TTS_VOICE=
 ```
 
 重点：
@@ -135,7 +140,7 @@ curl -s http://127.0.0.1:8765/api/health | python3 -m json.tool
 ```json
 {
   "ok": true,
-  "version": "0.3.4",
+  "version": "0.3.5",
   "public_base_url": "http://47.103.61.115:8765"
 }
 ```
@@ -162,14 +167,22 @@ docker compose --env-file .env -f docker-compose.ip.yml exec touchlearn \
 }
 ```
 
+确认容器内能装到 edge-tts（不依赖系统 SAPI）：
+
+```bash
+docker compose --env-file .env -f docker-compose.ip.yml exec touchlearn \
+  python -c "import edge_tts, importlib.metadata as m; print('edge-tts', m.version('edge-tts'))"
+```
+
 浏览器访问 `http://47.103.61.115:8765`，登录后：
 
 1. 先跑一次“触觉教材生成”，确认原有功能正常；
 2. 再勾选“触觉3D模型”，输入“做一个六轴机械臂 3D 模型”，确认卡里填标题、高度、底座，提交；
 3. 页面会依次显示提交、排队、生成、下载、解析、组装；TokenHub 通常 2–6 分钟返回；
 4. 下载 `model.stl`（可打印）、`model_textured.glb`（带纹理）和 `generation.json`（提示词、模型、面数、后处理参数）；
-5. 再选“照片级 3D 重建”，上传一张主体清晰、背景干净的照片，确认同样的高度、底座和盲文名称流程；
-6. 用 Bambu Studio / PrusaSlicer / Cura 打开 STL 检查底座、标题牌和支撑方向。注意 AI 生成网格可能有开放边，切片前先修复。
+5. 打开作业里的 `audio.html`，确认播放的是 `narration.mp3` 而不是浏览器朗读音；手机扫码再验证一次，确认 iOS / Android 都能播放并拖动进度条；
+6. 再选“照片级 3D 重建”，上传一张主体清晰、背景干净的照片，确认同样的高度、底座和盲文名称流程；
+7. 用 Bambu Studio / PrusaSlicer / Cura 打开 STL 检查底座、标题牌和支撑方向。注意 AI 生成网格可能有开放边，切片前先修复。
 
 ## 8. 回滚
 
@@ -205,3 +218,9 @@ PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 **任务超时**：默认 600 秒。排队高峰可能超过，任务 ID 24 小时内有效；把 `TOUCHLEARN_3D_TIMEOUT` 调到 900 再重试。
 
 **内存不足**：本机 98 万面索引 GLB 端到端峰值约 942 MB，非索引最坏情况约 1.38 GB。4 GiB + 2 GiB swap 足够跑一个 `high` 任务，但不要并发两个；多人同时生成时把 `TOUCHLEARN_3D_QUALITY` 降到 `standard` 或 `draft`，或把容器内存上限调高。
+
+**`edge-tts 合成失败` / `TimeoutError`**：服务器到微软朗读端点的出站连接被限速或阻断。先确认容器能访问外网，再重试；持续失败说明该出口不可用，此时讲解稿和二维码仍然生成，前端会退回浏览器朗读。也可以换成 `TOUCHLEARN_TTS_VOICE=zh-CN-YunxiNeural` 再试。
+
+**`未安装 edge-tts`**：镜像没有带 `tts` extra。确认 `Dockerfile` 里是 `pip install ... ".[docs-reader,tts]"`，然后 `docker compose ... build --no-cache` 重建。
+
+**音频能下载但手机不播放**：确认服务端已返回 `Accept-Ranges: bytes`，并用 `curl -I -H "Range: bytes=0-1023" <音频地址>` 检查是否 206。旧镜像不支持 Range，需要升级到 0.3.5。

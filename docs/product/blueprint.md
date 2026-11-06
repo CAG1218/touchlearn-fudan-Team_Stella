@@ -143,7 +143,7 @@ TouchLearn 把这三个问题拆成“理解 → 确认 → 生成 → 合规检
 | `model.stl` | 可直接切片打印 |
 | `preview.svg` | 与几何同源的矢量预览 |
 | `qr.png` / `qr_card.svg` | 指向音频页的二维码与贴纸卡 |
-| `audio.html` / `narration.wav` / `audio_script.txt` | 扫码播放页、语音、文字稿 |
+| `audio.html` / `narration.wav` 或 `narration.mp3` / `audio_script.txt` | 扫码播放页、语音、文字稿 |
 | `compliance.json` / `compliance.md` | 规则级检查结果 |
 | `diagram.json` | 本次构建的语义快照 |
 | `decision_trace.json` | 路由、版式、检查的决策轨迹 |

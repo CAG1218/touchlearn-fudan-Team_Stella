@@ -288,7 +288,7 @@ fields, questions, notes, files, created_at
 - `diagram.json`：本次语义快照；
 - `decision_trace.json`：路由、版式、检查；
 - `manifest.json`：标题、模式、几何指标、哈希；
-- `audio_script.txt`、`narration.wav`、`audio.html`；
+- `audio_script.txt`、`narration.wav`（Windows SAPI）或 `narration.mp3`（edge-tts）、`audio.html`；
 - `qr.png`、`qr_card.svg`；
 - `README.txt`、`bundle.zip`。
 

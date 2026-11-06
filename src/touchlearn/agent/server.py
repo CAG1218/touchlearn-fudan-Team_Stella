@@ -15,6 +15,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import socket
 import threading
 import uuid
@@ -160,9 +161,37 @@ class Handler(BaseHTTPRequestHandler):
             return
         data = path.read_bytes()
         content_type = MIME_OVERRIDES.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        self.send_response(HTTPStatus.OK)
+        total = len(data)
+        start, end, partial = 0, total - 1, False
+        # iOS Safari asks for ``bytes=0-1`` before it will play an <audio>
+        # element.  Answering every request with a full 200 makes the QR audio
+        # page look broken on a phone even though the WAV is fine.
+        range_header = (self.headers.get("Range") or "").strip()
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header) if range_header else None
+        if match and "," not in range_header:
+            first, last = match.groups()
+            if first:
+                start = int(first)
+                if last:
+                    end = min(int(last), total - 1)
+            elif last:
+                start = max(0, total - int(last))
+            else:
+                start = total
+            if start >= total or start > end:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{total}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            partial = True
+        body = data[start : end + 1]
+        self.send_response(HTTPStatus.PARTIAL_CONTENT if partial else HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Accept-Ranges", "bytes")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
@@ -170,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
         if download:
             self.send_header("Content-Disposition", content_disposition(path.name))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(body)
 
     def _request_host(self) -> str:
         forwarded = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""

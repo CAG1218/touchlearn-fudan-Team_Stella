@@ -175,6 +175,36 @@ class AgentServerTests(unittest.TestCase):
         self.assertEqual(len(body), 84 + 50)
         self.assertEqual(struct.unpack_from("<I", body, 80)[0], 1)
 
+    def test_audio_serves_byte_ranges_for_mobile_players(self) -> None:
+        job_dir = Path(self.temp.name) / "jobs" / "rangecheck"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        payload = bytes(range(256)) * 16
+        (job_dir / "narration.wav").write_bytes(payload)
+        url = f"{self.base}/files/rangecheck/narration.wav"
+
+        with urlopen(url, timeout=10) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Accept-Ranges"], "bytes")
+            self.assertEqual(response.read(), payload)
+
+        request = Request(url, headers={"Range": "bytes=10-19"})
+        with urlopen(request, timeout=10) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.headers["Content-Range"], f"bytes 10-19/{len(payload)}")
+            self.assertEqual(response.headers["Content-Length"], "10")
+            self.assertEqual(response.read(), payload[10:20])
+
+        request = Request(url, headers={"Range": "bytes=-16"})
+        with urlopen(request, timeout=10) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.read(), payload[-16:])
+
+        request = Request(url, headers={"Range": f"bytes={len(payload)}-"})
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(request, timeout=10)
+        self.assertEqual(caught.exception.code, 416)
+        self.assertEqual(caught.exception.headers["Content-Range"], f"bytes */{len(payload)}")
+
     def test_bundle_download_is_a_real_zip(self) -> None:
         job_dir = Path(self.temp.name) / "jobs" / "zipcheck"
         self.write_test_stl(job_dir)

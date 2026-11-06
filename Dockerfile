@@ -13,7 +13,7 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" ".[docs-reader]" \
+RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" ".[docs-reader,tts]" \
     && useradd --create-home --uid 10001 app \
     && mkdir -p /app/outputs \
     && chown -R app:app /app

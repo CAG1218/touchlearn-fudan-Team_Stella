@@ -55,7 +55,7 @@ class AgentPipelineTests(unittest.TestCase):
     def test_scene_build_writes_printable_bundle(self) -> None:
         draft = self.agent.analyze({"subject": "auto", "text": "画一个水循环流程图：蒸发、凝结、降水、收集。"})
         self.assertEqual(draft["subject"], "scene")
-        with patch("touchlearn.agent.agent.synthesize_windows_tts", return_value=(False, "test environment")):
+        with patch("touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)):
             result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
         job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
         self.assertTrue((job_dir / "model.stl").is_file())
@@ -74,6 +74,28 @@ class AgentPipelineTests(unittest.TestCase):
         diagram = json.loads((job_dir / "diagram.json").read_text(encoding="utf-8"))
         issues = validate_payload(diagram)
         self.assertFalse(has_errors(issues), msg=[issue.to_dict() for issue in issues])
+
+    def test_edge_audio_is_recorded_and_wired_into_the_page(self) -> None:
+        draft = self.agent.analyze({"subject": "auto", "text": "请画函数 y=x^2-2x-3 的图像"})
+
+        def fake_speech(text: str, job_dir: object) -> tuple[bool, str, str]:
+            (Path(job_dir) / "narration.mp3").write_bytes(b"ID3" + b"\x00" * 2048)
+            return True, "edge ok", "narration.mp3"
+
+        with patch("touchlearn.agent.agent.synthesize_speech", side_effect=fake_speech):
+            result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
+        job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
+        manifest = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["audio"]["audio_file"], "narration.mp3")
+        self.assertEqual(manifest["audio"]["audio_format"], "mp3")
+        self.assertEqual(manifest["audio"]["engine"], "edge-tts")
+        self.assertTrue(manifest["audio"]["wav_ready"])
+        page = (job_dir / "audio.html").read_text(encoding="utf-8")
+        self.assertIn('src="narration.mp3"', page)
+        self.assertIn("下载音频", page)
+        report = json.loads((job_dir / "compliance.json").read_text(encoding="utf-8"))
+        check = next(item for item in report["checks"] if item["rule_id"] == "audio.script")
+        self.assertEqual(check["status"], "PASS")
 
     def test_auto_function_from_text(self) -> None:
         draft = self.agent.analyze({"subject": "auto", "text": "请画函数 y=x^2-2x-3 的图像"})
@@ -158,7 +180,7 @@ class AgentPipelineTests(unittest.TestCase):
         draft = self.agent.analyze({"subject": "auto", "template": "triangle"})
         scene = dict(draft["fields"]["scene"])
         scene["title"] = "RIGHT TRIANGLE"
-        with patch("touchlearn.agent.agent.synthesize_windows_tts", return_value=(False, "test environment")):
+        with patch("touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)):
             result = self.agent.build(
                 draft["id"],
                 overrides={"fields": {"scene": scene}},

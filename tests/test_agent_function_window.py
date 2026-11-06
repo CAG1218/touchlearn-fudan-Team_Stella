@@ -173,7 +173,7 @@ class FunctionPreviewTests(unittest.TestCase):
             {"subject": "function", "text": "把函数 y=x^2-2x-4 做成 A5 触觉板，标出零点和顶点。"}
         )
         self.assertTrue(draft["ready"])
-        with patch("touchlearn.agent.agent.synthesize_windows_tts", return_value=(False, "test environment")):
+        with patch("touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)):
             result = self.agent.build(
                 draft["id"],
                 overrides={
@@ -201,7 +201,7 @@ class FunctionPreviewTests(unittest.TestCase):
             {"subject": "function", "text": "把函数 y=x^2 做成 A5 触觉板，标出零点和顶点。"}
         )
         self.assertTrue(draft["ready"])
-        with patch("touchlearn.agent.agent.synthesize_windows_tts", return_value=(False, "test environment")):
+        with patch("touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)):
             result = self.agent.build(
                 draft["id"],
                 overrides={"fields": {"auto_window": True}},

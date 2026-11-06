@@ -54,7 +54,7 @@ from .audio import (
     robot_relief_narration,
     robot_volume_narration,
     spoken_expression,
-    synthesize_windows_tts,
+    synthesize_speech,
 )
 from .documents import extract_document, scene_from_text
 from .expression import Expression, ExpressionError, parse_expression, strip_function_prefix
@@ -2073,21 +2073,29 @@ class TouchLearnAgent:
             report_progress(72, "生成讲解音频")
             script = narration_text(metadata["audio"])
             (job_dir / "audio_script.txt").write_text(script, encoding="utf-8")
-            wav_ok, wav_message = synthesize_windows_tts(script, job_dir / "narration.wav")
-            metadata["audio"]["wav_ready"] = wav_ok
-            metadata["audio"]["tts_message"] = wav_message
+            audio_ok, audio_message, audio_file = synthesize_speech(script, job_dir)
+            metadata["audio"]["audio_ready"] = audio_ok
+            # Kept for older manifests and clients that still read wav_ready.
+            metadata["audio"]["wav_ready"] = audio_ok
+            metadata["audio"]["tts_message"] = audio_message
             metadata["audio"]["script_file"] = "audio_script.txt"
-            metadata["audio"]["wav_file"] = "narration.wav" if wav_ok else None
+            metadata["audio"]["audio_file"] = audio_file
+            metadata["audio"]["audio_format"] = audio_file.rsplit(".", 1)[-1] if audio_file else None
+            metadata["audio"]["engine"] = (
+                "edge-tts" if audio_file and audio_file.endswith(".mp3") else ("windows-sapi" if audio_file else None)
+            )
+            # Kept for older manifests and clients that still read wav_file.
+            metadata["audio"]["wav_file"] = audio_file
 
             # The audio check is only truthful after TTS has run.
             report = metadata["report"]
             if isinstance(report, ComplianceReport):
                 report.checks = [check for check in report.checks if check.rule_id != "audio.script"]
-                if wav_ok:
-                    report.checks.append(Check("audio.script", STATUS_PASS, "wav + script", "讲解脚本和 WAV 均已生成"))
+                if audio_ok:
+                    report.checks.append(Check("audio.script", STATUS_PASS, "audio + script", "讲解脚本和音频均已生成"))
                 else:
                     report.checks.append(
-                        Check("audio.script", STATUS_REVIEW, "script-only", f"脚本已生成，但 TTS 未成功：{wav_message}")
+                        Check("audio.script", STATUS_REVIEW, "script-only", f"脚本已生成，但 TTS 未成功：{audio_message}")
                     )
                 metadata["report_dict"] = report.to_dict()
             else:
@@ -2100,10 +2108,10 @@ class TouchLearnAgent:
                 title=str(metadata.get("title") or "TOUCHLEARN"),
                 subtitle=str(metadata.get("subtitle") or ""),
                 script=script,
-                audio_url="narration.wav",
-                download_url="narration.wav" if wav_ok else "",
+                audio_url=audio_file or "narration.wav",
+                download_url=audio_file or "",
                 model_url="model.stl",
-                audio_available=wav_ok,
+                audio_available=audio_ok,
                 script_url="audio_script.txt",
             )
             (job_dir / "audio.html").write_text(page, encoding="utf-8")
@@ -3538,8 +3546,8 @@ class TouchLearnAgent:
             "- qr_card.svg          A6 二维码卡片，打印后贴在预留平面",
             "- qr.png               二维码原图",
             "- audio_script.txt     讲解脚本",
-            "- narration.wav        讲解音频（若 TTS 成功）",
-            "- audio.html           离线播放页（与 narration.wav 同目录）",
+            "- narration.wav/mp3    讲解音频（Windows SAPI 出 WAV，服务器 edge-tts 出 MP3）",
+            "- audio.html           离线播放页（与音频文件同目录）",
             "- compliance.md        合规报告",
             "- manifest.json        可复现清单与哈希",
             "",
@@ -3577,7 +3585,7 @@ class TouchLearnAgent:
             [
                 "二维码",
                 "二维码指向本机音频页面。手机与电脑需在同一局域网，且本地服务正在运行。",
-                "如果只在离线环境使用，可直接打开 audio.html 播放 narration.wav。",
+                "如果只在离线环境使用，可直接打开 audio.html 播放包内的讲解音频。",
                 "",
                 "合规",
                 "先看 compliance.md。printable=true 不代表完全符合所有标准条款；DEVIATION 和 NEEDS_REVIEW 需要人工确认。",

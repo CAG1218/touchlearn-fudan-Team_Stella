@@ -68,7 +68,7 @@
 - `model.stl`：切片软件直接打开；
 - `preview.svg`：和 STL 同源的触觉预览；
 - `compliance.md/json`：哪条过、哪条偏、哪条要人看；
-- `audio.html` / `narration.wav`：扫码听讲解；
+- `audio.html` / `narration.wav` 或 `narration.mp3`：扫码听讲解；
 - `qr_card.svg` / `qr.png`：贴在图例卡上；
 - `README.txt`：摆放方向、支撑、打印参数；
 - `manifest.json`：版本、输入、产物哈希、已知限制。

@@ -592,7 +592,7 @@ class AgentCircuitIntegrationTests(unittest.TestCase):
         circuit["title"] = "CIRCUIT TEST"
         circuit["title_zh"] = "测试电路"
         next(item for item in circuit["components"] if item["type"] == "switch")["state"] = "closed"
-        with patch("touchlearn.agent.agent.synthesize_windows_tts", return_value=(False, "test environment")):
+        with patch("touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)):
             result = self.agent.build(
                 draft["id"],
                 overrides={"fields": {"circuit": circuit}},

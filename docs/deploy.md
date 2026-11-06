@@ -300,8 +300,12 @@ TokenHub 的 Tripo 示例用 HTTPS 图片 URL。服务端有公网地址（`TOUC
 
 ## 六、语音与 PDF 的平台差异
 
-- 本地 Windows：使用系统 SAPI 生成 `narration.wav`，当前机器有 `Microsoft Huihui Desktop` 中文语音。
-- Linux 容器：没有 SAPI，WAV 生成会失败并记录到 `manifest.audio.tts_message`；前端会自动切换为浏览器 `speechSynthesis` 朗读讲解稿。讲解稿文本、音频页和二维码仍然可用。
+- 本地 Windows：优先使用系统 SAPI 生成 `narration.wav`，当前机器有 `Microsoft Huihui Desktop` 中文语音。
+- Linux 容器：没有 SAPI，自动改用 edge-tts 生成 `narration.mp3`（默认 `zh-CN-XiaoxiaoNeural`，约 48 kbps 单声道）。这需要容器能访问微软朗读端点；首次构建要装 `tts` extra（`pip install ".[docs-reader,tts]"`）。
+- 引擎选择：`TOUCHLEARN_TTS_ENGINE=auto`（默认，按平台挑）、`sapi`、`edge`；`TOUCHLEARN_TTS_VOICE` 可换 edge 音色（如 `zh-CN-YunxiNeural`）。
+- 失败时：两种引擎都失败才降级为浏览器 `speechSynthesis` 朗读讲解稿，失败原因写进 `manifest.audio.tts_message`，讲解稿文本、音频页和二维码仍然可用。
+- 产物字段：`manifest.audio.audio_file`（`narration.wav` 或 `narration.mp3`）、`audio_format`、`engine`、`audio_ready`；`wav_ready` / `wav_file` 保留给旧客户端。
+- HTTP：静态文件支持 Range（206 / 416），iOS Safari 的 `<audio>` 才能拖动进度条。
 - PDF：Docker 镜像安装了 `pypdf`，能读文字型 PDF 的文字层。扫描件会优先用 PyMuPDF（或系统 poppler）在服务端光栅化，再交给视觉模型；如果宿主缺少光栅化依赖，会保留页面图片并提示补充，不会假装识别成功。
 
 ## 七、排障

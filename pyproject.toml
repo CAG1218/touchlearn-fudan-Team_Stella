@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "touchlearn"
-version = "0.3.4"
+version = "0.3.5"
 description = "Turn multimodal STEM requests into printable tactile plates and 3D models with standards checks and audio."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,6 +17,7 @@ dependencies = ["qrcode[pil]>=7.4"]
 dev = ["jsonschema>=4.22", "pytest>=8.0", "pypdf>=4.0"]
 qr = ["qrcode[pil]>=7.4"]
 docs-reader = ["pypdf>=4.0"]
+tts = ["edge-tts>=6.1"]
 
 [project.scripts]
 touchlearn = "touchlearn.cli:main"

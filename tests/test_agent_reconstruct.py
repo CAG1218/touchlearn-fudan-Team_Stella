@@ -129,7 +129,7 @@ class AgentReconstructTests(unittest.TestCase):
             )
 
         with patch("touchlearn.agent.agent.reconstruct", side_effect=fake_reconstruct), patch(
-            "touchlearn.agent.agent.synthesize_windows_tts", return_value=(False, "test environment")
+            "touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)
         ):
             result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
 
@@ -190,7 +190,7 @@ class AgentReconstructTests(unittest.TestCase):
             return ReconstructionAsset(provider="tripo", task_id="task-empty", files={}, mesh_error="empty")
 
         with patch("touchlearn.agent.agent.reconstruct", side_effect=fake_reconstruct), patch(
-            "touchlearn.agent.agent.synthesize_windows_tts", return_value=(False, "test environment")
+            "touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)
         ):
             with self.assertRaises(Exception) as caught:
                 self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")

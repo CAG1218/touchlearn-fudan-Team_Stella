@@ -1,14 +1,19 @@
-"""Narration scripts and local Windows speech synthesis.
+"""Narration scripts and speech synthesis.
 
 The audio track is part of the product, not an afterthought: every plate and
-model gets a script that mirrors the physical exploration order.  Windows SAPI
-is used because it ships with the target machine and needs no API key.  If a
-voice is missing, the script is still written and the manifest records the
-failure; the geometry build never fails because of TTS.
+model gets a script that mirrors the physical exploration order.
+
+Two engines are supported.  Windows SAPI ships with the target laptop and works
+offline, so it is tried first there.  Linux containers have no SAPI, so
+``edge-tts`` provides a neural Chinese voice and writes MP3.  If neither engine
+works the script is still written and the manifest records the failure; the
+geometry build never fails because of TTS.
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import re
 import subprocess
 import tempfile
@@ -18,6 +23,7 @@ from typing import Any, Sequence
 from ..model import Diagram
 
 DEFAULT_VOICE = "Microsoft Huihui Desktop"
+EDGE_VOICE = "zh-CN-XiaoxiaoNeural"
 
 
 def _number(value: float) -> str:
@@ -195,6 +201,79 @@ $synth.Dispose()
     if not wav.exists() or wav.stat().st_size < 1024:
         return False, "TTS 没有生成有效的 WAV 文件（可能缺少中文语音包）"
     return True, f"已生成 {wav.name}，{wav.stat().st_size // 1024} KB"
+
+
+def synthesize_edge_tts(
+    text: str,
+    mp3_path: str | Path,
+    *,
+    voice: str = EDGE_VOICE,
+    rate: str = "+0%",
+    timeout_s: float = 120.0,
+) -> tuple[bool, str]:
+    """Render ``text`` to MP3 with edge-tts (no API key, needs network)."""
+    try:
+        import edge_tts  # imported lazily so Windows installs can skip the extra
+    except ImportError:
+        return False, "未安装 edge-tts（pip install \"touchlearn[tts]\"）"
+
+    target = Path(mp3_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    async def render() -> None:
+        for attempt in range(2):
+            try:
+                communicate = edge_tts.Communicate(text, voice, rate=rate)
+                await communicate.save(str(target))
+                return
+            except Exception:
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(1.0)
+
+    try:
+        asyncio.run(asyncio.wait_for(render(), timeout=timeout_s))
+    except Exception as error:  # network, blocked endpoint, cancelled task
+        if target.exists() and target.stat().st_size < 1024:
+            target.unlink(missing_ok=True)
+        return False, f"edge-tts 合成失败：{type(error).__name__}: {error}"
+    if not target.exists() or target.stat().st_size < 1024:
+        return False, "edge-tts 没有生成有效的音频文件"
+    return True, f"已生成 {target.name}，{target.stat().st_size // 1024} KB（{voice}）"
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def synthesize_speech(text: str, job_dir: str | Path) -> tuple[bool, str, str | None]:
+    """Pick an available engine and return ``(ok, message, filename)``.
+
+    ``TOUCHLEARN_TTS_ENGINE`` accepts ``auto`` (default), ``sapi`` or ``edge``.
+    """
+    target = Path(job_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    engine = (os.environ.get("TOUCHLEARN_TTS_ENGINE") or "auto").strip().lower()
+    if engine not in {"auto", "sapi", "edge"}:
+        engine = "auto"
+    messages: list[str] = []
+    if engine in {"auto", "sapi"}:
+        if _is_windows():
+            wav = target / "narration.wav"
+            ok, message = synthesize_windows_tts(text, wav)
+            if ok:
+                return True, message, wav.name
+            messages.append(message)
+        elif engine == "sapi":
+            messages.append("当前系统不是 Windows，没有 SAPI")
+    if engine in {"auto", "edge"}:
+        mp3 = target / "narration.mp3"
+        voice = (os.environ.get("TOUCHLEARN_TTS_VOICE") or EDGE_VOICE).strip() or EDGE_VOICE
+        ok, message = synthesize_edge_tts(text, mp3, voice=voice)
+        if ok:
+            return True, message, mp3.name
+        messages.append(message)
+    return False, "；".join(messages) or "没有可用的语音合成引擎", None
 
 
 def available_voices() -> list[str]:

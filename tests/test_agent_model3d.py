@@ -62,7 +62,7 @@ class AgentModel3DTests(unittest.TestCase):
         self.assertTrue(fields["companion_tactile"])
         self.assertEqual(len(fields["braille"]["labels"]), 7)
 
-        with patch("touchlearn.agent.agent.synthesize_windows_tts", return_value=(False, "test environment")):
+        with patch("touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)):
             result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
 
         job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
@@ -169,7 +169,7 @@ class AgentModel3DTests(unittest.TestCase):
             mesh=_box(30.0, 20.0, 80.0),
         )
         with patch("touchlearn.agent.agent.text_to_3d", return_value=asset) as fake:
-            with patch("touchlearn.agent.agent.synthesize_windows_tts", return_value=(False, "test environment")):
+            with patch("touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)):
                 result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
 
         job_dir = Path(self.temp.name) / "jobs" / result["job_id"]

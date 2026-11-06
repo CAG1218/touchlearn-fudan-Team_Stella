@@ -134,6 +134,26 @@
     </main>
 
     <footer class="composer-dock">
+      <div class="mode-bar">
+        <div class="mode-bar-head">
+          <span class="mode-bar-title">生成类型</span>
+          <span class="mode-bar-hint">可多选</span>
+        </div>
+        <div class="mode-switch" id="modeSwitch" role="group" aria-label="生成类型（可多选）">
+          <button class="mode-option is-active" type="button" data-mode="tactile" aria-pressed="true" title="生成可打印的触觉教材板，最短边 A5">
+            <span class="mode-icon"><svg class="icon"><use href="#icon-grid"/></svg></span>
+            <span class="mode-text"><strong>触觉教材</strong><small>可打印的平面触觉板</small></span>
+          </button>
+          <button class="mode-option" type="button" data-mode="model3d" aria-pressed="false" title="生成带底座和中文盲文标注的触觉 3D 模型">
+            <span class="mode-icon"><svg class="icon"><use href="#icon-cube"/></svg></span>
+            <span class="mode-text"><strong>触觉 3D 模型</strong><small>带底座与中文盲文</small></span>
+          </button>
+          <button class="mode-option" type="button" data-mode="reconstruct" aria-pressed="false" title="上传照片做照片级三维重建，再用文字调整高度、底座和盲文名称">
+            <span class="mode-icon"><svg class="icon"><use href="#icon-camera"/></svg></span>
+            <span class="mode-text"><strong>照片级 3D 重建</strong><small>照片还原带纹理模型</small></span>
+          </button>
+        </div>
+      </div>
       <div class="attachment-bar hidden" id="attachmentBar"></div>
       <form class="composer" id="composerForm">
         <button class="composer-icon" id="attachBtn" type="button" title="上传文件" aria-label="上传文件">
@@ -149,20 +169,6 @@
           <svg class="icon"><use href="#icon-grid"/></svg>
           <span>示例模板</span>
         </button>
-        <div class="mode-switch" id="modeSwitch" role="group" aria-label="生成类型（可多选）">
-          <button class="mode-option is-active" type="button" data-mode="tactile" aria-pressed="true" title="生成可打印的触觉教材板，最短边 A5">
-            <svg class="icon"><use href="#icon-grid"/></svg>
-            <span>触觉教材</span>
-          </button>
-          <button class="mode-option" type="button" data-mode="model3d" aria-pressed="false" title="生成带底座和中文盲文标注的触觉 3D 模型">
-            <svg class="icon"><use href="#icon-cube"/></svg>
-            <span>触觉3D模型</span>
-          </button>
-          <button class="mode-option" type="button" data-mode="reconstruct" aria-pressed="false" title="上传照片做照片级三维重建，再用文字调整高度、底座和盲文名称">
-            <svg class="icon"><use href="#icon-camera"/></svg>
-            <span>照片级3D重建</span>
-          </button>
-        </div>
         <button class="model-chip" id="modelChip" type="button" title="选择模型与思考强度" aria-haspopup="dialog" aria-expanded="false">
           <svg class="icon"><use href="#icon-spark"/></svg>
           <span id="modelChipText">离线规则</span>

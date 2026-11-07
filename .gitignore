@@ -221,6 +221,7 @@ __marimo__/
 
 # Local scratch output
 .tmp*/
+temporary/
 temporary_*.py
 outputs/
 

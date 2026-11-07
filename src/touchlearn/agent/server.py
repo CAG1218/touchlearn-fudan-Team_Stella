@@ -42,6 +42,7 @@ from .reconstruct import reconstruction_status
 from .scene import scene_templates, template_preview
 from .scene_svg import scene_to_svg
 from .vision import vision_status
+from .voice import MAX_UTTERANCE, interpret as interpret_voice, prompts_payload as voice_prompts
 
 STATIC_DIR = Path(__file__).with_name("static")
 MAX_BODY_BYTES = 128 * 1024 * 1024
@@ -369,6 +370,11 @@ class Handler(BaseHTTPRequestHandler):
                     "limits": {"file_mb": 30, "total_mb": 80},
                 }
             )
+            return
+        if path == "/api/voice/prompts":
+            # Public on purpose: the spoken greeting has to work on the login
+            # screen, before a session exists.
+            self._send_json(voice_prompts())
             return
         if path == "/api/auth/me":
             user = self._current_user()
@@ -795,6 +801,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/auth/profile":
             self._handle_auth_profile()
+            return
+        if path == "/api/voice/interpret":
+            # Stateless and public: a blind user must be able to hold the whole
+            # spoken dialog before signing in.
+            payload = self._read_json()
+            if payload is None:
+                return
+            text = payload.get("text")
+            if text is not None and not isinstance(text, str):
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "text 必须是字符串")
+                return
+            if isinstance(text, str) and len(text) > MAX_UTTERANCE * 8:
+                self._send_error_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "语音文本过长")
+                return
+            self._send_json(interpret_voice(payload))
             return
         if not self._require_auth():
             return

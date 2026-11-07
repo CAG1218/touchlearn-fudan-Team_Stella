@@ -3117,3 +3117,99 @@ body.viewer-lock { overflow: hidden; }
     scroll-behavior: auto !important;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Voice assistant (blind and low-vision mode)                        */
+/* ------------------------------------------------------------------ */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.voice-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: var(--brand);
+}
+
+.voice-btn:hover { background: var(--brand-soft); }
+.voice-btn.is-on { background: var(--brand); color: #fff; }
+.voice-btn.is-on:hover { background: var(--brand-dark); }
+.voice-btn .icon { width: 19px; height: 19px; }
+
+.login-voice {
+  height: 42px;
+  margin-top: 10px;
+  color: var(--brand);
+  border-color: var(--line);
+  border-style: dashed;
+}
+
+.login-voice:hover { background: var(--brand-soft); color: var(--brand-dark); }
+.login-voice.is-on { background: var(--brand-soft); color: var(--brand-dark); }
+
+.voice-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 7px;
+  padding: 7px 8px 7px 11px;
+  border: 1px solid #cfe6df;
+  border-radius: 12px;
+  background: var(--brand-soft);
+}
+
+.voice-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 0 0 3px rgba(15, 107, 91, 0.14);
+}
+
+.voice-dot[data-mode="speaking"] { background: var(--brand-dark); }
+.voice-dot[data-mode="idle"] { background: var(--muted); box-shadow: none; }
+
+.voice-bar-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--brand-dark);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.voice-bar-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.voice-bar-actions .btn {
+  height: 34px;
+  padding: 0 8px;
+  color: var(--brand-dark);
+}
+
+.voice-bar-actions .btn:hover { background: #d7ebe4; color: var(--brand-dark); }
+
+@media (max-width: 420px) {
+  .voice-bar-text { font-size: 11px; }
+  .voice-bar-actions .btn { padding: 0 6px; }
+}

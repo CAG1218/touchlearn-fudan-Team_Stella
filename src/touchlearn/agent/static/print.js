@@ -200,7 +200,7 @@ TOUCHLEARN_PRINT_ALLOW=1</pre>
   function footer() {
     if (state.result) {
       return `<footer class="print-foot">
-        <span class="print-note">${esc(state.result.ok ? "打印机已接管这次任务，后续请在打印机面板上观察。" : "没有启动打印，可以修改后重试。")}</span>
+        <span class="print-note">${esc(state.result.ok ? "已发送到打印服务器；如果切片配置或文件类型不匹配，面板会给出原因。" : "没有启动打印，可以修改后重试。")}</span>
         <button class="btn primary" type="button" data-print-close>完成</button>
       </footer>`;
     }

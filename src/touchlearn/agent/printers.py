@@ -485,7 +485,7 @@ def _moonraker_start(printer: PrinterConfig, plan: dict[str, Any], timeout: floa
         "upload": upload,
         "start": start,
         "started": True,
-        "note": "已上传到 gcodes 并调用打印开始；Klipper 若未回零或温度未就绪，会拒绝启动。",
+        "note": "已上传 STL 并请求开始；Klipper 只执行 G-code，未接入切片器时这个文件不会真正开打，本条链路也尚未用真机验证。",
     }
 
 

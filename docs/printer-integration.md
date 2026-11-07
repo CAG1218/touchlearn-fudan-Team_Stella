@@ -168,7 +168,7 @@ TOUCHLEARN_PRINTERS=[{"id":"prusa","label":"Prusa MK4","kind":"octoprint","url":
 - 没有连接过真实打印机，`X-Api-Key` 与真实 OctoPrint / Moonraker 的兼容性只在假服务器上验证；
 - OctoPrint 未配置切片配置时只会把 STL 存进队列，不会自动开打；这一点取决于用户自己的 OctoPrint 设置；
 - 没有轮询打印进度、没有断点续传、没有超时重试；
-- Moonraker 的 `print/start` 在未回零或温度未就绪时会被拒绝，目前只把错误原文回显；
+- Moonraker 的 `print/start` 只是按协议发起请求；Klipper 只执行 G-code，未接入切片器时上传的 STL 不会真正开打，目前只把错误原文回显；
 - HTTPS 使用系统默认证书校验，自签名证书的打印机需要换 HTTP 或给系统装根证书；
 - 多进程部署时“同一作业只允许一个请求”的锁只在单进程内有效。
 

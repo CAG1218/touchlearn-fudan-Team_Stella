@@ -2539,6 +2539,7 @@
       ${companion}
       <div class="action-row">
         <a class="btn primary" href="${base}/model.stl?download=1" download="touchlearn-${ui.jobId}-model.stl">${icon("download")}下载 STL</a>
+        <button class="btn" type="button" data-print-job>${icon("printer")}发送到打印机</button>
         <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip" download="touchlearn-${ui.jobId}.zip">${icon("download")}下载整包 ZIP</a>
         <button class="btn" type="button" data-open-viewer>${icon("cube")}三维旋转查看</button>
         <a class="btn" href="${base}/compliance.md" target="_blank" rel="noopener">${icon("external")}打开合规报告</a>
@@ -2799,7 +2800,7 @@
         <a class="btn" href="/files/${encodeURIComponent(ui.jobId)}/README.txt?download=1" download="touchlearn-${ui.jobId}-README.txt">${icon("download")}下载打印说明</a>
         <a class="btn" href="/api/jobs/${encodeURIComponent(ui.jobId)}/bundle.zip" download="touchlearn-${ui.jobId}.zip">${icon("download")}下载整包 ZIP</a>
       </div>
-      <p class="hint-line">本智能体不直接控制打印机；STL 可导入 Bambu Studio、PrusaSlicer、Cura 等切片软件。若模型有悬垂，报告会标记为工艺提示而不是几何错误。</p>
+      <p class="hint-line">STL 可直接导入 Bambu Studio、PrusaSlicer、Cura 等切片软件；如果管理员配置了 OctoPrint 或 Moonraker，也可以点“发送到打印机”，先做尺寸检查再下发。若模型有悬垂，报告会标记为工艺提示而不是几何错误。</p>
     `;
   }
 
@@ -2830,6 +2831,11 @@
     }
     if (event.target.closest("[data-open-viewer]")) {
       openViewer(ui);
+      return;
+    }
+    if (event.target.closest("[data-print-job]")) {
+      if (window.TouchLearnPrint) window.TouchLearnPrint.open({ jobId: ui.jobId });
+      else toast("打印扩展没有加载，请刷新页面。", true);
       return;
     }
     const verify = event.target.closest("[data-verify-artifacts]");

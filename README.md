@@ -28,7 +28,7 @@ TouchLearn 不是两个写死的案例。它是一套通用的“理解 → 确�
 | PDF / TXT / JSON | 文字层或扫描页图像、场景结构 | 对应的函数、机械臂、场景或 3D 草稿 |
 | 无法结构化的散文 | 明确拒绝 | 不生成无意义的板子 |
 
-输出统一包含：`model.stl`、`preview.svg`、`compliance.json/md`、`diagram.json`（平面板）或 `model_spec.json`（3D 模型）、`decision_trace.json`、`manifest.json`、中文音频脚本与播放页、二维码贴纸、打印说明。文字生成三维模型时额外输出 `generation.json`、`model_textured.glb`（若服务返回）、`model_view.html`；照片级重建还会额外输出 `model_textured.glb`、`thumbnail.png`、`photo_view.html` 和 `reconstruction.json`。同时勾选两类产物时，3D 作业里还会额外生成 `plate_model.stl`、`plate_preview.svg` 和 `plate_diagram.json` 作为配套总览板。用户拿 STL 去自己的切片软件和打印机；TouchLearn 不负责实体打印。
+输出统一包含：`model.stl`、`preview.svg`、`compliance.json/md`、`diagram.json`（平面板）或 `model_spec.json`（3D 模型）、`decision_trace.json`、`manifest.json`、中文音频脚本与播放页、二维码贴纸、打印说明。文字生成三维模型时额外输出 `generation.json`、`model_textured.glb`（若服务返回）、`model_view.html`；照片级重建还会额外输出 `model_textured.glb`、`thumbnail.png`、`photo_view.html` 和 `reconstruction.json`。同时勾选两类产物时，3D 作业里还会额外生成 `plate_model.stl`、`plate_preview.svg` 和 `plate_diagram.json` 作为配套总览板。用户拿 STL 去自己的切片软件和打印机，主链路到下载为止。另有一个**默认关闭的可选扩展**：管理员配置 OctoPrint 或 Klipper / Moonraker 后，作业卡上可以“发送到打印机”，服务端先做文件格式、文件体积、三角面数量、打印床贴合和合规结论五项检查，用户确认后才上传并请求开始打印；未开启时只做演练，不连接任何设备。详见 [docs/printer-integration.md](docs/printer-integration.md)。
 
 ## 快速开始
 
@@ -320,11 +320,15 @@ fabrication/                    盲测材料与打印说明
 - 多家大模型 API 的统一接入与离线降级；
 - 模型与思考强度可在页面内切换，环境变量只提供初始默认；
 - 草稿确认、可编辑、构建进度、产物下载、二维码与音频；
-- 单元测试覆盖几何、布局、标准、路由、模型、文档、服务端、汉语盲文与 3D 装配。
+- 盲人语音模式：登录页和主界面都有语音入口，服务端规则引擎逐步确认目标、类型和细节，复述后自动填表提交，朗读时自动暂停收音；
+- 可选的打印机直连：OctoPrint / Klipper 通过五项检查后下发打印，默认演练、不接硬件；
+- 单元测试覆盖几何、布局、标准、路由、模型、文档、服务端、汉语盲文、3D 装配、语音对话与打印协议。
 
 尚未做到，不在 README 里含糊：
 
 - **没有实体打印验证**。STL 只经过几何、水密和可打印性检查，未经过真实切片与打印机。
+- **打印机直连扩展未接真机**。OctoPrint / Moonraker 的请求格式、检查逻辑和安全闸门有自动化测试，但没有连接过真实打印机，也没有本地切片；详见 `docs/printer-integration.md`。
+- **语音模式需要 HTTPS**。浏览器的语音识别在 IP 直连的 HTTP 页面上会被拒绝，朗读仍可用；域名与证书接好之前，线上只能退化为打字加朗读。
 - **没有盲人用户测试**。`docs/blind_test_protocol.md` 是可执行方案，不是已完成结论。
 - **扫描 PDF 依赖视觉模型**。没有文字层时会光栅化成页面图片；没有配置视觉模型时只能提示用户，不能凭空猜图。
 - **照片级重建依赖外部三维服务**。没有配置 `TOUCHLEARN_3D_KEY`（TokenHub 可复用 `TOUCHLEARN_LLM_KEY`）时只能提示，不会在本地伪造照片里看不到的细节；即使配置了，也不承诺每张照片都能得到水密、可直接打印的网格。
@@ -346,6 +350,7 @@ fabrication/                    盲测材料与打印说明
 - [触觉板规格](docs/tactile_spec.md)
 - [Windows 运行说明](docs/run_windows.md)
 - [盲测方案](docs/blind_test_protocol.md)
+- [3D 打印机直连（可选扩展）](docs/printer-integration.md)
 - [初赛提交清单](docs/submission.md)
 - [路线图](docs/roadmap.md)
 

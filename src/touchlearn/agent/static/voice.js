@@ -717,6 +717,21 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Shared speech                                                      */
+  /* ------------------------------------------------------------------ */
+
+  // The optional printer dialog borrows the same voice, so a blind user hears
+  // the pre-flight result in the same voice and pace as the rest of the app.
+  window.touchlearnVoice = {
+    announce(text) {
+      if (state.on && typeof text === "string" && text.trim()) say(text);
+    },
+    isOn() {
+      return state.on;
+    },
+  };
+
+  /* ------------------------------------------------------------------ */
   /* Boot                                                               */
   /* ------------------------------------------------------------------ */
 

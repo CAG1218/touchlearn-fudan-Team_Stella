@@ -38,6 +38,18 @@ from .accounts import (
 from .agent import TouchLearnAgent
 from .audio import available_voices
 from .llm import llm_status, load_env, providers_payload
+from .printers import (
+    PrinterError,
+    acquire_job_lock,
+    allow_print as printer_allow_print,
+    describe_payload as printer_payload,
+    find_printer,
+    load_printers,
+    plan_print,
+    read_record as read_print_record,
+    release_job_lock,
+    run_print,
+)
 from .reconstruct import reconstruction_status
 from .scene import scene_templates, template_preview
 from .scene_svg import scene_to_svg
@@ -386,9 +398,20 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({"ok": True, "authenticated": True, "user": user})
             return
-        if path in {"/api/providers", "/api/scene-templates", "/api/examples"}:
+        if path in {"/api/providers", "/api/scene-templates", "/api/examples", "/api/printers"}:
             if not self._require_auth():
                 return
+        if path == "/api/printers":
+            try:
+                configs = load_printers()
+            except PrinterError as error:
+                self._send_json(
+                    {"ok": False, "error": error.message, "code": error.code},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            self._send_json(printer_payload(configs, allow=printer_allow_print()))
+            return
         if path == "/api/providers":
             payload = providers_payload()
             payload["reconstruction"] = reconstruction_status()
@@ -511,6 +534,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.NOT_FOUND, "作业尚未创建")
                 return
             self._send_json(json.loads(target.read_text(encoding="utf-8")))
+            return
+        if parts[1] == "print":
+            job_dir = self._safe_under(self.state.agent.root / "jobs", job_id)
+            if job_dir is None or not job_dir.is_dir():
+                self._send_error_json(HTTPStatus.NOT_FOUND, "作业不存在")
+                return
+            record = read_print_record(job_dir)
+            if record is None:
+                self._send_error_json(HTTPStatus.NOT_FOUND, "这个作业还没有打印记录")
+                return
+            self._send_json({"ok": True, "job_id": job_id, "print": record})
             return
         if parts[1] == "report":
             target = self._safe_under(self.state.agent.root / "jobs", f"{job_id}/compliance.json")
@@ -922,6 +956,146 @@ class Handler(BaseHTTPRequestHandler):
             thread = threading.Thread(target=run_build, name=f"build-{job_id}", daemon=True)
             thread.start()
             self._send_json({"ok": True, "job_id": job_id, "status": "queued"})
+            return
+        if path == "/api/print/plan":
+            payload = self._read_json()
+            if payload is None:
+                return
+            job_id = str(payload.get("job_id") or "").strip()
+            printer_id = str(payload.get("printer_id") or "").strip()
+            filename = str(payload.get("file") or "model.stl").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", job_id):
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "作业编号无效")
+                return
+            try:
+                configs = load_printers()
+            except PrinterError as error:
+                self._send_json(
+                    {"ok": False, "error": error.message, "code": error.code},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            if not configs:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "code": "no_printer",
+                        "error": "服务器还没有配置打印机。",
+                        "hint": "设置 TOUCHLEARN_PRINTER_URL / KEY 或 TOUCHLEARN_PRINTERS 后重启服务。",
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+            try:
+                printer = find_printer(configs, printer_id)
+            except PrinterError as error:
+                self._send_json(
+                    {"ok": False, "error": error.message, "code": error.code},
+                    status=error.status,
+                )
+                return
+            job_dir = self._safe_under(self.state.agent.root / "jobs", job_id)
+            if job_dir is None or not job_dir.is_dir():
+                self._send_error_json(HTTPStatus.NOT_FOUND, "作业不存在，请先生成模型")
+                return
+            try:
+                plan = plan_print(job_dir, printer, filename=filename)
+            except PrinterError as error:
+                self._send_json(
+                    {"ok": False, "error": error.message, "code": error.code, "checks": []},
+                    status=error.status,
+                )
+                return
+            self._send_json(
+                {
+                    "ok": plan["ok"],
+                    "job_id": job_id,
+                    "printer": printer.public(),
+                    "file": plan["file"],
+                    "checks": plan["checks"],
+                    "rotate_deg": plan["rotate_deg"],
+                    "mode": "print" if printer_allow_print() else "rehearsal",
+                }
+            )
+            return
+        if path == "/api/print":
+            payload = self._read_json()
+            if payload is None:
+                return
+            job_id = str(payload.get("job_id") or "").strip()
+            printer_id = str(payload.get("printer_id") or "").strip()
+            filename = str(payload.get("file") or "model.stl").strip()
+            # Printing physically heats a nozzle and moves a bed.  A request
+            # without an explicit confirmation is never forwarded.
+            if payload.get("confirm") is not True:
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "缺少打印确认：请先勾选确认框")
+                return
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", job_id):
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "作业编号无效")
+                return
+            try:
+                configs = load_printers()
+            except PrinterError as error:
+                self._send_json(
+                    {"ok": False, "error": error.message, "code": error.code},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            if not configs:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "code": "no_printer",
+                        "error": "服务器还没有配置打印机。",
+                        "hint": "设置 TOUCHLEARN_PRINTER_URL / KEY 或 TOUCHLEARN_PRINTERS 后重启服务。",
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+            try:
+                printer = find_printer(configs, printer_id)
+            except PrinterError as error:
+                self._send_json(
+                    {"ok": False, "error": error.message, "code": error.code},
+                    status=error.status,
+                )
+                return
+            job_dir = self._safe_under(self.state.agent.root / "jobs", job_id)
+            if job_dir is None or not job_dir.is_dir():
+                self._send_error_json(HTTPStatus.NOT_FOUND, "作业不存在，请先生成模型")
+                return
+            lock = acquire_job_lock(job_id)
+            if lock is None:
+                self._send_json(
+                    {"ok": False, "code": "print_busy", "error": "这个作业正在发送打印，请稍等"},
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+            try:
+                record = run_print(
+                    job_dir,
+                    printer,
+                    filename=filename,
+                    dry_run=not printer_allow_print(),
+                )
+            except PrinterError as error:
+                self._send_json(
+                    {"ok": False, "error": error.message, "code": error.code},
+                    status=error.status,
+                )
+                return
+            finally:
+                release_job_lock(job_id, lock)
+            if record["ok"]:
+                status = HTTPStatus.OK
+            elif record.get("state") == "blocked":
+                status = HTTPStatus.CONFLICT
+            else:
+                status = HTTPStatus.BAD_GATEWAY
+            self._send_json(
+                {"ok": bool(record["ok"]), "job_id": job_id, "print": record},
+                status=status,
+            )
             return
         self._send_error_json(HTTPStatus.NOT_FOUND, "未知接口")
 

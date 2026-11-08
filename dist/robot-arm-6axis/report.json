@@ -3,6 +3,11 @@
   "passed": true,
   "issues": [],
   "metrics": {
+    "paper": "A5",
+    "canvas_mm": [
+      148.0,
+      210.0
+    ],
     "semantic_features": 8,
     "label_features": 8,
     "min_line_width_mm": 1.0,
@@ -30,7 +35,9 @@
         3.8
       ],
       "volume_mm3": 96938.755,
-      "watertight": true
+      "watertight": true,
+      "open_edges": 0,
+      "nonmanifold_edges": 0
     }
   }
 }

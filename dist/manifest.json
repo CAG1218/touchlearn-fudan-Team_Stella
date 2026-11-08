@@ -25,6 +25,8 @@
           210.0,
           3.8
         ],
+        "nonmanifold_edges": 0,
+        "open_edges": 0,
         "size_mm": [
           148.0,
           210.0,
@@ -37,7 +39,7 @@
       "printability": "PASS",
       "stl": {
         "bytes": 937884,
-        "sha256": "72907456c10901a5a1429eb4f56041c605eb922fef160927e4265743d3cc65f7",
+        "sha256": "cb15ed25c2f3847c3ae7c316ea452d16f19de54f16d9c84c7e45b6b5111323d6",
         "triangles": 18756
       },
       "title": "Six-Axis Robot Arm",
@@ -64,6 +66,8 @@
           210.0,
           3.8
         ],
+        "nonmanifold_edges": 0,
+        "open_edges": 0,
         "size_mm": [
           148.0,
           210.0,
@@ -76,12 +80,12 @@
       "printability": "PASS",
       "stl": {
         "bytes": 1032684,
-        "sha256": "e0284cf84f4fc587806764772732f8abc171e06515dcd04799b8042863b95d20",
+        "sha256": "c91300cf73cca9aad479a5cc802a667999bf139f5eae4ed905212042a2783863",
         "triangles": 20652
       },
       "title": "Quadratic Function",
       "title_zh": "二次函数 y=x²-2x-3 图像"
     }
   ],
-  "tool": "touchlearn 0.2.0"
+  "tool": "touchlearn 0.3.5"
 }

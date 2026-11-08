@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from tests import EXAMPLES
+from touchlearn.agent.volumetric import read_stl_mesh
 from touchlearn.audio import build_script, write_script
 from touchlearn.cli import main
 from touchlearn.geometry import build_mesh
@@ -55,6 +56,19 @@ class AudioTraceStlTests(unittest.TestCase):
             self.assertEqual(len(sha256_file(path)), 64)
             second = write_binary_stl(mesh, Path(directory) / "model2.stl")
             self.assertEqual(sha256_file(path), sha256_file(second))
+
+    def test_written_stl_is_watertight_after_float32_round_trip(self) -> None:
+        # Touching glyph shells used to collapse onto the same float32 edge;
+        # the in-memory mesh was watertight but the delivered file was not.
+        for name in ("robot_arm", "quadratic"):
+            layout = build_layout(load_diagram(EXAMPLES / name / "diagram.json"))
+            mesh = build_mesh(layout)
+            with tempfile.TemporaryDirectory() as directory:
+                path = write_binary_stl(mesh, Path(directory) / "model.stl")
+                written = read_stl_mesh(path)
+            self.assertTrue(written.is_watertight(), name)
+            self.assertEqual(written.stats()["open_edges"], 0, name)
+            self.assertEqual(written.stats()["nonmanifold_edges"], 0, name)
 
 
 class CliTests(unittest.TestCase):

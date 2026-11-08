@@ -391,9 +391,13 @@ def build_mesh(
     triangles: list[Triangle] = []
     triangles.extend(prism_triangles(layout.base_polygon, 0.0, base_thickness, layout.height))
 
-    # Each tactile primitive is emitted as its own closed shell.  A sub-micron
-    # z offset keeps coincident shells from sharing edges, so the combined STL
-    # has exactly two triangles per edge.  Slicers union the overlapping shells.
+    # Each tactile primitive is emitted as its own closed shell.  Binary STL
+    # stores float32 coordinates, so a sub-micron z offset (the old 1e-7 step)
+    # is rounded away and touching glyph strokes collapse onto the same edge --
+    # the written file then has four triangles per edge even though the
+    # in-memory mesh looked watertight.  Offset each shell in x/y by a unique
+    # 0.01 um step instead: it survives float32, keeps the top height exact,
+    # and is far below the 0.1 mm feature scale.  Slicers union the shells.
     shell_index = 0
     for feature in layout.features:
         for primitive in feature.primitives:
@@ -401,9 +405,11 @@ def build_mesh(
             z0 = base_thickness - embed
             z1 = base_thickness + height
             for polygon in primitive_polygons(primitive):
-                jitter = shell_index * 1e-7
+                dx = ((shell_index % 257) - 128) * 1e-5
+                dy = (((shell_index // 257) % 257) - 128) * 1e-5
                 shell_index += 1
-                triangles.extend(prism_triangles(polygon, z0 + jitter, z1 + jitter, layout.height))
+                shifted = [(x + dx, y + dy) for x, y in polygon]
+                triangles.extend(prism_triangles(shifted, z0, z1, layout.height))
 
     return Mesh(triangles)
 

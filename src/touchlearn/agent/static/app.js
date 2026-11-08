@@ -85,6 +85,8 @@
     sending: false,
     turn: 0,
     lastRun: null,
+    lastDraft: null,
+    history: [],
     activeJob: null,
     timer: null,
     viewer: null,
@@ -1079,13 +1081,22 @@
     if (draft.subject === "reconstruct") {
       const fields = draft.fields || {};
       const status = fields.reconstruction || {};
+      if (fields.sheet_blocked) {
+        return "这张图看起来是多个视角拼在一张图里，但我没能自动拆分。整张图直接送去重建会被当成多个物体，所以这次先不提交。请把三视图拆成 2–4 张单独照片，或换一张背景干净、视角之间有空白间隔的拼图。";
+      }
       if (!fields.image_count) {
+        if (fields.generation_route === "text" && fields.text_route && fields.text_route.available) {
+          return "这次没有照片。我已经把你的文字描述整理成建模要求，默认走“按文字重新生成”（文生3D）：生成的是按文字想象的新模型，外观不会和照片一致。想保留照片外观，请上传正面/侧面/背面照片后再确认。";
+        }
         return "照片级三维重建需要至少一张照片。请上传 1-4 张同一物体的照片（正面、侧面、顶面各一张效果最好）；只有文字描述时请改用“触觉3D模型”。";
       }
       if (!status.configured) {
         return "照片已经收到，但服务端还没有配置三维重建接口（TOUCHLEARN_3D_KEY）。可以直接改用“触觉3D模型”由本地编译器建模，或配置密钥后重试。";
       }
-      return `我读到了 ${Number(fields.image_count || 0)} 张照片，并整理出重建计划：${fields.subject_text || fields.title || "按照片重建"}。请确认高度、底座和盲文名称；重建后会同时给出带纹理的 GLB 和可打印 STL。`;
+      const viewNote = fields.sheet
+        ? `检测到一张多视角拼图，已自动拆成 ${Number(fields.image_count || 0)} 个视角（${(fields.view_order || []).join(" / ") || "front/left/back"}），会按同一个物体做多视图重建。`
+        : `我读到了 ${Number(fields.image_count || 0)} 张照片。`;
+      return `${viewNote}重建计划：${fields.subject_text || fields.title || "按照片重建"}。请确认高度、底座和盲文名称；照片重建以照片为准，文字改写不会保证改变几何结构，需要按文字改结构请把重建方式切到“按文字重新生成”。`;
     }
     if (draft.subject === "model3d") {
       const fields = draft.fields || {};
@@ -1126,6 +1137,12 @@
       if (request.template) payload.template = request.template;
       if (request.scene) payload.scene = request.scene;
       if (request.circuit) payload.circuit = request.circuit;
+      // Follow-up turns must not feel like a new conversation.  The previous
+      // draft id lets the server reuse its photos; the compact history keeps
+      // "这是同一人物的三视图" attached to the earlier description.
+      if (state.lastDraft && state.lastDraft.id) payload.reuse_draft_id = state.lastDraft.id;
+      const history = (state.history || []).filter(Boolean).slice(-6);
+      if (history.length) payload.history = history;
       // The server validates these against its own catalog.  Only send them
       // when a model is actually configured, so an offline instance sees the
       // same request as before.
@@ -1147,6 +1164,11 @@
       wait.remove();
       const draft = result.draft;
       state.lastRun = { request, files };
+      state.lastDraft = draft;
+      const said = String(userText || "").trim();
+      if (echoUser && said && said !== "重新理解这份需求") {
+        state.history = [...state.history, said].slice(-8);
+      }
       agentText(body, draftIntro(draft));
       renderDraftCard(body, draft, { request, files });
       scrollToEnd();
@@ -1448,6 +1470,20 @@
     const keep = Array.isArray(fields.keep_features) ? fields.keep_features : [];
     const changes = Array.isArray(fields.changes) ? fields.changes : [];
     const imageCount = Number(fields.image_count || 0);
+    const route = fields.generation_route === "text" ? "text" : "photo";
+    const textRoute = fields.text_route || {};
+    const textAvailable = Boolean(textRoute.available);
+    const viewOrder = Array.isArray(fields.view_order) ? fields.view_order : [];
+    const photoLabel = fields.sheet
+      ? `${imageCount} 个视角（${viewOrder.join(" / ") || "front/left/back"}）`
+      : imageCount
+        ? `${imageCount} 张`
+        : "尚未上传";
+    const routeNote = route === "text"
+      ? "按文字重新生成会交给文生 3D，不再使用照片；外观、比例和细节都会与照片不同，但结构会按文字调整。"
+      : changes.length
+        ? "照片重建以照片为准，当前接口不会按文字改变几何结构；下面的“按要求调整”只会写进计划与报告。需要真的改结构，请切换到“按文字重新生成”。"
+        : "照片重建保留照片里的外观；高度、底座和盲文由本地确定性后处理添加。";
     const rows = [];
     for (let index = 0; index < 3; index += 1) {
       const item = labels[index] || { text: "", target: "" };
@@ -1478,12 +1514,16 @@
           <option value="disc" ${fields.base !== "rounded_rect" ? "selected" : ""}>圆形 + 前舌</option>
           <option value="rounded_rect" ${fields.base === "rounded_rect" ? "selected" : ""}>圆角矩形 + 前舌</option>
         </select>`)}
-        ${field("照片", `<div class="readonly-value">${imageCount ? `${imageCount} 张` : "尚未上传"}</div>`)}
+        ${field("重建方式", `<select class="select" data-field="generation_route">
+          <option value="photo" ${route === "photo" ? "selected" : ""}>照片重建（保留照片外观）</option>
+          <option value="text" ${route === "text" ? "selected" : ""} ${textAvailable ? "" : "disabled"}>按文字重新生成（外观会变）${textAvailable ? "" : " · 未配置"}</option>
+        </select>`)}
+        ${field("照片", `<div class="readonly-value">${escapeHtml(photoLabel)}</div>`)}
         ${field("重建服务", `<div class="readonly-value">${escapeHtml(status.label || status.provider || "未配置")}${status.configured ? " · 已配置" : " · 未配置"}</div>`)}
       </div>
-      <div class="callout ${status.configured ? "" : "warn"}">
-        <strong>${status.configured ? "照片级重建" : "还缺重建接口"}</strong><br>
-        ${escapeHtml(status.message || (status.configured ? "照片会交给三维重建服务还原细节与纹理。" : "请配置 TOUCHLEARN_3D_KEY，或改用触觉 3D 模型。"))}
+      <div class="callout ${!status.configured || route === "text" || (changes.length && route === "photo") ? "warn" : ""}">
+        <strong>${!status.configured ? "还缺重建接口" : route === "text" ? "文字重新生成 · 不使用照片" : fields.sheet ? "多视图重建" : "照片级重建"}</strong><br>
+        ${escapeHtml(!status.configured ? (status.message || "请配置 TOUCHLEARN_3D_KEY，或改用触觉 3D 模型。") : routeNote)}
       </div>
       <table class="data">
         <thead><tr><th>顺序</th><th>盲文名称（1–3 字）</th><th>指向部位</th></tr></thead>
@@ -1501,7 +1541,7 @@
         <strong>中文盲文标注（GF 0019-2018）</strong>
         ${brailleList}
       </div>
-      <p class="hint-line">重建会同时输出保留颜色与细节的 GLB，以及带底座、盲文标题、底座盲文图例和二维码位的单色 STL。高度、底座和盲文由本地确定；改变姿态等几何编辑取决于三维服务能力。重建网格没有可靠的特征坐标，所以特征名按编号刻在底座前缘，不在模型表面刻猜出来的名字。标题和名称各 1–3 字最稳。${plan.message ? ` ${escapeHtml(plan.message)}` : ""}</p>
+      <p class="hint-line">多视角拼图会在本地自动拆成 front/left/back 等视角，并按多视图重建同一个物体；如果拆分失败，系统会停止提交并提示你分开上传。照片重建不能保证按文字改几何，需要改结构时请切换到“按文字重新生成”。重建会同时输出保留颜色的 GLB，以及带底座、盲文标题和图例的 STL。高度、底座和盲文由本地确定。标题和名称各 1–3 字最稳。${plan.message ? ` ${escapeHtml(plan.message)}` : ""}</p>
     `;
   }
 
@@ -1965,13 +2005,28 @@
     } else if (draft.subject === "reconstruct") {
       const fields = draft.fields || {};
       const status = fields.reconstruction || {};
-      if (!fields.image_count) {
+      const routeSelect = card.querySelector('[data-field="generation_route"]');
+      const route = routeSelect ? routeSelect.value : (fields.generation_route === "text" ? "text" : "photo");
+      const textRoute = fields.text_route || {};
+      if (fields.sheet_blocked) {
         ok = false;
-        reason = "照片级重建需要至少一张照片；只有文字时请改用“触觉3D模型”。";
+        reason = "这张多视角拼图没能自动拆开，请按视角分别上传照片，或换一张各视角边界清晰的拼图。";
+      } else if (route === "text") {
+        if (!textRoute.available) {
+          ok = false;
+          reason = "文生3D未配置，请切回照片重建，或配置三维生成接口后再用文字重新生成。";
+        } else if (!String(textRoute.prompt || "").trim()) {
+          ok = false;
+          reason = "请用文字描述要生成/修改的结构，再按文字重新生成。";
+        }
+      } else if (!fields.image_count) {
+        ok = false;
+        reason = "照片重建需要至少一张照片；需要只按文字生成请把重建方式切到“按文字重新生成”，或改用“触觉3D模型”。";
       } else if (!status.configured) {
         ok = false;
         reason = "服务端未配置 TOUCHLEARN_3D_KEY，无法调用照片级重建。";
-      } else {
+      }
+      if (ok) {
         const height = card.querySelector('[data-field="height_mm"]');
         const title = card.querySelector('[data-field="title"]');
         const firstLabel = card.querySelector('[data-label-text="0"]');
@@ -2113,8 +2168,12 @@
       const height = numberFrom(card, "height_mm", "打印高度");
       const base = card.querySelector('[data-field="base"]');
       const companion = card.querySelector('[data-field="companion_tactile"]');
+      const routeSelect = card.querySelector('[data-field="generation_route"]');
       fields.title = title;
       fields.height_mm = height;
+      fields.generation_route = routeSelect
+        ? routeSelect.value
+        : (source.generation_route === "text" ? "text" : "photo");
       fields.base = base ? base.value : (source.base || "disc");
       fields.labels = labels.slice(0, 3);
       fields.companion_tactile = companion ? companion.checked : Boolean(source.companion_tactile);
@@ -4704,6 +4763,8 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
     state.turn += 1;
     state.sending = false;
     state.lastRun = null;
+    state.lastDraft = null;
+    state.history = [];
     state.pendingTemplate = "";
     $("#messages").innerHTML = "";
     $("#welcome").classList.remove("hidden");

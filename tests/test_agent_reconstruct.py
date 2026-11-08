@@ -18,6 +18,23 @@ TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
 
+
+def _three_view_sheet() -> bytes:
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (900, 300), (252, 252, 252))
+    draw = ImageDraw.Draw(image)
+    for index, left in enumerate((40, 340, 640)):
+        draw.rectangle(
+            (left, 40, left + 220, 260),
+            fill=(40 + index * 30, 90, 200 - index * 30),
+        )
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
 STATUS = {
     "configured": True,
     "kind": "reconstruction",
@@ -32,6 +49,8 @@ STATUS = {
     "environment": [],
     "privacy": "",
 }
+
+STATUS_TEXT = {**STATUS, "text_to_3d": True, "generative": True}
 
 
 def _plan() -> ReconstructionPlan:
@@ -99,6 +118,119 @@ class AgentReconstructTests(unittest.TestCase):
         self.assertFalse(draft["ready"])
         self.assertEqual(draft["fields"]["image_count"], 0)
         self.assertTrue(any("至少一张照片" in note for note in draft["notes"]))
+
+    def test_text_follow_up_reuses_the_previous_photo(self) -> None:
+        with patch("touchlearn.agent.agent.reconstruction_status", return_value=STATUS), patch(
+            "touchlearn.agent.agent.plan_reconstruction", return_value=_plan()
+        ):
+            first = self.agent.analyze(
+                {
+                    "text": "按照片重建这个蓝裙女仆",
+                    "generation_modes": ["reconstruct"],
+                    "files": [{"name": "maid.png", "data": base64.b64encode(TINY_PNG).decode("ascii")}],
+                }
+            )
+            second = self.agent.analyze(
+                {
+                    "text": "这是同一个角色的三个视角，把腿改短一点",
+                    "generation_modes": ["reconstruct"],
+                    "reuse_draft_id": first["id"],
+                }
+            )
+
+        self.assertEqual(second["subject"], "reconstruct")
+        self.assertEqual(second["fields"]["image_count"], 1)
+        self.assertEqual(second["fields"]["context"]["carried_images"], 1)
+        self.assertEqual(second["fields"]["context"]["reused_draft_id"], first["id"])
+        self.assertIn("把腿改短一点", second["fields"]["context"]["context_text"])
+        self.assertTrue(any("沿用上一轮草稿" in note for note in second["notes"]))
+
+    def test_three_view_sheet_is_split_into_multiview_inputs(self) -> None:
+        with patch("touchlearn.agent.agent.reconstruction_status", return_value=STATUS), patch(
+            "touchlearn.agent.agent.plan_reconstruction", return_value=_plan()
+        ):
+            draft = self.agent.analyze(
+                {
+                    "text": "这是同一个女仆角色的三视图，请合成一个 3D 模型",
+                    "generation_modes": ["reconstruct"],
+                    "files": [
+                        {
+                            "name": "maid-views.png",
+                            "data": base64.b64encode(_three_view_sheet()).decode("ascii"),
+                        }
+                    ],
+                }
+            )
+
+        self.assertTrue(draft["fields"]["sheet"])
+        self.assertFalse(draft["fields"]["sheet_blocked"])
+        self.assertEqual(draft["fields"]["source_image_count"], 1)
+        self.assertEqual(draft["fields"]["image_count"], 3)
+        self.assertEqual(draft["fields"]["view_order"], ["front", "left", "back"])
+        self.assertTrue(any(item.get("skip_for_reconstruction") for item in draft["files"]))
+        self.assertTrue(any("不会再把它当成 3 个人物" in note for note in draft["notes"]))
+
+    def test_unsplittable_sheet_blocks_the_photo_route(self) -> None:
+        with patch("touchlearn.agent.agent.reconstruction_status", return_value=STATUS), patch(
+            "touchlearn.agent.agent.plan_reconstruction", return_value=_plan()
+        ), patch("touchlearn.agent.agent.split_multiview_sheet", return_value=[]):
+            draft = self.agent.analyze(
+                {
+                    "text": "这是同一个人的三视图，合成一个模型",
+                    "generation_modes": ["reconstruct"],
+                    "files": [{"name": "maid.png", "data": base64.b64encode(_three_view_sheet()).decode("ascii")}],
+                }
+            )
+
+        self.assertTrue(draft["fields"]["sheet_blocked"])
+        self.assertFalse(draft["ready"])
+        self.assertTrue(any("自动拆分失败" in note for note in draft["notes"]))
+        self.assertTrue(any("拆成 2-4 张" in question for question in draft["questions"]))
+
+    def test_text_route_builds_without_a_photo(self) -> None:
+        def fake_text_to_3d(prompt, plan, *, dest, progress=None):
+            dest = Path(dest)
+            glb = dest / "model_textured.glb"
+            glb.write_bytes(b"glTF-demo")
+            if progress:
+                progress(50, "text provider running")
+            return ReconstructionAsset(
+                provider="tokenhub",
+                task_id="task-text123456",
+                files={"glb": glb},
+                meta={"prompt": prompt},
+                mesh=_box(20.0, 14.0, 40.0),
+            )
+
+        with patch("touchlearn.agent.agent.reconstruction_status", return_value=STATUS_TEXT), patch(
+            "touchlearn.agent.agent.plan_reconstruction", return_value=_plan()
+        ):
+            draft = self.agent.analyze(
+                {
+                    "text": "生成一只展开翅膀的小鸟，不要照片",
+                    "generation_modes": ["reconstruct"],
+                }
+            )
+
+        self.assertEqual(draft["fields"]["generation_route"], "text")
+        self.assertTrue(draft["fields"]["text_route"]["available"])
+        self.assertTrue(draft["ready"])
+
+        with patch("touchlearn.agent.agent.text_to_3d", side_effect=fake_text_to_3d), patch(
+            "touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)
+        ):
+            result = self.agent.build(
+                draft["id"],
+                overrides={"fields": {"generation_route": "text"}},
+                public_base_url="http://127.0.0.1:8765",
+            )
+
+        job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
+        spec = json.loads((job_dir / "model_spec.json").read_text(encoding="utf-8"))
+        self.assertEqual(spec["generation_route"], "text")
+        record = json.loads((job_dir / "reconstruction.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["generation_route"], "text")
+        self.assertIn("文字重走文生3D", record["instructions"]["note"])
 
     def test_build_writes_textured_and_printable_outputs(self) -> None:
         def fake_reconstruct(images, plan, *, dest, progress=None, image_urls=()):

@@ -96,6 +96,26 @@ class AgentModel3DTests(unittest.TestCase):
         self.assertEqual(draft["fields"]["planet_count"], 8)
         self.assertFalse(draft["fields"]["companion_tactile"])
 
+    def test_follow_up_inherits_the_previous_model_description(self) -> None:
+        first = self.agent.analyze(
+            {
+                "text": "做一个太阳系3D模型，带底座和中文盲文标注",
+                "generation_modes": ["model3d"],
+            }
+        )
+        second = self.agent.analyze(
+            {
+                "text": "把行星名称改短一点",
+                "generation_modes": ["model3d"],
+                "reuse_draft_id": first["id"],
+            }
+        )
+        self.assertEqual(second["subject"], "model3d")
+        self.assertIn("太阳系", second["fields"]["context_text"])
+        self.assertIn("把行星名称改短一点", second["fields"]["context_text"])
+        self.assertEqual(second["fields"]["context"]["reused_draft_id"], first["id"])
+        self.assertEqual(second["fields"]["context"]["previous_subject"], "model3d")
+
     def test_empty_modes_keep_the_tactile_default(self) -> None:
         draft = self.agent.analyze({"text": "画一个串联电路：电池、开关、电阻和灯泡"})
         self.assertEqual(draft["subject"], "scene")

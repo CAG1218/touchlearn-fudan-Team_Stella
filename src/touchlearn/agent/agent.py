@@ -77,6 +77,7 @@ from .reconstruct import (
     plan_reconstruction,
     reconstruction_status,
     reconstruct,
+    split_multiview_sheet,
     text_to_3d,
 )
 from .reconstruct_print import compose_printable
@@ -383,6 +384,96 @@ def _generation_prompt(text: str, spec: dict[str, Any], title: str) -> str:
     )[:1000]
 
 
+_NEW_SUBJECT_HINTS = (
+    "换一个",
+    "换成",
+    "另一个",
+    "另一个东西",
+    "新的对象",
+    "新对象",
+    "重新做一个",
+    "不要这个",
+    "另外做",
+    "改做",
+)
+_FOLLOW_UP_HINTS = (
+    "改",
+    "调整",
+    "修改",
+    "把",
+    "这个",
+    "它",
+    "刚才",
+    "上面",
+    "同样",
+    "再",
+    "增加",
+    "删除",
+    "去掉",
+    "加一个",
+    "换成另一个部件",
+)
+_MULTIVIEW_HINTS = (
+    "三视图",
+    "多视图",
+    "三个视角",
+    "3个视角",
+    "3 个视角",
+    "多个视角",
+    "拼图",
+    "同一人物",
+    "同一个物体",
+    "同一物体",
+)
+
+
+def _looks_like_new_subject(text: str) -> bool:
+    value = (text or "").strip()
+    return bool(value) and any(hint in value for hint in _NEW_SUBJECT_HINTS)
+
+
+def _looks_like_follow_up(text: str) -> bool:
+    value = (text or "").strip()
+    return bool(value) and (len(value) <= 240) and any(hint in value for hint in _FOLLOW_UP_HINTS)
+
+
+def _looks_like_multiview(text: str) -> bool:
+    value = (text or "").strip()
+    return bool(value) and any(hint in value for hint in _MULTIVIEW_HINTS)
+
+
+def _history_texts(payload: dict[str, Any]) -> list[str]:
+    """Read the browser's compact user-turn history in a tolerant way."""
+    raw = payload.get("history") or payload.get("context") or []
+    if not isinstance(raw, list):
+        return []
+    turns: list[str] = []
+    for item in raw[-8:]:
+        if isinstance(item, str):
+            value = item
+        elif isinstance(item, dict):
+            role = str(item.get("role") or "user").strip().lower()
+            if role not in {"user", "human"}:
+                continue
+            value = str(item.get("text") or item.get("content") or "")
+        else:
+            continue
+        value = value.strip()
+        if value and (not turns or turns[-1] != value):
+            turns.append(value)
+    return turns
+
+
+def _join_context(turns: Sequence[str], current: str) -> str:
+    values: list[str] = []
+    for item in [*turns, current]:
+        value = str(item or "").strip()
+        if value and (not values or values[-1] != value):
+            values.append(value)
+    return "\n".join(values)[-2400:]
+
+
+
 def parse_robot_description(text: str) -> tuple[RobotSpec, float, list[str], list[str]]:
     """Best-effort offline extraction from a natural-language robot description.
 
@@ -512,6 +603,76 @@ class TouchLearnAgent:
     # Draft analysis
     # ------------------------------------------------------------------
 
+    def _load_previous_draft(self, reuse_draft_id: str) -> tuple[dict[str, Any], Path] | None:
+        """Load a draft from the same browser conversation.
+
+        Only the id is trusted as a lookup key; the directory name is reduced
+        to a safe slug so a client cannot walk outside ``outputs/drafts``.
+        """
+        clean = "".join(ch for ch in str(reuse_draft_id or "") if ch.isalnum() or ch in "-_")[:48]
+        if not clean:
+            return None
+        draft_dir = self.root / "drafts" / clean
+        draft_path = draft_dir / "draft.json"
+        if not draft_path.is_file():
+            return None
+        try:
+            data = json.loads(draft_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return (data, draft_dir) if isinstance(data, dict) else None
+
+    def _carry_over_images(
+        self,
+        previous: dict[str, Any],
+        previous_dir: Path,
+        uploads_dir: Path,
+        uploads_id: str,
+    ) -> list[dict[str, Any]]:
+        """Copy the previous turn's photos into the new draft.
+
+        Follow-up turns such as "把裙子改长" used to lose the photos entirely,
+        so the server replied "缺少照片" and forced a re-upload.  Copying keeps
+        each draft self-contained while the original stays untouched.
+        """
+        copied: list[dict[str, Any]] = []
+        extensions = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        for index, item in enumerate(previous.get("files") or []):
+            if not isinstance(item, dict) or item.get("skip_for_reconstruction"):
+                continue
+            extension = str(item.get("extension") or Path(str(item.get("name") or "")).suffix).lower()
+            if extension not in extensions:
+                continue
+            source = previous_dir / str(item.get("path") or "")
+            if not source.is_file():
+                continue
+            # Keep the view direction in the filename: multiview_slots() reads
+            # it, and a plain "carry-1.jpg" would scramble front/left/back.
+            slot = str(item.get("view_slot") or "").strip().lower()
+            suffix = f"-{slot}" if slot in {"front", "left", "back", "right"} else ""
+            name = f"carry-{index + 1}{suffix}-{uuid.uuid4().hex[:4]}{extension}"
+            target = uploads_dir / name
+            try:
+                shutil.copyfile(source, target)
+            except OSError:
+                continue
+            content = target.read_bytes()
+            copied.append(
+                {
+                    "name": name,
+                    "path": str(target.relative_to(uploads_dir.parent)),
+                    "bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "extension": extension,
+                    "image": _image_info(target),
+                    "carried_from": uploads_id,
+                    "original_name": str(item.get("name") or ""),
+                    "view_slot": str(item.get("view_slot") or ""),
+                    "sheet_source": bool(item.get("sheet_source")),
+                }
+            )
+        return copied
+
     def analyze(self, payload: dict[str, Any]) -> dict[str, Any]:
         subject = str(payload.get("subject") or "").strip().lower()
         if subject not in {
@@ -544,11 +705,51 @@ class TouchLearnAgent:
         uploads_dir = draft_dir / "uploads"
         uploads_dir.mkdir(parents=True, exist_ok=True)
         files = self._save_uploads(payload.get("files") or [], uploads_dir)
+
+        # A chat turn is stateless on the wire.  When the browser points at the
+        # previous draft, reuse its photos for a follow-up instead of asking the
+        # learner to upload the same pictures again.
+        reuse_draft_id = str(payload.get("reuse_draft_id") or "").strip()
+        previous = self._load_previous_draft(reuse_draft_id) if reuse_draft_id else None
+        previous_subject = str(previous[0].get("subject") or "") if previous else ""
+        raw_text = str(
+            payload.get("text")
+            or payload.get("description")
+            or payload.get("prompt")
+            or payload.get("request")
+            or ""
+        ).strip()
+        new_subject_request = _looks_like_new_subject(raw_text)
+        image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        has_new_images = any(item["extension"] in image_extensions for item in files)
+        same_product = (
+            (previous_subject == "reconstruct" and wants_reconstruct)
+            or (previous_subject == "model3d" and wants_model3d)
+        )
+        carried_images = 0
+        if (
+            previous is not None
+            and same_product
+            and not has_new_images
+            and not new_subject_request
+            and previous[0].get("files")
+        ):
+            carried = self._carry_over_images(
+                previous[0],
+                previous[1],
+                uploads_dir,
+                str(previous[0].get("id") or reuse_draft_id),
+            )
+            if carried:
+                files.extend(carried)
+                carried_images = len(carried)
+
         mesh_files = [item for item in files if item["extension"] in {".stl", ".obj"}]
         images = [
             draft_dir / str(item["path"])
             for item in files
             if item["extension"] in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+            and not item.get("skip_for_reconstruction")
         ]
         scanned_pages: list[Path] = []
 
@@ -610,6 +811,53 @@ class TouchLearnAgent:
             payload["scene"] = scene_document
             document_notes.append(f"已将 {scene_document_name} 识别为场景结构，按其中的图块与阅读顺序排版。")
 
+        # Carry the conversation forward.  The browser sends a compact list of
+        # earlier user turns plus the previous draft id; the model sees the
+        # cumulative request so "这是同一人物的三视图" is not a brand-new topic.
+        history_turns = [] if new_subject_request else _history_texts(payload)
+        previous_text = ""
+        if previous is not None and not new_subject_request:
+            previous_fields = previous[0].get("fields") if isinstance(previous[0].get("fields"), dict) else {}
+            previous_text = str(previous_fields.get("source_text") or "").strip()
+        context_turns = list(history_turns)
+        if previous_text and previous_text not in context_turns:
+            context_turns.append(previous_text)
+        context_text = _join_context(context_turns, text)
+        payload["context_text"] = context_text
+        payload["context_previous"] = _join_context(context_turns, "")
+
+        follow_up_scene = False
+        if (
+            previous is not None
+            and previous_subject == "scene"
+            and wants_tactile
+            and not new_subject_request
+            and _looks_like_follow_up(text)
+            and not payload.get("scene")
+            and not payload.get("circuit")
+            and not str(payload.get("template") or "").strip()
+        ):
+            previous_fields = previous[0].get("fields") if isinstance(previous[0].get("fields"), dict) else {}
+            previous_circuit = previous_fields.get("circuit")
+            if isinstance(previous_circuit, dict) and previous_circuit.get("components"):
+                try:
+                    edited = apply_scene_edit(
+                        {
+                            "circuit": previous_circuit,
+                            "instruction": text,
+                            "model": selection.get("model") or None,
+                            "effort": selection.get("effort") or None,
+                        }
+                    )
+                except (SceneEditError, ValueError):
+                    edited = None
+                if isinstance(edited, dict) and isinstance(edited.get("circuit"), dict):
+                    payload["circuit"] = edited["circuit"]
+                    payload["_scene_edit_changes"] = [
+                        str(item) for item in (edited.get("changes") or []) if str(item).strip()
+                    ][:4]
+                    follow_up_scene = True
+
         route: dict[str, Any] | None = None
         if subject in {"", "auto"}:
             has_scene = (
@@ -629,7 +877,9 @@ class TouchLearnAgent:
                     "subject": "reconstruct",
                     "confidence": 0.95 if images else 0.4,
                     "reason": (
-                        "用户选择了照片级 3D 重建并上传了照片。"
+                        "用户选择了照片级 3D 重建；本轮没有新照片，沿用上一轮草稿的照片。"
+                        if carried_images
+                        else "用户选择了照片级 3D 重建并上传了照片。"
                         if images
                         else "用户选择了照片级 3D 重建，但还没有上传照片。"
                     ),
@@ -644,6 +894,14 @@ class TouchLearnAgent:
                     "subject": "model3d",
                     "confidence": 0.9,
                     "reason": "用户选择了触觉 3D 模型，需求指向立体建模。",
+                    "provider": "mode",
+                }
+            elif follow_up_scene:
+                subject = "scene"
+                route = {
+                    "subject": "scene",
+                    "confidence": 0.9,
+                    "reason": "这句是对上一张触觉场景的修改指令，已在原电路上应用。",
                     "provider": "mode",
                 }
             elif has_scene or requested_template:
@@ -752,6 +1010,23 @@ class TouchLearnAgent:
             for item in route.get("questions") or []:
                 if item not in draft.questions:
                     draft.questions.append(item)
+
+        if previous is not None or history_turns or carried_images:
+            draft.fields["context"] = {
+                "reused_draft_id": str(previous[0].get("id") or reuse_draft_id) if previous else "",
+                "previous_subject": previous_subject,
+                "history_turns": len(history_turns),
+                "carried_images": carried_images,
+                "new_subject_request": new_subject_request,
+                "context_text": context_text[:2400] if context_turns else "",
+            }
+        if carried_images:
+            note = (
+                f"本轮没有新上传照片，已沿用上一轮草稿的 {carried_images} 张照片；"
+                "如果要换一个物体，请重新上传照片并在文字里说明。"
+            )
+            if note not in draft.notes:
+                draft.notes.insert(0, note)
 
         _write_json(draft_dir / "draft.json", draft.to_dict())
         return draft.to_dict()
@@ -1326,14 +1601,19 @@ class TouchLearnAgent:
             or payload.get("request")
             or ""
         ).strip()
+        # "把裙子改长" must inherit the earlier object description; otherwise
+        # the planner sees only the edit sentence and loses the model.
+        request_text = str(payload.get("context_text") or text).strip()
         plan = plan_model3d(
-            text,
+            request_text,
             images=images,
             model=(selection.get("vision_model") if images else selection.get("model")) or None,
             effort=selection.get("effort") or None,
         )
         notes = list(plan.notes)
         questions = list(plan.questions)
+        if request_text != text:
+            notes.insert(0, "已把上一轮的模型描述并入本轮要求，避免“改长一点”这类指令丢失对象。")
         spec = plan.spec if isinstance(plan.spec, dict) else {}
         kind = str(spec.get("kind") or "assembly")
         planets = spec.get("planets") or []
@@ -1343,7 +1623,7 @@ class TouchLearnAgent:
         # offline deployments.  Everything else is generated as one mesh by
         # the 3D provider, then annotated by the local print composer.
         use_generative = (
-            bool(text)
+            bool(request_text)
             and bool(status.get("configured"))
             and bool(status.get("text_to_3d"))
             and generative_enabled()
@@ -1358,7 +1638,7 @@ class TouchLearnAgent:
             generation_plan = ReconstructionPlan(
                 ok=True,
                 title=title,
-                subject=(text or title)[:160],
+                subject=(request_text or title)[:160],
                 keep_features=[
                     str(item.get("name_zh") or "").strip()
                     for item in (spec.get("parts") or [])
@@ -1374,7 +1654,7 @@ class TouchLearnAgent:
             )
             generation_info = {
                 "enabled": True,
-                "prompt": _generation_prompt(text, spec, title),
+                "prompt": _generation_prompt(request_text, spec, title),
                 "provider": status.get("provider"),
                 "provider_label": status.get("label"),
                 "model": status.get("text_model") or status.get("model"),
@@ -1503,6 +1783,7 @@ class TouchLearnAgent:
 
         fields: dict[str, Any] = {
             "source_text": text,
+            "context_text": request_text if request_text != text else "",
             "output_mode": "model3d",
             "spec": spec,
             "kind": summary_kind,
@@ -1553,6 +1834,70 @@ class TouchLearnAgent:
             files=files,
         )
 
+    def _prepare_reconstruct_views(
+        self,
+        draft_dir: Path,
+        files: list[dict[str, Any]],
+        images: Sequence[Path],
+    ) -> tuple[list[Path], list[str]]:
+        """Split a composite multi-view sheet into provider-ready view files.
+
+        One image with three panels used to be sent as a single photo, so the
+        provider reconstructed three characters.  Crops are added to the draft's
+        file list and the original is marked as a sheet source; the build stage
+        only sends the crops.
+        """
+        if len(images) != 1:
+            return list(images), []
+        source = Path(images[0])
+        if source.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+            return list(images), []
+        try:
+            crops = split_multiview_sheet(source, draft_dir / "views")
+        except Exception:
+            crops = []
+        if len(crops) < 2:
+            return list(images), []
+
+        source_resolved = source.resolve()
+        for item in files:
+            candidate = draft_dir / str(item.get("path") or "")
+            try:
+                if candidate.resolve() == source_resolved:
+                    item["skip_for_reconstruction"] = True
+                    item["sheet_source"] = True
+            except OSError:
+                continue
+
+        created: list[Path] = []
+        slots: list[str] = []
+        for crop in crops:
+            path = Path(str(crop.get("path") or ""))
+            if not path.is_file():
+                continue
+            try:
+                content = path.read_bytes()
+                relative = str(path.relative_to(draft_dir))
+            except (OSError, ValueError):
+                continue
+            files.append(
+                {
+                    "name": path.name,
+                    "path": relative,
+                    "bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "extension": path.suffix.lower(),
+                    "image": _image_info(path),
+                    "view_slot": str(crop.get("slot") or ""),
+                    "derived_from": source.name,
+                }
+            )
+            created.append(path)
+            slots.append(str(crop.get("slot") or ""))
+        if len(created) < 2:
+            return list(images), []
+        return created, slots
+
     def _analyze_reconstruct(
         self,
         payload: dict[str, Any],
@@ -1572,12 +1917,19 @@ class TouchLearnAgent:
             or payload.get("request")
             or ""
         ).strip()
+        draft_dir = self.root / "drafts" / draft_id
+        plan_images, view_slots = self._prepare_reconstruct_views(draft_dir, files, images)
+        sheet_views = len(view_slots)
         status = reconstruction_status()
+        text_route_available = bool(status.get("configured")) and bool(status.get("text_to_3d"))
+        previous_context = str(payload.get("context_previous") or "").strip()
         plan = plan_reconstruction(
             text,
-            images=images,
-            model=(selection.get("vision_model") if images else selection.get("model")) or None,
+            images=plan_images,
+            model=(selection.get("vision_model") if plan_images else selection.get("model")) or None,
             effort=selection.get("effort") or None,
+            context=previous_context,
+            sheet_views=sheet_views,
         )
         notes = list(plan.notes)
         questions = list(plan.questions)
@@ -1599,8 +1951,60 @@ class TouchLearnAgent:
             except Exception:
                 continue
 
-        if images:
-            notes.append(f"已收到 {len(images)} 张照片，将交给三维重建服务还原细节与纹理。")
+        # A composite sheet that could not be split must not be sent as one
+        # photo: the provider would happily reconstruct every panel as a
+        # separate object.  Block the build and ask for separate views instead.
+        # A sheet that already failed in an earlier turn is marked on the file,
+        # so carrying it forward cannot quietly bypass this guard.
+        prior_sheet = any(item.get("sheet_source") for item in files)
+        sheet_claim = (
+            _looks_like_multiview(text)
+            or bool(plan.sheet)
+            or (prior_sheet and len(images) == 1 and not _looks_like_new_subject(text))
+        )
+        sheet_blocked = bool(images) and len(images) == 1 and sheet_views == 0 and sheet_claim
+
+        if sheet_views:
+            slot_labels = {"front": "正面", "left": "左侧", "back": "背面", "right": "右侧"}
+            order_text = " / ".join(slot_labels.get(slot, slot) for slot in view_slots)
+            notes.insert(
+                0,
+                f"检测到一张多视角拼图，已自动裁成 {sheet_views} 个视角（{order_text}），"
+                f"按多视图重建同一个物体，不会再把它当成 {sheet_views} 个人物。",
+            )
+            notes.append(
+                "拼图按从左到右依次当作 front/left/back 处理；如果原图的实际顺序不同，"
+                "请分别上传并让文件名带上 front/left/back。"
+            )
+        if sheet_blocked:
+            for item in files:
+                candidate = draft_dir / str(item.get("path") or "")
+                try:
+                    if candidate.resolve() == Path(images[0]).resolve():
+                        item["sheet_source"] = True
+                except OSError:
+                    continue
+            notes.append(
+                "这张图看起来是多个视角拼在同一张图里，但自动拆分失败。整张图直接送去重建会被当成多个物体，"
+                "所以本次先不提交。请上传分开的正面/侧面/背面照片，或使用各视角之间留明显空隙的白底拼图。"
+            )
+            questions.insert(
+                0,
+                "请把三视图拆成 2-4 张单独的照片上传（正面、侧面、背面），"
+                "或换一张背景干净、视角之间有空白间隔的拼图。",
+            )
+
+        if plan_images:
+            if sheet_views:
+                notes.append(f"多视图接口会使用 {len(plan_images)} 个视角；它们必须属于同一个物体。")
+            else:
+                notes.append(f"已收到 {len(plan_images)} 张照片，将交给三维重建服务还原细节与纹理。")
+        elif text_route_available:
+            notes.append(
+                "这次没有照片。重建方式默认切到“按文字重新生成”：会按文字从零生成一个三维模型，"
+                "外观与照片无关；想要保留照片外观，请重新上传照片。"
+            )
+            questions.append("请确认文字描述是否完整；也可以上传正面/侧面/背面照片，按照片重建。")
         else:
             notes.append("照片级重建需要至少一张照片；只有文字描述时请改用“触觉3D模型”，由本地编译器建模。")
             questions.append("请上传 1-4 张同一物体的照片，正面、侧面和顶面各一张效果最好。")
@@ -1609,7 +2013,20 @@ class TouchLearnAgent:
             questions.append("服务端尚未配置 TOUCHLEARN_3D_KEY；可先使用“触觉3D模型”，或配置密钥后重试。")
         notes.append("重建会输出两份文件：保留颜色与细节的纹理 GLB，以及带底座、盲文标题、底座盲文图例和二维码位的单色可打印 STL。")
         notes.append("高度、底座、盲文名称由本地确定；照片里看不到的结构不会被编造。")
-        notes.append("文字指令会写入重建计划并尽量传给三维服务；改变姿态等几何编辑取决于服务能力，服务不支持时会保留照片原样。")
+        if plan.changes:
+            if text_route_available:
+                notes.append(
+                    "照片重建以照片为准，文字改写不会保证改变几何结构；这些调整目前只写进重建计划与报告。"
+                    "需要真的按文字改结构时，请在“重建方式”里选择“按文字重新生成（文生3D）”，"
+                    "代价是外观会与照片不同。"
+                )
+            else:
+                notes.append(
+                    "照片重建以照片为准，当前接口不会按文字改变几何结构；这些调整只写进重建计划与报告。"
+                    "要按文字重新建模，请改用“触觉3D模型”的文生3D路线（需配置三维生成接口）。"
+                )
+        else:
+            notes.append("文字指令会写入重建计划；照片重建以照片为准，服务不支持的编辑会保留照片原样。")
         if "tactile" in generation_modes:
             notes.append("你同时选择了触觉教材；重建时会附带一张 A5-A3 的结构总览板，帮助先建立整体方位。")
 
@@ -1639,7 +2056,16 @@ class TouchLearnAgent:
                 "message": plan.message,
             },
             "reconstruction": status,
-            "image_count": len(images),
+            "image_count": len(plan_images),
+            "source_image_count": len(images),
+            "sheet": bool(sheet_views),
+            "view_order": list(view_slots),
+            "sheet_blocked": sheet_blocked,
+            "generation_route": "photo" if plan_images else ("text" if text_route_available else "photo"),
+            "text_route": {
+                "available": text_route_available,
+                "prompt": plan.provider_prompt,
+            },
             "modes": list(generation_modes),
             "companion_tactile": "tactile" in generation_modes,
             "target_height_mm": plan.height_mm,
@@ -1651,8 +2077,16 @@ class TouchLearnAgent:
             id=draft_id,
             subject="reconstruct",
             output_mode="reconstruction",
-            confidence=plan.confidence or (0.4 if images else 0.2),
-            ready=bool(images) and bool(status["configured"]) and bool(plan.ok),
+            confidence=plan.confidence or (0.4 if plan_images else 0.2),
+            ready=(
+                bool(status["configured"])
+                and bool(plan.ok)
+                and not sheet_blocked
+                and (
+                    bool(plan_images)
+                    or (text_route_available and bool(plan.provider_prompt.strip()))
+                )
+            ),
             fields=fields,
             questions=questions,
             notes=notes,
@@ -1726,6 +2160,12 @@ class TouchLearnAgent:
                 circuit = None
                 questions.append(f"电路结构无法使用：{error}")
 
+        scene_edit_changes = payload.get("_scene_edit_changes")
+        if isinstance(scene_edit_changes, list) and scene_edit_changes:
+            change_text = "；".join(str(item) for item in scene_edit_changes[:4])
+            notes.insert(0, f"已在上一轮的场景上应用本轮修改：{change_text}。")
+            fields["scene_edit_changes"] = [str(item) for item in scene_edit_changes[:4]]
+
         explicit_roadmap = payload.get("roadmap")
         if isinstance(explicit_roadmap, str):
             try:
@@ -1776,18 +2216,21 @@ class TouchLearnAgent:
                 if circuit is not None:
                     notes.append("这个模板带可编辑电路，可在图形编辑器里移动元件或输入一句话修改。")
 
-        if scene is None and (text or images):
+        scene_request = str(payload.get("context_text") or text).strip()
+        if scene is None and (scene_request or images):
             # The picker's vision choice drives image reconstruction; a text
             # model never receives an image payload it cannot read.
             chosen_model = (
                 selection.get("vision_model") if images else selection.get("model")
             )
             generation_result = generate_scene(
-                text,
+                scene_request,
                 images=images,
                 model=chosen_model or None,
                 effort=selection.get("effort") or None,
             )
+            if scene_request != text:
+                notes.insert(0, "已把上一轮的场景描述并入本轮要求，避免上下文丢失。")
             generation = {
                 "ok": generation_result.ok,
                 "provider": generation_result.provider,
@@ -1836,6 +2279,7 @@ class TouchLearnAgent:
                 questions.append("离线模板只覆盖常见示意结构；请核对图形、标签和阅读顺序是否符合你的教材。")
 
         fields["generation"] = generation
+        fields["context_text"] = scene_request if scene_request != text else ""
         if route:
             fields["routing"] = route
 
@@ -3018,6 +3462,12 @@ class TouchLearnAgent:
                 if isinstance(item, dict) and str(item.get("text") or "").strip()
             ][:3],
             print_notes=[str(item) for item in (fields.get("print_notes") or raw_plan.get("print_notes") or [])][:4],
+            sheet=bool(fields.get("sheet") or raw_plan.get("sheet")),
+            view_order=[
+                str(item)
+                for item in (fields.get("view_order") or raw_plan.get("view_order") or [])
+                if str(item).strip()
+            ][:4],
         )
         if not plan.labels:
             plan.labels = [{"text": plan.title, "target": "主体"}]
@@ -3028,59 +3478,81 @@ class TouchLearnAgent:
             draft_dir / str(item["path"])
             for item in (draft_payload.get("files") or [])
             if str(item.get("extension") or "").lower() in extensions
+            and not item.get("skip_for_reconstruction")
         ]
         images = [path for path in images if path.is_file()]
-        if not images:
+
+        text_route = fields.get("text_route") if isinstance(fields.get("text_route"), dict) else {}
+        text_prompt = str(text_route.get("prompt") or "").strip() or plan.provider_prompt
+        generation_route = str(fields.get("generation_route") or "photo").strip().lower()
+        if generation_route not in {"photo", "text"}:
+            generation_route = "photo"
+        if generation_route == "text" and not text_prompt.strip():
+            generation_route = "photo"
+        if generation_route == "photo" and not images:
             raise ReconstructionError("没有收到可用于重建的照片。请上传 PNG/JPEG/WEBP 照片。")
 
         def provider_progress(value: int, message: str) -> None:
             progress(10 + int(max(0, min(100, value)) * 0.50), message)
 
-        # TokenHub's Tripo examples pass HTTPS image URLs.  When this deployment
-        # has a real public address, publish the first four photos through the
-        # existing unguessable /files/<job>/<name> route and hand those URLs to
-        # the provider.  On a local-only preview we keep the data-URI fallback.
-        public_base = _public_http_base(public_base_url)
-        image_urls: list[str] = []
-        published: list[Path] = []
-        if public_base:
-            for index, path in enumerate(images[:4]):
-                suffix = path.suffix.lower() if path.suffix.lower() in extensions else ".jpg"
-                name = f"input-{index + 1}{suffix}"
-                target = job_dir / name
-                if path.resolve() != target.resolve():
-                    shutil.copyfile(path, target)
-                published.append(target)
-                image_urls.append(f"{public_base}/files/{job_dir.name}/{name}")
+        if generation_route == "text":
+            progress(10, "提交文字描述到三维生成服务")
+            asset = text_to_3d(text_prompt, plan, dest=job_dir, progress=provider_progress)
+        else:
+            # TokenHub's Tripo examples pass HTTPS image URLs.  When this deployment
+            # has a real public address, publish the first four photos through the
+            # existing unguessable /files/<job>/<name> route and hand those URLs to
+            # the provider.  On a local-only preview we keep the data-URI fallback.
+            public_base = _public_http_base(public_base_url)
+            image_urls: list[str] = []
+            published: list[Path] = []
+            if public_base:
+                for index, path in enumerate(images[:4]):
+                    suffix = path.suffix.lower() if path.suffix.lower() in extensions else ".jpg"
+                    name = f"input-{index + 1}{suffix}"
+                    target = job_dir / name
+                    if path.resolve() != target.resolve():
+                        shutil.copyfile(path, target)
+                    published.append(target)
+                    image_urls.append(f"{public_base}/files/{job_dir.name}/{name}")
 
-        progress(10, "提交照片到三维重建服务")
-        try:
-            asset = reconstruct(
-                images,
-                plan,
-                dest=job_dir,
-                progress=provider_progress,
-                image_urls=image_urls,
-            )
-        finally:
-            # The provider has fetched the images by the time reconstruction
-            # returns; do not ship the learner's photos inside the artifact zip.
-            for target in published:
-                try:
-                    target.unlink()
-                except OSError:
-                    pass
+            progress(10, "提交照片到三维重建服务")
+            try:
+                asset = reconstruct(
+                    images,
+                    plan,
+                    dest=job_dir,
+                    progress=provider_progress,
+                    image_urls=image_urls,
+                )
+            finally:
+                # The provider has fetched the images by the time reconstruction
+                # returns; do not ship the learner's photos inside the artifact zip.
+                for target in published:
+                    try:
+                        target.unlink()
+                    except OSError:
+                        pass
         if asset.mesh is None or not asset.mesh.triangles:
             detail = asset.mesh_error or "三维服务没有返回可解析的三角网格。"
+            hint = (
+                "请换一个文字描述重试。"
+                if generation_route == "text"
+                else "请换一组照片重试，或改用“触觉3D模型”。"
+            )
             raise ReconstructionError(
-                f"{detail} 纹理 GLB 已保存，但无法生成可打印 STL；请换一组照片重试，或改用“触觉3D模型”。"
+                f"{detail} 纹理 GLB 已保存，但无法生成可打印 STL；{hint}"
             )
 
         progress(62, "生成底座、盲文标题与底座图例")
         result = compose_printable(asset.mesh, plan, target_height_mm=plan.height_mm, title=plan.title)
         meta = result.meta
         title = str(meta.get("title") or plan.title or "PHOTO 3D")
-        subtitle = f"PHOTO RECONSTRUCTION / {plan.subject or title} / BRAILLE TITLE + BASE LEGEND"
+        subtitle = (
+            f"TEXT TO 3D / {plan.subject or title} / BRAILLE TITLE + BASE LEGEND"
+            if generation_route == "text"
+            else f"PHOTO RECONSTRUCTION / {plan.subject or title} / BRAILLE TITLE + BASE LEGEND"
+        )
 
         progress(70, "写入 STL 与三维预览")
         write_binary_stl(result.mesh, job_dir / "model.stl")
@@ -3098,6 +3570,9 @@ class TouchLearnAgent:
             {
                 "kind": "reconstruction",
                 "plan": plan.to_dict(),
+                "generation_route": generation_route,
+                "sheet": plan.sheet,
+                "view_order": plan.view_order,
                 "print_meta": meta,
                 "provider": asset.to_dict(),
             },
@@ -3116,6 +3591,9 @@ class TouchLearnAgent:
                 "base": plan.base,
                 "margin_mm": plan.margin_mm,
                 "labels": plan.labels,
+                "generation_route": generation_route,
+                "sheet": plan.sheet,
+                "view_order": plan.view_order,
                 "textured_model": "model_textured.glb" if "glb" in asset.files else "",
                 "thumbnail": "thumbnail.png" if "thumbnail" in asset.files else "",
                 "print": print_settings,
@@ -3125,7 +3603,11 @@ class TouchLearnAgent:
                 "instructions": {
                     "keep_features": plan.keep_features,
                     "changes": plan.changes,
-                    "note": "几何编辑由三维服务执行；本地确定高度、底座、盲文与二维码位。",
+                    "note": (
+                        "文字重走文生3D；外观不再保证与照片一致。本地确定高度、底座、盲文与二维码位。"
+                        if generation_route == "text"
+                        else "照片重建以照片为准；本地确定高度、底座、盲文与二维码位。"
+                    ),
                 },
             },
         )
@@ -3180,9 +3662,19 @@ class TouchLearnAgent:
                 "reconstruction.provider",
                 STATUS_PASS,
                 f"{asset.provider} / {asset.task_id[:12]}",
-                "照片由专门的三维重建服务还原为带纹理的 GLB；本地不伪造照片里看不到的结构。",
+                "三维服务负责几何与外观；本地不伪造输入里看不到的结构。",
             )
         )
+        if plan.sheet:
+            report.checks.append(
+                Check(
+                    "reconstruction.multiview",
+                    STATUS_PASS,
+                    " / ".join(plan.view_order) or "front/left/back",
+                    "多视角拼图已在本地拆成独立视角并走多视图重建，"
+                    "避免把同一物体的不同视角当成多个物体。",
+                )
+            )
         report.checks.append(
             Check(
                 "reconstruction.texture",

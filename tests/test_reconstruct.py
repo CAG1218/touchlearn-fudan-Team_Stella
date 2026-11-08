@@ -28,6 +28,7 @@ from touchlearn.agent.reconstruct import (
     quality_preset,
     read_glb_mesh,
     reconstruction_status,
+    split_multiview_sheet,
     text_model,
     text_to_3d,
 )
@@ -444,6 +445,40 @@ class TokenHubAdapterTests(unittest.TestCase):
         self.assertEqual([slot for slot in ("front", "left", "back") if slot in fallback], ["front", "left", "back"])
         self.assertEqual(fallback["front"].name, "a.jpg")
         self.assertEqual(multiview_slots([Path("only.jpg")]), {})
+
+    def test_split_multiview_sheet_crops_three_panels(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "maid-three-view.png"
+            image = Image.new("RGB", (900, 300), (252, 252, 252))
+            draw = ImageDraw.Draw(image)
+            for index, left in enumerate((40, 340, 640)):
+                draw.rectangle(
+                    (left, 40, left + 220, 260),
+                    fill=(40 + index * 30, 90, 200 - index * 30),
+                )
+            image.save(source)
+
+            crops = split_multiview_sheet(source, root / "views")
+
+            self.assertEqual([item["slot"] for item in crops], ["front", "left", "back"])
+            self.assertEqual(len({item["path"] for item in crops}), 3)
+            for item in crops:
+                self.assertTrue(Path(item["path"]).is_file())
+
+    def test_split_multiview_sheet_ignores_a_single_subject_photo(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "single.png"
+            image = Image.new("RGB", (400, 300), (252, 252, 252))
+            ImageDraw.Draw(image).rectangle((100, 30, 300, 280), fill=(60, 90, 200))
+            image.save(source)
+
+            self.assertEqual(split_multiview_sheet(source, root / "views"), [])
 
     def test_multiview_body_matches_the_console_example(self) -> None:
         body = _tokenhub_multiview_body(

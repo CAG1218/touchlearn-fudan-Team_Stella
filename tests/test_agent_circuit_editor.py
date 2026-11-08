@@ -556,6 +556,24 @@ class AgentCircuitIntegrationTests(unittest.TestCase):
         self.assertEqual(entry["editor"], "circuit")
         self.assertTrue(entry["thumbnail"].endswith("/api/templates/circuit/thumbnail.svg"))
 
+    def test_follow_up_edits_the_previous_circuit(self) -> None:
+        first = self.agent.analyze(
+            {"subject": "auto", "template": "circuit", "generation_modes": ["tactile"]}
+        )
+        self.assertTrue(first["fields"].get("circuit"))
+        second = self.agent.analyze(
+            {
+                "subject": "auto",
+                "text": "删除电阻",
+                "generation_modes": ["tactile"],
+                "reuse_draft_id": first["id"],
+            }
+        )
+        self.assertEqual(second["subject"], "scene")
+        self.assertTrue(second["fields"].get("circuit"))
+        self.assertTrue(second["fields"].get("scene_edit_changes"))
+        self.assertTrue(any("应用本轮修改" in note for note in second["notes"]))
+
     def test_router_note_about_filenames_is_not_replayed_after_vision(self) -> None:
         decision = RouteDecision(
             subject="scene",

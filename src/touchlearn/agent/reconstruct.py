@@ -283,6 +283,8 @@ class ReconstructionPlan:
     provider: str = ""
     model: str = ""
     message: str = ""
+    sheet: bool = False
+    view_order: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -314,6 +316,8 @@ class ReconstructionPlan:
             "provider": self.provider,
             "model": self.model,
             "message": self.message,
+            "sheet": self.sheet,
+            "view_order": list(self.view_order),
         }
 
 
@@ -334,6 +338,8 @@ PLAN_SCHEMA = {
     "margin_mm": "物体与底座边缘的留白，4-20 之间的数字",
     "labels": [{"text": "1-3 个汉字", "target": "指向的部位或特征"}],
     "print_notes": ["打印时需要注意的一句话，可选"],
+    "sheet": "照片是否是多视角拼图（true/false）",
+    "view_order": ["拼图里各视角的顺序，例如 front/left/back；不是拼图就留空数组"],
 }
 
 
@@ -417,6 +423,12 @@ def _normalize_plan(data: dict[str, Any], text: str, *, provider: str, model: st
         provider=provider,
         model=model,
         message="已按照片与指令生成重建计划。",
+        sheet=bool(data.get("sheet")),
+        view_order=[
+            str(item).strip().lower()
+            for item in (data.get("view_order") or [])
+            if str(item).strip().lower() in MULTIVIEW_ORDER
+        ][:MAX_IMAGES],
         raw=data,
     )
     plan.height_mm = round(plan.height_mm, 1)
@@ -452,15 +464,29 @@ def plan_reconstruction(
     *,
     model: str | None = None,
     effort: str | None = None,
+    context: str = "",
+    sheet_views: int = 0,
 ) -> ReconstructionPlan:
     """Ask the vision/text model for a strict reconstruction plan.
 
     A failed model call never blocks the reconstruction: the provider can still
     work from the photos, so the plan falls back to safe defaults and says so.
+
+    ``context`` carries earlier turns from the same conversation.  ``sheet_views``
+    tells the model that the photos were split out of one multi-view sheet, so
+    it must plan a single object rather than one object per panel.
     """
+    request = (text or "").strip() or "（没有额外文字，只按照片重建）"
+    if context.strip():
+        request = f"此前对话：\n{context.strip()[-1200:]}\n\n本轮要求：\n{request}"
+    if sheet_views >= 2:
+        request += (
+            f"\n\n系统提示：用户上传的是一张多视角拼图，已自动裁成 {sheet_views} 个视角。"
+            "这些视角属于同一个物体，必须只规划一个物体；不要把每个视角当成一个独立人物或零件。"
+        )
     prompt = (
         "用户的文字要求：\n"
-        + ((text or "").strip() or "（没有额外文字，只按照片重建）")
+        + request
         + "\n\n请只输出符合下面结构的 JSON：\n"
         + json.dumps(PLAN_SCHEMA, ensure_ascii=False, indent=2)
     )
@@ -1092,6 +1118,202 @@ def multiview_slots(images: Sequence[Path]) -> dict[str, Path]:
                 slots[slot] = path
                 break
     return slots
+
+
+def _median(values: list[int]) -> int:
+    return sorted(values)[len(values) // 2] if values else 255
+
+
+def split_multiview_sheet(
+    path: str | Path,
+    dest_dir: str | Path,
+    *,
+    order: Sequence[str] = MULTIVIEW_ORDER,
+    max_panels: int = MAX_IMAGES,
+) -> list[dict[str, Any]]:
+    """Split one composite three-view photo into separate view files.
+
+    A single image showing ``front / side / back`` panels used to be sent to
+    the provider as one photo, so the provider reconstructed every panel as a
+    separate character.  This detector finds 2-4 vertically separated panels
+    on a mostly uniform background and crops each one; the caller then feeds
+    the crops to the documented multi-view API.
+
+    The detector is deliberately conservative: panels must have similar width
+    and height, occupy a substantial part of the image, and be separated by a
+    mostly empty gutter.  When those conditions do not hold it returns an
+    empty list and the caller keeps the original photo (and can ask the user
+    for separate views).
+
+    Pillow is optional.  Without it the function returns ``[]`` so the product
+    still runs on the standard library alone.
+    """
+    try:
+        from PIL import Image  # type: ignore
+    except Exception:
+        return []
+
+    source = Path(path)
+    target_dir = Path(dest_dir)
+    try:
+        with Image.open(source) as opened:
+            image = opened.convert("RGB")
+    except Exception:
+        return []
+    width, height = image.size
+    if width < 240 or height < 160:
+        return []
+
+    scale = min(1.0, 960.0 / float(width))
+    probe = (
+        image.resize((max(1, int(width * scale)), max(1, int(height * scale))), Image.Resampling.LANCZOS)
+        if scale < 1.0
+        else image
+    )
+    probe_w, probe_h = probe.size
+    pixels = probe.load()
+
+    border: list[tuple[int, int, int]] = []
+    for x in range(probe_w):
+        border.append(pixels[x, 0])
+        border.append(pixels[x, probe_h - 1])
+    for y in range(probe_h):
+        border.append(pixels[0, y])
+        border.append(pixels[probe_w - 1, y])
+    background = tuple(_median([item[channel] for item in border]) for channel in range(3))
+
+    threshold = 34 * 34
+    column_ink = [0] * probe_w
+    row_ink = [0] * probe_h
+    for y in range(probe_h):
+        for x in range(probe_w):
+            red, green, blue = pixels[x, y]
+            if (
+                (red - background[0]) ** 2
+                + (green - background[1]) ** 2
+                + (blue - background[2]) ** 2
+                > threshold
+            ):
+                column_ink[x] += 1
+                row_ink[y] += 1
+
+    min_ink = max(2, int(probe_h * 0.008))
+    active = [value >= min_ink for value in column_ink]
+
+    runs: list[tuple[int, int]] = []
+    start = -1
+    for x, filled in enumerate(active):
+        if filled and start < 0:
+            start = x
+        elif not filled and start >= 0:
+            runs.append((start, x))
+            start = -1
+    if start >= 0:
+        runs.append((start, probe_w))
+
+    if not runs:
+        return []
+
+    # Join thin gaps caused by an internal highlight or a pale object edge.
+    merge_gap = max(2, int(probe_w * 0.008))
+    merged: list[tuple[int, int]] = [runs[0]]
+    for left, right in runs[1:]:
+        previous_left, previous_right = merged[-1]
+        if left - previous_right <= merge_gap:
+            merged[-1] = (previous_left, right)
+        else:
+            merged.append((left, right))
+
+    panels: list[dict[str, Any]] = []
+    for left, right in merged:
+        panel_width = right - left
+        if panel_width < probe_w * 0.08:
+            continue
+        top = probe_h
+        bottom = 0
+        for y in range(probe_h):
+            if row_ink[y] == 0:
+                continue
+            # Count only ink inside this panel so text elsewhere cannot extend it.
+            count = 0
+            for x in range(left, right):
+                red, green, blue = pixels[x, y]
+                if (
+                    (red - background[0]) ** 2
+                    + (green - background[1]) ** 2
+                    + (blue - background[2]) ** 2
+                    > threshold
+                ):
+                    count += 1
+            if count >= max(1, int(panel_width * 0.01)):
+                top = min(top, y)
+                bottom = max(bottom, y + 1)
+        panel_height = bottom - top
+        if panel_height < probe_h * 0.28 or bottom <= top:
+            continue
+        panels.append(
+            {
+                "left": left,
+                "right": right,
+                "top": top,
+                "bottom": bottom,
+                "width": panel_width,
+                "height": panel_height,
+                "ink": sum(column_ink[left:right]),
+            }
+        )
+
+    if len(panels) < 2:
+        return []
+    if len(panels) > max_panels:
+        panels = sorted(panels, key=lambda item: item["ink"], reverse=True)[:max_panels]
+        panels.sort(key=lambda item: item["left"])
+
+    widths = [item["width"] for item in panels]
+    heights = [item["height"] for item in panels]
+    if min(widths) < max(widths) * 0.55 or min(heights) < max(heights) * 0.65:
+        return []
+
+    slots = ["front", "left", "back", "right"][: len(panels)]
+    if order:
+        slots = [str(item).lower() for item in order][: len(panels)]
+        if len(slots) < len(panels):
+            slots.extend([slot for slot in MULTIVIEW_ORDER if slot not in slots][: len(panels) - len(slots)])
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    inverse = 1.0 / scale if scale else 1.0
+    pad_x = int(probe_w * 0.015 * inverse)
+    pad_y = int(probe_h * 0.02 * inverse)
+    results: list[dict[str, Any]] = []
+    for index, (panel, slot) in enumerate(zip(panels, slots)):
+        left = max(0, int(panel["left"] * inverse) - pad_x)
+        right = min(width, int(panel["right"] * inverse) + pad_x)
+        top = max(0, int(panel["top"] * inverse) - pad_y)
+        bottom = min(height, int(panel["bottom"] * inverse) + pad_y)
+        if right - left < 16 or bottom - top < 16:
+            continue
+        crop = image.crop((left, top, right, bottom))
+        filename = f"{source.stem}-{index + 1}-{slot}.jpg"
+        destination = target_dir / filename
+        crop.save(destination, "JPEG", quality=92, optimize=True)
+        results.append(
+            {
+                "slot": slot,
+                "path": str(destination),
+                "width": crop.width,
+                "height": crop.height,
+                "box": [left, top, right, bottom],
+            }
+        )
+    if len(results) < 2:
+        for item in results:
+            try:
+                Path(item["path"]).unlink()
+            except OSError:
+                pass
+        return []
+    return results
+
 
 
 def _tokenhub_image_body(

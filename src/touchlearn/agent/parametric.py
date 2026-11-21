@@ -25,7 +25,6 @@ from ..layout import (
 )
 from ..model import Diagram
 from ..printability import feature_distance
-from .audio import spoken_expression
 from .expression import Expression, ExpressionError, expression_from_coefficients, parse_expression
 
 BBox = tuple[float, float, float, float]
@@ -35,7 +34,7 @@ LABEL_BRAILLE_GAP = 1.2
 MIN_CLEARANCE = 2.0
 MIN_LABEL_SPACING = 4.5
 
-_ALLOWED = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -.:/()^+=_?")
+_ALLOWED = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -.,:/()[]^+=_?")
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +132,10 @@ def _inside(bbox: BBox, width: float, height: float, margin: float) -> bool:
 def _candidate_positions(anchor: Point, label_width: float, label_height: float) -> list[Point]:
     ax, ay = anchor
     positions: list[Point] = []
-    for gap in (3.0, 6.5, 10.5, 15.0, 20.0):
+    # Larger gaps matter once a label stacks a standard coordinate and a
+    # Chinese braille name: that box can be 40 mm wide, and the only clear
+    # space may be on the far side of an axis.
+    for gap in (3.0, 6.5, 10.5, 15.0, 20.0, 25.0, 32.0, 40.0):
         positions.extend(
             [
                 (ax + gap, ay - label_height / 2.0),
@@ -144,6 +146,13 @@ def _candidate_positions(anchor: Point, label_width: float, label_height: float)
                 (ax - gap - label_width, ay - gap - label_height),
                 (ax + gap, ay + gap),
                 (ax - gap - label_width, ay + gap),
+                # Beside the anchor, lifted clear of the coordinate it names.
+                # A wide label can then use the empty quarter above an axis
+                # instead of jumping diagonally across the plot.
+                (ax + gap, ay - label_height - 3.0),
+                (ax - gap - label_width, ay - label_height - 3.0),
+                (ax + gap, ay + 3.0),
+                (ax - gap - label_width, ay + 3.0),
             ]
         )
     return positions
@@ -458,13 +467,15 @@ def _footer(
     qr_rect: BBox,
     *,
     braille_lines: Sequence[str] = (),
+    text_lines: Sequence[str] = (),
 ) -> None:
-    """Draw the Chinese braille brand and up to three braille legend lines.
+    """Draw the Chinese braille brand, optional standard text and legend lines.
 
-    A tactile plate carries no raised Latin text: a blind reader cannot feel
-    letter shapes, so every word is Chinese braille and every index is an
-    Arabic numeral.  Braille keeps its standard 1.6 mm dots; a line that
-    cannot fit is skipped instead of being squeezed below the readable pitch.
+    Chinese words travel in braille.  Mathematical notation such as an axis
+    range keeps the standard raised glyphs a sighted teacher would write, so
+    it is printed with the outline font instead of being turned into dots.
+    Braille keeps its standard pitch; a line that cannot fit is skipped
+    instead of being squeezed below the readable pitch.
     """
     feature = builder.feature("footer", "footer")
     # Text bboxes include half a stroke width on each side.  Starting exactly on
@@ -476,8 +487,20 @@ def _footer(
     if tactile_braille.safe_text(brand) and tactile_braille.width(brand) <= available:
         builder.braille(feature, x, height - margin - 7.0, brand)
 
-    # Lines stack upward from just above the brand; y is the top of a cell row.
+    # Lines stack upward from just above the brand; y is the top of a row.
     baseline = height - margin - 15.5
+    for text in text_lines[:2]:
+        value = "".join(character for character in str(text).upper() if character in _ALLOWED).strip()
+        if not value:
+            continue
+        text_height = 4.0
+        if font.text_width(value, text_height) > available:
+            text_height = max(3.5, text_height * available / font.text_width(value, text_height))
+        if font.text_width(value, text_height) > available:
+            continue
+        builder.text(feature, x, baseline, value, text_height)
+        baseline -= text_height + 1.8
+
     step = tactile_braille.height("中") + 1.8
     for text in braille_lines[:3]:
         value = _chinese_label(text, max_chars=28)
@@ -487,6 +510,12 @@ def _footer(
             continue
         builder.braille(feature, x, baseline, value)
         baseline -= step
+
+
+def _cn_count(value: int) -> str:
+    """Spell small counts so braille never has to carry an Arabic digit."""
+    names = {0: "零", 1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九", 10: "十"}
+    return names.get(int(value), str(value))
 
 
 def _format_number(value: float) -> str:
@@ -534,11 +563,6 @@ def _expression_from_diagram(diagram: Diagram) -> Expression:
     if not text:
         raise ExpressionError("函数板缺少解析式：请提供 expression 或 coefficients")
     return parse_expression(text)
-
-
-def _key_point_numbers(points: Sequence[Any]) -> list[str]:
-    """Number key points 1..N; a plate never prints Latin letter labels."""
-    return [str(index) for index in range(1, len(points) + 1)]
 
 
 def _point_element_id(diagram: Diagram, x: float, y: float, fallback: str) -> str:
@@ -604,25 +628,25 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
         if title_braille_width <= width - 2 * margin:
             builder.braille(title, (width - title_braille_width) / 2.0, margin + 2.0, title_zh)
 
-    # The expression is spoken into standard Chinese braille.  The caret is
-    # not a Chinese braille sign and would read as noise, so "^2" becomes
-    # "的平方" and the minus signs become "减".
+    # The expression is mathematical notation, not prose: keep the standard
+    # raised glyphs so it can be compared with a printed textbook.  Chinese
+    # explanations travel in braille elsewhere on the plate.
     equation = builder.feature("equation", "equation", label=expression.canonical)
-    spoken = spoken_expression(expression.canonical)
-    # The audio wording keeps spaces around 加/减 and capitalises A–Z for TTS.
-    # On the plate both cost cells: spaces widen the line and the capital sign
-    # only signals "upper case", which carries no meaning in a textbook
-    # expression.  Try the compact Chinese form before falling back to the raw
-    # Latin expression.
-    compact = spoken.replace(" ", "").lower()
-    equation_label = ""
-    for candidate in (f"y等于{spoken}", f"y等于{compact}", expression.canonical):
-        if tactile_braille.safe_text(candidate) and tactile_braille.width(candidate) <= width - 2 * margin:
-            equation_label = candidate
-            break
+    raw = f"y={expression.canonical.lower().replace('**', '^')}"
+    equation_label = "".join(character for character in raw.upper() if character in _ALLOWED)
     if equation_label:
-        equation_width = tactile_braille.width(equation_label)
-        builder.braille(equation, (width - equation_width) / 2.0, margin + 10.5, equation_label)
+        equation_height = 5.0
+        available = width - 2 * margin
+        if font.text_width(equation_label, equation_height) > available:
+            equation_height = max(3.5, equation_height * available / font.text_width(equation_label, equation_height))
+        if font.text_width(equation_label, equation_height) <= available:
+            builder.text(
+                equation,
+                (width - font.text_width(equation_label, equation_height)) / 2.0,
+                margin + 10.0,
+                equation_label,
+                equation_height,
+            )
 
     plot_left = margin + 11.0
     plot_right = width - margin - 3.0
@@ -670,7 +694,6 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
         grid_step = _nice_step(max(x_span, y_span))
 
     key_points = expression.key_points(x_min, x_max, y_min, y_max, max_points=6)
-    numbers = _key_point_numbers(key_points)
     key_x_canvas = [origin_x + point.x * scale for point in key_points]
     key_y_canvas = [origin_y - point.y * scale for point in key_points]
 
@@ -771,17 +794,19 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
         builder.warnings.append("表达式在当前窗口内没有可见曲线，请扩大定义域或值域。")
     obstacles.append(curve)
 
-    legend_parts: list[str] = []
-    for order, (point, number) in enumerate(zip(key_points, numbers), start=1):
+    for order, point in enumerate(key_points, start=1):
         x_canvas, y_canvas = to_canvas(point.x, point.y)
         feature_id = _point_element_id(diagram, point.x, point.y, f"kp_{order}")
+        # Keep each tactile name to two syllables.  The braille line sits
+        # under the printed coordinate, and a four-character name (80 mm)
+        # cannot fit beside the curve without breaking the ink clearance.
         point_name = {
             "root": "零点",
-            "minimum": "最低点",
-            "maximum": "最高点",
-            "y_intercept": "纵轴交点",
-        }.get(point.kind, "关键点")
-        point_feature = builder.feature(feature_id, "point", f"{number} {point_name}", semantic_id=feature_id, index=order)
+            "minimum": "最低",
+            "maximum": "最高",
+            "y_intercept": "纵轴",
+        }.get(point.kind, "关键")
+        point_feature = builder.feature(feature_id, "point", point_name, semantic_id=feature_id, index=order)
         builder.circle(point_feature, x_canvas, y_canvas, 3.0)
         obstacles.append(point_feature)
         if point.kind == "root":
@@ -798,10 +823,14 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
             preferred = (1.0, -0.4)
         else:
             preferred = (1.0, -0.6)
-        placed = _place_label(
+        # Coordinates are mathematics, so they stay in standard raised glyphs.
+        # The point name is Chinese prose and therefore travels in braille
+        # underneath the coordinate.
+        coordinate = f"({_format_number(point.x)},{_format_number(point.y)})"
+        _place_label(
             builder,
             f"label_{feature_id}",
-            number,
+            coordinate,
             (x_canvas, y_canvas),
             obstacles,
             reserved,
@@ -809,15 +838,13 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
             semantic_id=feature_id,
             index=order,
             preferred=preferred,
-            braille_text=number,
+            braille_text=point_name,
         )
-        if placed is not None:
-            legend_parts.append(f"{number}{point_name}")
         builder.trace.append(
             {
                 "stage": "layout",
                 "action": "key_point",
-                "decision": f"{number}: ({point.x:.3f}, {point.y:.3f}) {point.kind}",
+                "decision": f"({point.x:.3f}, {point.y:.3f}) {point.kind}",
                 "reason": "Computed from the expression by sign change and derivative tests, then filtered to the visible window.",
             }
         )
@@ -923,16 +950,13 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
         builder.features.remove(grid)
         builder.warnings.append("刻度线都与关键点重叠，已省略网格；关键点与坐标轴仍然可触摸。")
 
-    # Footer: Chinese braille only.  Three points per line keeps a six-point
-    # legend readable instead of truncating it at the plate edge.
-    footer_lines: list[str] = []
-    for index in range(0, len(legend_parts), 3):
-        footer_lines.append(" ".join(legend_parts[index:index + 3]))
-    footer_lines.append(
-        f"横轴{_format_number(x_min)}到{_format_number(x_max)} "
-        f"纵轴{_format_number(y_min)}到{_format_number(y_max)}"
+    # Footer: the window is mathematical notation, so print it with the
+    # standard glyphs.  Natural-language notes stay in Chinese braille.
+    window_text = (
+        f"x[{_format_number(x_min)},{_format_number(x_max)}] "
+        f"y[{_format_number(y_min)},{_format_number(y_max)}]"
     )
-    _footer(builder, width, height, margin, qr_rect, braille_lines=footer_lines[:3])
+    _footer(builder, width, height, margin, qr_rect, text_lines=[window_text])
 
     units = 1
     for candidate in (1, 2, 5, 10, 20, 50):
@@ -947,7 +971,10 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
     builder.line(scale_feature, ((bar_x, bar_y), (bar_x + bar_length, bar_y)), 1.6)
     builder.line(scale_feature, ((bar_x, bar_y - 2.0), (bar_x, bar_y + 1.0)), 1.2)
     builder.line(scale_feature, ((bar_x + bar_length, bar_y - 2.0), (bar_x + bar_length, bar_y + 1.0)), 1.2)
-    unit_text = f"{units}单位"
+    # Keep numerals out of braille: a Chinese word for the count reads the
+    # same way a textbook caption would.
+    cn_units = {1: "一", 2: "二", 5: "五", 10: "十", 20: "二十", 50: "五十"}
+    unit_text = f"{cn_units.get(units, str(units))}单位"
     if tactile_braille.safe_text(unit_text):
         builder.braille(scale_feature, bar_x + bar_length + 3.5, bar_y, unit_text)
 
@@ -1370,8 +1397,8 @@ def build_robot_layout(diagram: Diagram) -> LayoutResult:
         qr_rect,
         braille_lines=[
             "侧视图",
-            f"0基座 关节1到{spec.dof}",
-            f"连杆1到{spec.dof} {subtitle_zh}",
+            f"零基座 关节一到{_cn_count(spec.dof)}",
+            f"连杆一到{_cn_count(spec.dof)} {subtitle_zh}",
         ],
     )
 

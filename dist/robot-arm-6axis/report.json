@@ -11,16 +11,16 @@
     "semantic_features": 8,
     "label_features": 8,
     "min_line_width_mm": 1.0,
-    "min_label_spacing_mm": 5.4,
-    "min_label_clearance_mm": 3.509,
+    "min_label_spacing_mm": 10.229,
+    "min_label_clearance_mm": null,
     "layout_bounds_mm": [
       7.4,
-      11.4,
+      10.0,
       135.1,
-      193.1
+      194.5
     ],
     "mesh": {
-      "triangles": 18756,
+      "triangles": 13956,
       "bounds_mm": [
         0.0,
         0.0,
@@ -34,7 +34,7 @@
         210.0,
         3.8
       ],
-      "volume_mm3": 96938.755,
+      "volume_mm3": 96422.083,
       "watertight": true,
       "open_edges": 0,
       "nonmanifold_edges": 0

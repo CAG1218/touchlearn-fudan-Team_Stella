@@ -199,8 +199,9 @@ class _Builder:
         feature.primitives.append(Primitive("braille", ((x, y),), text=text))
 
     def index_label(self, feature: Feature, x: float, y: float, index: int) -> None:
+        # A number is standard print, not braille.  Duplicating it in dots
+        # makes the plate look like a coordinate braille cell.
         self.text(feature, x, y, str(index), 6.0)
-        self.braille(feature, x, y + 7.5, str(index))
 
     def text_with_braille(self, feature: Feature, x: float, y: float, text: str) -> None:
         self.text(feature, x, y, text, 6.0)

@@ -1,15 +1,14 @@
-# 把 v0.3.7 更新到阿里云 ECS
+# 把 v0.3.8 更新到阿里云 ECS
 
 目标服务器：`47.103.61.115`（上海，2 vCPU / 4 GiB + 2 GiB swap，IP 模式，端口 8765）
 
 这次更新包含：
 
-- 触觉板去除全部凸起英文，标题、解析式、轴名、页脚统一为中文盲文，凸起字形只保留阿拉伯数字与数学符号
-
-- 盲符方距增加 0.5 mm：中文 6.4 → 6.9 mm，UEB 6.0 → 6.5 mm，解决 FDM 打印时相邻盲符糊在一起的问题
-- 中文方距 6.9 mm 比二手参考上限 6.8 mm 多 0.1 mm，属于打印补偿，合规报告会单列一条 DEVIATION，不冒充标准符合性结论
-- 中文盲文（GF 0019-2018）覆盖平面板、3D 模型表面与底座图例；数字和拉丁字母仍用 UEB
-- 板材规格可选 A5 / B5 / 16K / A4 / B4 / A3，默认按盲文宽度和行数自动选型
+- 修正触觉板的文字分工：标题、简介、部件名、页脚等中文说明用中文盲文（GF 0019-2018）；解析式、坐标（含括号和数字）、轴范围、边长等数学内容一律使用标准凸起字形，不再转成盲文点
+- 场景模板中的数字标记同步改为标准凸起字形，凸起面不再出现拉丁字母
+- 函数关键点标签按“标准坐标 + 中文盲文名”重新排布，消除与曲线、坐标轴的 0 mm 净空告警
+- 保留 v0.3.7 的盲符方距补偿：中文 6.9 mm，中文方距比二手参考上限 6.8 mm 多 0.1 mm，属于打印补偿，合规报告会单列一条 DEVIATION，不冒充标准符合性结论
+- 保留 v0.3.7 的板材规格选择：A5 / B5 / 16K / A4 / B4 / A3，默认按盲文宽度和行数自动选型
 
 v0.3.5 包含：服务端 edge-tts 语音合成、音频 HTTP Range、中文盲文标题、水密与体积单趟计算、TokenHub 3D 接入。
 
@@ -17,14 +16,14 @@ v0.3.5 包含：服务端 edge-tts 语音合成、音频 HTTP Range、中文盲�
 
 ## 0. 一键部署（推荐）
 
-本机安装 Git for Windows 后，直接双击 `release/deploy-remote-0.3.7.cmd`，按提示输入两次服务器 root 密码即可。脚本会依次完成上传、备份 `deploy/.env` 与 `touchlearn-outputs` 数据卷、解压、重建容器和健康检查。下面的手动步骤仅用于脚本失败时排查。
+本机安装 Git for Windows 后，直接双击 `release/deploy-remote-0.3.8.cmd`，按提示输入两次服务器 root 密码即可。脚本会依次完成上传、备份 `deploy/.env` 与 `touchlearn-outputs` 数据卷、解压、重建容器和健康检查。下面的手动步骤仅用于脚本失败时排查。
 
 ## 1. 本机上传发布包
 
-发布包已经生成：`touchlearn-0.3.7.tar.gz`。
+发布包已经生成：`touchlearn-0.3.8.tar.gz`。
 
 ```bash
-scp touchlearn-0.3.7.tar.gz root@47.103.61.115:/root/
+scp touchlearn-0.3.8.tar.gz root@47.103.61.115:/root/
 ```
 
 如果本机没有配置 SSH 密钥，`scp` 会提示输入服务器密码。
@@ -63,14 +62,14 @@ docker run --rm \
 
 ```bash
 cd "$APP_DIR"
-tar -xzf /root/touchlearn-0.3.7.tar.gz -C "$APP_DIR"
+tar -xzf /root/touchlearn-0.3.8.tar.gz -C "$APP_DIR"
 ```
 
 解压后确认版本：
 
 ```bash
 grep '__version__' src/touchlearn/__init__.py
-# 应输出 __version__ = "0.3.7"
+# 应输出 __version__ = "0.3.8"
 ```
 
 ## 5. 修改 `deploy/.env`
@@ -145,7 +144,7 @@ curl -s http://127.0.0.1:8765/api/health | python3 -m json.tool
 ```json
 {
   "ok": true,
-  "version": "0.3.7",
+  "version": "0.3.8",
   "public_base_url": "http://47.103.61.115:8765"
 }
 ```

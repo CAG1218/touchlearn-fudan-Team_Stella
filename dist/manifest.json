@@ -32,15 +32,15 @@
           210.0,
           3.8
         ],
-        "triangles": 18756,
-        "volume_mm3": 96938.755,
+        "triangles": 13956,
+        "volume_mm3": 96422.083,
         "watertight": true
       },
       "printability": "PASS",
       "stl": {
-        "bytes": 937884,
-        "sha256": "cb15ed25c2f3847c3ae7c316ea452d16f19de54f16d9c84c7e45b6b5111323d6",
-        "triangles": 18756
+        "bytes": 697884,
+        "sha256": "580bcf71f1e303cd404c16e61050c11a5ef6fe0562eaf199339c29e101a5034d",
+        "triangles": 13956
       },
       "title": "Six-Axis Robot Arm",
       "title_zh": "六轴机械臂关节与连杆图"
@@ -73,19 +73,19 @@
           210.0,
           3.8
         ],
-        "triangles": 20652,
-        "volume_mm3": 95555.098,
+        "triangles": 21240,
+        "volume_mm3": 94964.551,
         "watertight": true
       },
       "printability": "PASS",
       "stl": {
-        "bytes": 1032684,
-        "sha256": "c91300cf73cca9aad479a5cc802a667999bf139f5eae4ed905212042a2783863",
-        "triangles": 20652
+        "bytes": 1062084,
+        "sha256": "f4c0567b13671874a8c96a2f824159e3ae2ffed808db98a2aa2de6d5dbf348bb",
+        "triangles": 21240
       },
       "title": "Quadratic Function",
       "title_zh": "二次函数 y=x²-2x-3 图像"
     }
   ],
-  "tool": "touchlearn 0.3.5"
+  "tool": "touchlearn 0.3.8"
 }

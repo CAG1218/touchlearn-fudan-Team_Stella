@@ -372,8 +372,8 @@ class AgentPipelineTests(unittest.TestCase):
         self.assertEqual(kwargs["model"], "deepseek/deepseek-flash")
         self.assertEqual(kwargs["effort"], "medium")
 
-    def test_plates_raise_no_latin_letters(self) -> None:
-        """Only Arabic digits and Chinese braille may be raised on a plate."""
+    def test_plates_use_braille_only_for_chinese_text(self) -> None:
+        """Chinese prose is braille; mathematics keeps standard raised glyphs."""
         cases = [
             {"subject": "function", "expression": "x^2-2x-3", "paper": "A5"},
             {"subject": "scene", "template": "triangle", "paper": "A5"},
@@ -398,11 +398,30 @@ class AgentPipelineTests(unittest.TestCase):
                     for primitive in feature.primitives
                     if primitive.kind == "text"
                 ]
-                self.assertTrue(raised, "plate should still carry numeric markers")
-                for value in raised:
-                    self.assertIsNone(
-                        re.search(r"[A-Za-z]", value),
-                        msg=f"raised outline text contains Latin letters: {value!r}",
+                braille_texts = [
+                    primitive.text
+                    for feature in layout.features
+                    for primitive in feature.primitives
+                    if primitive.kind == "braille"
+                ]
+                self.assertTrue(raised, "plate should carry standard raised notation")
+                self.assertTrue(braille_texts, "plate should carry Chinese braille")
+                for value in braille_texts:
+                    self.assertRegex(
+                        value,
+                        r"[\u4e00-\u9fff]",
+                        msg=f"braille is reserved for Chinese text, found {value!r}",
+                    )
+                if payload["subject"] == "function":
+                    # The expression and each key-point coordinate stay in
+                    # standard print instead of turning into dot patterns.
+                    self.assertTrue(
+                        any(value.startswith("Y=") for value in raised),
+                        msg=f"equation should be standard raised text: {raised!r}",
+                    )
+                    self.assertTrue(
+                        any(value.startswith("(") and value.endswith(")") for value in raised),
+                        msg=f"key points should carry standard coordinates: {raised!r}",
                     )
 
 

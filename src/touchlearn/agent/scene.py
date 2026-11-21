@@ -304,7 +304,16 @@ def _normalize_primitive(raw: Any, warnings: list[str]) -> dict[str, Any] | None
         text = _ascii(raw_text, 22)
         if not text:
             return None
-        return {"type": "braille", "x": position[0], "y": position[1], "text": text}
+        if any(character.isalpha() for character in text):
+            # Latin cells cannot be read by touch, and braille is reserved
+            # for Chinese prose.  Drop the label rather than raise an
+            # unreadable word.
+            warnings.append("盲文图元只能承载中文，拉丁字母已省略。")
+            return None
+        # Digits and arithmetic signs are mathematics.  They stay in the
+        # standard raised glyphs a textbook uses, so a coordinate or a side
+        # length is never turned into a braille dot pattern.
+        return {"type": "text", "x": position[0], "y": position[1], "text": text, "height": 4.5}
 
     return None
 
@@ -1001,10 +1010,12 @@ def build_scene_layout(diagram: Diagram) -> LayoutResult:
     for index, block, feature in block_features:
         # Only the Arabic index is raised; the block name travels in Chinese
         # braille, because a Latin word has no tactile letter shape.
+        # The block number is standard raised print; the Chinese name is
+        # braille.  Duplicating the digit in braille would add dots the reader
+        # cannot compare with the printed coordinate system.
         label_text = str(index)
         braille_label = _plate_text(block.get("label_zh") or block.get("label") or "", 24)
         braille_label = _roadmap_safe(braille_label, warnings)
-        braille_label = f"{index} {braille_label}".strip()
         anchor = block.get("marker")
         if anchor is None:
             box = feature.bbox()

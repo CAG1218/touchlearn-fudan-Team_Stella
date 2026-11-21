@@ -39,7 +39,7 @@ def dot_centers(text: str, x: float, y: float) -> list[tuple[float, float]]:
 
 def width(text: str) -> float:
     if contains_chinese(text):
-        return cnbraille.width(text, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM)
+        return cnbraille.width(text)
     return braille.width(text)
 
 

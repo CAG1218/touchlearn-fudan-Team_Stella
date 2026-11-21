@@ -15,7 +15,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
-from .. import braille
+from .. import braille, cnbraille, tactile_braille
 from ..geometry import Mesh, feature_polygons
 from ..layout import LayoutResult, Primitive
 from ..paper import paper_name
@@ -520,6 +520,15 @@ def check_plate(
     min_width_seen = min((value for _, value in widths), default=float("inf"))
     min_point = min((value for _, value in point_diameters), default=float("inf"))
 
+    # Chinese plates route their labels through cnbraille, whose dots are a
+    # little larger than the UEB cells.  Report the geometry that is actually
+    # printed instead of the ASCII constant.
+    has_cn_braille = any(
+        primitive.kind == "braille" and tactile_braille.contains_chinese(primitive.text)
+        for feature in layout.features
+        for primitive in feature.primitives
+    )
+
     if min_width_seen >= min_width - 1e-6:
         report.checks.append(Check("tactile.line_width", STATUS_PASS, f"{min_width_seen:.2f} mm", "所有线宽/笔画宽度达到工程下限"))
     else:
@@ -544,27 +553,64 @@ def check_plate(
             )
         )
 
-    if 1.0 - 1e-6 <= braille.DOT_DIAMETER_MM <= 1.7 + 1e-6:
-        report.checks.append(Check("braille.dot_diameter", STATUS_PASS, f"{braille.DOT_DIAMETER_MM:.2f} mm", "点径落在 1.0–1.7 mm"))
+    dot_diameter = cnbraille.DOT_DIAMETER_MM if has_cn_braille else braille.DOT_DIAMETER_MM
+    if 1.0 - 1e-6 <= dot_diameter <= 1.7 + 1e-6:
+        report.checks.append(
+            Check(
+                "braille.dot_diameter",
+                STATUS_PASS,
+                f"{dot_diameter:.2f} mm",
+                "中文盲文点径 1.6 mm，落在 1.0–1.7 mm" if has_cn_braille else "点径落在 1.0–1.7 mm",
+            )
+        )
     else:
-        report.checks.append(Check("braille.dot_diameter", STATUS_FAIL, f"{braille.DOT_DIAMETER_MM:.2f} mm", "点径超出范围"))
+        report.checks.append(Check("braille.dot_diameter", STATUS_FAIL, f"{dot_diameter:.2f} mm", "点径超出范围"))
 
     if 0.3 - 1e-6 <= braille_height <= 0.7 + 1e-6:
         report.checks.append(Check("braille.dot_height", STATUS_PASS, f"{braille_height:.2f} mm", "点高落在 0.3–0.7 mm"))
     else:
         report.checks.append(Check("braille.dot_height", STATUS_FAIL, f"{braille_height:.2f} mm", "点高超出范围"))
 
-    if 2.2 - 1e-6 <= braille.DOT_SPACING_MM <= 2.8 + 1e-6:
+    dot_spacing = cnbraille.DOT_SPACING_MM if has_cn_braille else braille.DOT_SPACING_MM
+    if 2.2 - 1e-6 <= dot_spacing <= 2.8 + 1e-6:
         report.checks.append(
             Check(
                 "braille.dot_spacing",
                 STATUS_REVIEW,
-                f"{braille.DOT_SPACING_MM:.2f} mm",
-                "点距落在历史参考范围；GB/T 15720-2008 已废止，GB/T 39758 的对应表需购标核对。",
+                f"{dot_spacing:.2f} mm",
+                "中文盲文点距 2.6 mm，落在历史参考范围；GB/T 15720-2008 已废止，GB/T 39758 的对应表需购标核对。"
+                if has_cn_braille
+                else "点距落在历史参考范围；GB/T 15720-2008 已废止，GB/T 39758 的对应表需购标核对。",
             )
         )
     else:
-        report.checks.append(Check("braille.dot_spacing", STATUS_FAIL, f"{braille.DOT_SPACING_MM:.2f} mm", "点距超出历史参考范围"))
+        report.checks.append(Check("braille.dot_spacing", STATUS_FAIL, f"{dot_spacing:.2f} mm", "点距超出历史参考范围"))
+
+    # Cell pitch is not the same as dot spacing.  The 0.5 mm print-clearance
+    # bump keeps neighbouring cells from fusing on an FDM printer; the Chinese
+    # pitch lands 0.1 mm above the secondary reference ceiling, so it must be
+    # reported as a deviation rather than a pass.
+    cell_pitch = cnbraille.CELL_SPACING_MM if has_cn_braille else braille.CELL_SPACING_MM
+    cell_width = cnbraille.CELL_WIDTH_MM if has_cn_braille else braille.CELL_WIDTH_MM
+    cell_gap = cell_pitch - cell_width
+    if has_cn_braille:
+        report.checks.append(
+            Check(
+                "braille.cell_pitch",
+                STATUS_DEVIATION,
+                f"{cell_pitch:.2f} mm",
+                f"中文盲符方距 {cell_pitch:.2f} mm（净空 {cell_gap:.2f} mm）；比二手参考上限 6.8 mm 多 0.1 mm，是为防止 FDM 相邻盲符粘连做的打印补偿，不冒充标准符合性结论。",
+            )
+        )
+    else:
+        report.checks.append(
+            Check(
+                "braille.cell_pitch",
+                STATUS_PASS,
+                f"{cell_pitch:.2f} mm",
+                f"UEB 盲符方距 {cell_pitch:.2f} mm（净空 {cell_gap:.2f} mm）；含 0.5 mm 打印补偿，仍在 6.8 mm 上限内。",
+            )
+        )
 
     labels = [feature for feature in layout.features if feature.kind == "label"]
     non_labels = [feature for feature in layout.features if feature.kind != "label" and feature.kind != "grid"]
@@ -653,8 +699,10 @@ def check_plate(
         Check(
             "encoding.chinese_braille",
             STATUS_REVIEW,
-            "UEB + 阿拉伯数字",
-            "当前板面使用 UEB 英文和阿拉伯数字；中文盲文标注需接入 GF 0019-2018 编码表、数学符号需接入 GB/T 18028-2010 后再宣称完全符合。",
+            "GF 0019-2018（中文）+ UEB（数字/英文）" if has_cn_braille else "UEB + 阿拉伯数字",
+            "中文标注已按 GF 0019-2018 编码声母、韵母、声调并按词连写；数字和拉丁字母仍用 UEB，数学符号尚未接入 GB/T 18028-2010。交付前建议由盲校教师复核多音字与分词。"
+            if has_cn_braille
+            else "当前板面没有中文盲文标注，使用 UEB 英文和阿拉伯数字；需要中文刻字时请启用中文标注或换用更大的板材。",
         )
     )
     report.checks.append(

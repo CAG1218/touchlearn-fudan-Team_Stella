@@ -8,6 +8,7 @@ from tests import EXAMPLES  # noqa: F401  (ensures src is on sys.path)
 from touchlearn.agent.llm import LLMResult
 from touchlearn.agent.scene import (
     SceneError,
+    fit_scene_page,
     generate_scene,
     match_template,
     normalize_roadmap,
@@ -31,7 +32,9 @@ CONSTRAINTS = {
 }
 
 
-def diagram_for(scene: dict, paper: str = "A5") -> dict:
+def diagram_for(scene: dict, paper: str | None = None) -> dict:
+    # Chinese braille labels are taller than the printed line, so the product
+    # picks the smallest sheet that still holds them instead of pinning A5.
     elements = []
     relations = []
     previous = None
@@ -50,20 +53,27 @@ def diagram_for(scene: dict, paper: str = "A5") -> dict:
         if previous is not None:
             relations.append({"from": previous, "to": element_id, "kind": "reading_order", "order": index})
         previous = element_id
-    return {
-        "schema_version": "0.2.0",
-        "id": "scene-test",
-        "title": scene["title"],
-        "title_zh": scene["title_zh"],
-        "domain": "scene",
-        "canvas": canvas_for(paper),
-        "source": {"kind": "scene", "ref": "test"},
-        "elements": elements,
-        "relations": relations,
-        "layout": {"engine": "scene", "options": {"scene": scene}},
-        "constraints": CONSTRAINTS,
-        "audio": scene_narration(scene),
-    }
+
+    def payload_for(size: str) -> dict:
+        return {
+            "schema_version": "0.2.0",
+            "id": "scene-test",
+            "title": scene["title"],
+            "title_zh": scene["title_zh"],
+            "domain": "scene",
+            "canvas": canvas_for(size),
+            "source": {"kind": "scene", "ref": "test"},
+            "elements": elements,
+            "relations": relations,
+            "layout": {"engine": "scene", "options": {"scene": scene}},
+            "constraints": CONSTRAINTS,
+            "audio": scene_narration(scene),
+        }
+
+    if paper:
+        return payload_for(paper)
+    _, payload, _ = fit_scene_page(scene, payload_for)
+    return payload
 
 
 class SceneTemplateTests(unittest.TestCase):
@@ -82,6 +92,27 @@ class SceneTemplateTests(unittest.TestCase):
                 self.assertTrue(mesh.stats()["watertight"])
                 # 每个图块一个编号标签，另加一条副标题标签。
                 self.assertEqual(len(layout.labels()), len(entry["scene"]["blocks"]) + 1)
+
+    def test_auto_fit_removes_crowded_labels(self) -> None:
+        for entry in scene_templates():
+            with self.subTest(template=entry["id"]):
+                paper, payload, layout = fit_scene_page(entry["scene"], lambda size: diagram_for(entry["scene"], size))
+                self.assertIn(paper, {"A5", "B5", "16K", "A4", "B4", "A3"})
+                self.assertEqual(payload["canvas"]["size"], paper)
+                crowded = [item for item in layout.warnings if "could not keep" in item]
+                self.assertEqual(crowded, [])
+
+    def test_explicit_paper_is_never_overridden(self) -> None:
+        entry = next(item for item in scene_templates() if item["id"] == "flowchart")
+        for requested in ("A5", "A3"):
+            with self.subTest(paper=requested):
+                paper, payload, _ = fit_scene_page(
+                    entry["scene"],
+                    lambda size: diagram_for(entry["scene"], size),
+                    requested=requested,
+                )
+                self.assertEqual(paper, requested)
+                self.assertEqual(payload["canvas"]["size"], requested)
 
     def test_summary_and_narration_follow_reading_order(self) -> None:
         entry = next(item for item in scene_templates() if item["id"] == "circuit")

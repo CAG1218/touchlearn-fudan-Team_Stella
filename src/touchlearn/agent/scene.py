@@ -33,7 +33,7 @@ from ..layout import (
     text_width,
 )
 from ..model import Diagram
-from ..paper import paper_size
+from ..paper import PAPER_ORDER, choose_paper, paper_size, parse_paper
 from .circuit import (
     CircuitError,
     circuit_from_scene,
@@ -728,15 +728,96 @@ def scene_summary(scene: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def scene_paper(scene: dict[str, Any]) -> str:
+    """Smallest catalogue sheet that holds this scene's Chinese braille.
+
+    Every block label carries a braille line under the printed text, so a
+    template that fit A5 with Latin letters may need A4 once the labels are
+    encoded.  Width and row count are measured in millimetres; a character
+    count alone would under-estimate the taller label box.
+    """
+    blocks = scene.get("blocks") or []
+    labels = [str(scene.get("title_zh") or "")] + [
+        f"{index} {block.get('label_zh') or block.get('label') or ''}".strip()
+        for index, block in enumerate(blocks, start=1)
+    ]
+    widths: list[float] = []
+    rows = 0
+    for raw in labels:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        rows += 1
+        try:
+            widths.append(tactile_braille.width(text))
+        except Exception:  # a label the table cannot encode is reported later
+            continue
+    return choose_paper(
+        blocks=len(blocks),
+        primitives=sum(len(block.get("primitives") or []) for block in blocks),
+        chars=len(str(scene.get("title_zh") or "")) + sum(
+            len(str(block.get("note") or "")) for block in blocks
+        ),
+        braille_rows=rows,
+        braille_width_mm=max(widths) if widths else 0.0,
+    )
+
+
+def _next_paper(name: str) -> str:
+    try:
+        index = PAPER_ORDER.index(name)
+    except ValueError:
+        return ""
+    return PAPER_ORDER[index + 1] if index + 1 < len(PAPER_ORDER) else ""
+
+
+def fit_scene_page(
+    scene: dict[str, Any],
+    build_payload: Any,
+    *,
+    requested: str = "",
+    warnings: list[str] | None = None,
+) -> tuple[str, dict[str, Any], LayoutResult]:
+    """Lay the scene out, stepping up paper while braille labels collide.
+
+    ``build_payload(paper)`` returns a diagram payload for that sheet.  The
+    estimate from :func:`scene_paper` only measures ink; this loop is the
+    physical check, because a per-block braille label is taller than the
+    printed line and may force a crowded scene onto the next catalogue size.
+    An explicit user choice is never overridden.
+    """
+    from ..layout import build_layout
+    from ..model import diagram_from_dict
+
+    explicit = parse_paper(requested)
+    paper = explicit or scene_paper(scene)
+    while True:
+        payload = build_payload(paper)
+        layout = build_layout(diagram_from_dict(payload))
+        crowded = any(
+            item.startswith("label '") and "could not keep" in item
+            for item in layout.warnings
+        )
+        bigger = "" if explicit else _next_paper(paper)
+        if not crowded or not bigger:
+            return paper, payload, layout
+        if warnings is not None:
+            warnings.append(f"{paper} 上中文盲文标注无法保持 2 mm 净空，已自动改用 {bigger}。")
+        paper = bigger
+
+
 def content_box(width: float, height: float, margin: float) -> tuple[float, float, float, float]:
     """Content area for a plate of any catalogue size.
 
-    The title band (23 mm) and the footer/QR band (38 mm plus a 6 mm gutter)
-    are fixed physical sizes, so a larger sheet gives the drawing more room
-    instead of stretching the title.
+    The title band (28.5 mm, including the Chinese braille title and the
+    subtitle) and the footer/QR band (38 mm plus a 6 mm gutter) are fixed
+    physical sizes, so a larger sheet gives the drawing more room instead of
+    stretching the title.  The band leaves 2 mm between the subtitle's ink and
+    the top of the drawing, which is why it is not the bare 26 mm of the first
+    layout release.
     """
     left = margin + 2.0
-    top = 24.0
+    top = 28.5
     right = width - margin - 2.0
     bottom = height - 38.0 - 6.0
     if right - left < 40.0 or bottom - top < 40.0:
@@ -812,11 +893,28 @@ def build_scene_layout(diagram: Diagram) -> LayoutResult:
 
     title_feature = builder.feature("title", "title")
     title_text, title_height = _fit_text(scene["title"], width - 2 * margin - 4.0, 5.4, 4.2)
-    builder.text(title_feature, (width - text_width(title_text, title_height)) / 2.0, 8.5, title_text, title_height)
+    builder.text(title_feature, (width - text_width(title_text, title_height)) / 2.0, 5.0, title_text, title_height)
+
+    # Chinese braille is the primary title for a blind reader.  A title that
+    # does not fit on one standard-size line is kept on the English line only,
+    # because shrinking the dots would break the 1.6 mm standard.
+    title_zh = _roadmap_clean(scene.get("title_zh") or "触觉示意图", 10)
+    title_zh = _roadmap_safe(title_zh, warnings)
+    title_lines = _braille_lines(title_zh, width - 2 * margin, 10, warnings, max_lines=1)
+    if title_lines:
+        title_zh_feature = builder.feature("title_zh", "title_zh")
+        line = title_lines[0]
+        builder.braille(
+            title_zh_feature,
+            (width - tactile_braille.width(line)) / 2.0,
+            11.9,
+            line,
+        )
+
     if scene.get("subtitle"):
         subtitle_feature = builder.feature("subtitle", "label")
         subtitle_text, subtitle_height = _fit_text(scene["subtitle"], width - 2 * margin - 8.0, 3.4, 2.8)
-        builder.text(subtitle_feature, (width - text_width(subtitle_text, subtitle_height)) / 2.0, 17.4, subtitle_text, subtitle_height)
+        builder.text(subtitle_feature, (width - text_width(subtitle_text, subtitle_height)) / 2.0, 21.7, subtitle_text, subtitle_height)
 
     builder.trace.append(
         {
@@ -855,7 +953,7 @@ def build_scene_layout(diagram: Diagram) -> LayoutResult:
 
     # Labels are placed after every outline exists, so a label cannot land on
     # a later block.  The title band and the footer/QR band are reserved.
-    reserved = [(0.0, 0.0, width, 23.0), (0.0, height - 38.0, width, 38.0)]
+    reserved = [(0.0, 0.0, width, 28.5), (0.0, height - 38.0, width, 38.0)]
     for index, block, feature in block_features:
         label_text = f"{index} {block.get('label') or ''}".strip() if block.get("show_label", True) else str(index)
         anchor = block.get("marker")
@@ -876,6 +974,7 @@ def build_scene_layout(diagram: Diagram) -> LayoutResult:
             index=index,
             text_height=3.8,
             preferred=(1.0, -1.0),
+            braille_text=f"{index} {block.get('label_zh') or block.get('label') or ''}".strip(),
         )
 
     qr_rect = _qr_zone(builder, width, height, margin)

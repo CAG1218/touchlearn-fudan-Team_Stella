@@ -716,7 +716,7 @@ def _braille_on_plate(
     *,
     dot_height: float = BRAILLE_DOT_HEIGHT_MM,
 ) -> list[tuple[Vec3, float]]:
-    text_width = cnbraille.width(text, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM)
+    text_width = cnbraille.width(text)
     text_height = cnbraille.height()
     if text_width > width - 2.0:
         raise Model3DError(f"盲文 {text!r} 宽 {text_width:.1f} mm，放不进 {width:.1f} mm 的名牌。")
@@ -765,7 +765,7 @@ def _fit_text(text: str, max_width: float, *, max_chars: int = 4) -> str:
     value = _clean_text(text, max_chars=max_chars) or "模型"
     while len(value) > 1:
         try:
-            if cnbraille.width(value, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM) <= max_width:
+            if cnbraille.width(value) <= max_width:
                 break
         except cnbraille.BrailleError:
             pass
@@ -940,7 +940,7 @@ def _braille_on_flat(
     height: float,
 ) -> int:
     """Emboss braille directly on a flat face; dots protrude along ``w``."""
-    text_width = cnbraille.width(text, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM)
+    text_width = cnbraille.width(text)
     if text_width > width - 3.0 or cnbraille.height() > height - 1.2:
         raise Model3DError(f"盲文 {text!r} 放不进 {width:.1f}×{height:.1f} mm 的平面。")
     frame = Frame(origin=origin, u=_unit(u), v=_unit(v), w=_unit(w))
@@ -960,7 +960,7 @@ def _braille_on_cylinder_wall(
     max_arc_deg: float = 160.0,
 ) -> int:
     """Emboss braille around the outside of a cylinder or a tapered wall."""
-    text_width = cnbraille.width(text, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM)
+    text_width = cnbraille.width(text)
     text_height = cnbraille.height()
     if z1 - z0 < text_height + 1.0:
         raise Model3DError(f"盲文 {text!r} 放不进 {z1 - z0:.1f} mm 高的侧壁。")
@@ -994,7 +994,7 @@ def _braille_on_cylinder_wall(
 
 def _braille_on_sphere_cap(mesh: Mesh, centre: Vec3, radius: float, text: str) -> int:
     """Emboss braille on the top cap of a sphere, following its curvature."""
-    text_width = cnbraille.width(text, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM)
+    text_width = cnbraille.width(text)
     text_height = cnbraille.height()
     if max(text_width, text_height) > radius * 1.35:
         raise Model3DError(f"盲文 {text!r} 放不进半径 {radius:.1f} mm 的球冠。")
@@ -1045,7 +1045,7 @@ def _braille_on_profile_face(
     side: float = -1.0,
 ) -> int:
     """Emboss braille on a flat profile end cap, keeping every dot inside it."""
-    text_width = cnbraille.width(text, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM)
+    text_width = cnbraille.width(text)
     text_height = cnbraille.height()
     xs = [point[0] for point in points]
     zs = [point[1] for point in points]
@@ -1093,7 +1093,7 @@ def _legend_panel(
     widths = []
     for line in lines:
         try:
-            widths.append(cnbraille.width(line, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM))
+            widths.append(cnbraille.width(line))
         except cnbraille.BrailleError:
             widths.append(0.0)
     max_width = max(widths) if widths else 0.0
@@ -1183,7 +1183,7 @@ def _solar_system_mesh(spec: dict[str, Any]) -> Model3DResult:
     legend_angles: list[float] = []
     if planets:
         widths = [
-            cnbraille.width(str(planet.get("name_zh") or ""), syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM)
+            cnbraille.width(str(planet.get("name_zh") or ""))
             for planet in planets
         ]
         arcs = [math.degrees(width / base_radius) for width in widths]
@@ -1235,8 +1235,7 @@ def _solar_system_mesh(spec: dict[str, Any]) -> Model3DResult:
     plaque_left = -56.0
     plaque_front = tab_front + 4.0
     _box_xy(mesh, plaque_left, plaque_front, plaque_width, plaque_depth, top - 0.1, top + 2.2, chamfer=2.0)
-    _emboss_text_on_top(mesh, "SOLAR SYSTEM", plaque_left + 4.0, plaque_front + 5.0, top + 2.0, top + 2.9, 4.2)
-    _braille_on_top(mesh, "太阳系", plaque_left + 6.0, plaque_front + 11.0, top + 2.0, top + 2.75)
+    _braille_on_top(mesh, "太阳系", plaque_left + 6.0, plaque_front + 6.0, top + 2.0, top + 2.75)
 
     qr_size = 32.0
     qr_left = 24.0
@@ -1295,26 +1294,6 @@ def _solar_system_mesh(spec: dict[str, Any]) -> Model3DResult:
 # ---------------------------------------------------------------------------
 # Generic assembly compiler
 # ---------------------------------------------------------------------------
-
-
-def _emboss_fit(
-    mesh: Mesh,
-    text: str,
-    x: float,
-    y: float,
-    z0: float,
-    z1: float,
-    max_width: float,
-) -> None:
-    """Emboss a short Latin title, shrinking it until it fits the plaque."""
-    value = (text or "").strip()[:16]
-    if not value:
-        return
-    height = max(1.8, min(4.2, (max_width - 6.0) / (max(1, len(value)) * 0.62)))
-    try:
-        _emboss_text_on_top(mesh, value, x, y, z0, z1, height)
-    except Exception:
-        pass
 
 
 def _local_part_mesh(part: dict[str, Any], sx: float, sy: float, sz: float) -> tuple[Mesh, dict[str, Any] | None]:
@@ -1547,8 +1526,15 @@ def _assembly_mesh(spec: dict[str, Any], *, max_height_mm: float = 180.0) -> Mod
     title_width = max(28.0, min(72.0, qr_left - 4.0 - title_left))
     plaque_front = tab_front + 4.0
     _box_xy(mesh, title_left, plaque_front, title_width, 18.0, top - 0.1, top + 2.2, chamfer=2.0)
-    _emboss_fit(mesh, str(spec.get("title") or "MODEL"), title_left + 4.0, plaque_front + 5.0, top + 2.0, top + 2.9, title_width - 6.0)
-    _braille_on_top(mesh, title_text, title_left + 5.0, plaque_front + 10.5, top + 2.0, top + 2.75)
+    title_width_mm = cnbraille.width(title_text)
+    _braille_on_top(
+        mesh,
+        title_text,
+        title_left + max(3.0, (title_width - title_width_mm) / 2.0),
+        plaque_front + 5.5,
+        top + 2.0,
+        top + 2.75,
+    )
     _box_xy(mesh, qr_left, plaque_front, qr_size, qr_size, top - 0.1, top + 1.8, chamfer=2.0)
     _emboss_text_on_top(mesh, "QR", qr_left + qr_size * 0.22, plaque_front + qr_size * 0.40, top + 1.7, top + 2.4, 4.0)
 

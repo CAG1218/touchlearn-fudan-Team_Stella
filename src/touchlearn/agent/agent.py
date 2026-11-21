@@ -42,7 +42,7 @@ from ..model3d import (
     model3d_narration,
     plan_model3d,
 )
-from ..paper import canvas_for, choose_paper, paper_name, paper_size
+from ..paper import canvas_for, choose_paper, paper_name, paper_size, parse_paper
 from ..stl import sha256_file, write_binary_stl
 from ..svg import write_svg
 from . import __version__ as agent_version
@@ -84,6 +84,7 @@ from .reconstruct_print import compose_printable
 from .router import RouteDecision, classify_request, extract_function
 from .scene import (
     SceneError,
+    fit_scene_page,
     generate_scene,
     match_template,
     normalize_roadmap,
@@ -227,6 +228,32 @@ def _number(value: float) -> str:
     if abs(value - round(value)) < 1e-6:
         return str(int(round(value)))
     return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _braille_metrics(labels: Sequence[str]) -> dict[str, float]:
+    """Estimate the printed braille demand before the plate is built.
+
+    The paper chooser needs physical numbers, not a character count.  A label
+    that cannot be encoded is skipped here; the build will report it anyway.
+    """
+    widths: list[float] = []
+    rows = 0
+    chars = 0
+    for raw in labels:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        rows += 1
+        chars += len(text)
+        try:
+            widths.append(cnbraille.width(text))
+        except cnbraille.BrailleError:
+            continue
+    return {
+        "braille_chars": chars,
+        "braille_rows": rows,
+        "braille_width_mm": max(widths) if widths else 0.0,
+    }
 
 
 def _optional_float(value: Any, label: str) -> float | None:
@@ -811,6 +838,12 @@ class TouchLearnAgent:
             payload["scene"] = scene_document
             document_notes.append(f"已将 {scene_document_name} 识别为场景结构，按其中的图块与阅读顺序排版。")
 
+        # A paper choice may come from the composer chip or from the sentence
+        # itself ("换成 A4 纸").  Normalise it once so every build path sees the
+        # same catalogue name and an unknown value cannot reach the geometry.
+        paper_choice = parse_paper(payload.get("paper")) or parse_paper(text)
+        payload["paper"] = paper_choice
+
         # Carry the conversation forward.  The browser sends a compact list of
         # earlier user turns plus the previous draft id; the model sees the
         # cumulative request so "这是同一人物的三视图" is not a brand-new topic.
@@ -1215,6 +1248,8 @@ class TouchLearnAgent:
         if expression_text.lower().startswith("y="):
             expression_text = expression_text[2:].strip()
         fields: dict[str, Any] = {"expression": expression_text}
+        if payload.get("paper"):
+            fields["paper"] = payload["paper"]
         raw_text = str(payload.get("text") or payload.get("prompt") or payload.get("request") or "").strip()
         if not expression_text and raw_text:
             try:
@@ -1384,7 +1419,7 @@ class TouchLearnAgent:
             notes.append("y 范围根据当前 x 区间的曲线与关键点自动计算。")
         if clip["clipped"] and window_warnings:
             notes.append(f"注意：{window_warnings[-1]}")
-        questions.append("默认使用英文字母 + UEB 盲文、中文讲解音频；中文盲文模块尚未接入，报告会标记 NEEDS_REVIEW。")
+        questions.append("标题与中文标注使用中文盲文（GF 0019-2018），数字和拉丁字母使用 UEB，并附中文讲解音频；建议交付前由盲校教师复核多音字与分词。")
         if images:
             notes.append("图片已保存为来源证据；本次几何使用你确认的解析式。")
         return Draft(
@@ -1504,6 +1539,7 @@ class TouchLearnAgent:
             "description": str(payload.get("description") or "").strip(),
             "target_height_mm": float(payload.get("target_height_mm") or 135.0),
             "image_received": bool(images),
+            "paper": payload.get("paper") or "",
         }
         if vision_confidence:
             fields["vision"] = {
@@ -1673,7 +1709,7 @@ class TouchLearnAgent:
                         "target": "主体",
                         "pinyin": cnbraille.readings(label),
                         "cells": [list(cell) for cell in cnbraille.encode_text(label)],
-                        "width_mm": round(cnbraille.width(label, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM), 2),
+                        "width_mm": round(cnbraille.width(label), 2),
                     }
                 )
             except Exception:
@@ -1813,6 +1849,7 @@ class TouchLearnAgent:
             "companion_tactile": companion and plan.ok,
             "image_received": bool(images),
             "target_height_mm": generation_plan.height_mm if generation_plan else None,
+            "paper": payload.get("paper") or "",
         }
         if route:
             fields["routing"] = route
@@ -1945,7 +1982,7 @@ class TouchLearnAgent:
                         "target": item.get("target") or "",
                         "pinyin": cnbraille.readings(label),
                         "cells": [list(cell) for cell in cnbraille.encode_text(label)],
-                        "width_mm": round(cnbraille.width(label, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM), 2),
+                        "width_mm": round(cnbraille.width(label), 2),
                     }
                 )
             except Exception:
@@ -2069,6 +2106,7 @@ class TouchLearnAgent:
             "modes": list(generation_modes),
             "companion_tactile": "tactile" in generation_modes,
             "target_height_mm": plan.height_mm,
+            "paper": payload.get("paper") or "",
         }
         if route:
             fields["routing"] = route
@@ -2117,6 +2155,7 @@ class TouchLearnAgent:
             "source_text": text,
             "output_mode": "tactile_plate",
             "image_received": bool(images),
+            "paper": payload.get("paper") or "",
         }
         scene: dict[str, Any] | None = None
         circuit: dict[str, Any] | None = None
@@ -2665,6 +2704,7 @@ class TouchLearnAgent:
             blocks=len(elements),
             primitives=len(elements) + 12,
             chars=len(expression.canonical),
+            **_braille_metrics([title_zh] + [point.kind for point in points]),
         )
         canvas = canvas_for(paper)
         payload = {
@@ -2780,37 +2820,40 @@ class TouchLearnAgent:
             previous = element_id
 
         summary = scene_summary(scene)
-        paper = choose_paper(
-            # A roadmap asks for a larger sheet when its braille rows would sit
-            # closer than the readable minimum pitch; a user choice still wins.
-            requested=fields.get("paper") or scene.get("paper_hint") or "",
-            blocks=summary["block_count"],
-            primitives=summary["primitive_count"],
-            chars=len(str(scene.get("title_zh") or "")) + sum(len(str(block.get("note") or "")) for block in scene["blocks"]),
-        )
-        canvas = canvas_for(paper)
+        # A user choice wins.  Otherwise scene_paper estimates the sheet from
+        # braille ink and fit_scene_page steps up if the physical labels still
+        # collide; only the cheap layout is rebuilt here, not the mesh.
+        requested_paper = str(fields.get("paper") or scene.get("paper_hint") or "").strip()
         title = scene["title"]
         title_zh = scene.get("title_zh") or title
-        subtitle = scene.get("subtitle") or f"{paper} TACTILE SCENE / {len(scene['blocks'])} BLOCKS"
         audio = scene_narration(scene)
-        payload = {
-            "schema_version": "0.2.0",
-            "id": f"scene-{_slug(str(fields.get('template') or title), 'diagram')}",
-            "title": title,
-            "title_zh": title_zh,
-            "domain": "scene",
-            "canvas": canvas,
-            "source": {"kind": "scene", "ref": str(fields.get("source_text") or fields.get("template") or "user request")[:200]},
-            "elements": elements,
-            "relations": relations,
-            "layout": {"engine": "scene", "options": {"scene": scene}},
-            "constraints": DEFAULT_CONSTRAINTS,
-            "audio": audio,
-        }
+
+        def _scene_payload(paper: str) -> dict[str, Any]:
+            return {
+                "schema_version": "0.2.0",
+                "id": f"scene-{_slug(str(fields.get('template') or title), 'diagram')}",
+                "title": title,
+                "title_zh": title_zh,
+                "domain": "scene",
+                "canvas": canvas_for(paper),
+                "source": {"kind": "scene", "ref": str(fields.get("source_text") or fields.get("template") or "user request")[:200]},
+                "elements": elements,
+                "relations": relations,
+                "layout": {"engine": "scene", "options": {"scene": scene}},
+                "constraints": DEFAULT_CONSTRAINTS,
+                "audio": audio,
+            }
+
+        paper, payload, layout = fit_scene_page(
+            scene,
+            _scene_payload,
+            requested=requested_paper,
+            warnings=warnings,
+        )
+        canvas = payload["canvas"]
+        subtitle = scene.get("subtitle") or f"{paper} TACTILE SCENE / {len(scene['blocks'])} BLOCKS"
         _write_json(job_dir / f"{prefix}diagram.json", payload)
         progress(28, "排版场景图块")
-        diagram = diagram_from_dict(payload)
-        layout = build_layout(diagram)
         progress(45, "生成封闭网格")
         mesh = build_mesh(layout)
         write_binary_stl(mesh, job_dir / f"{prefix}model.stl")
@@ -2897,6 +2940,7 @@ class TouchLearnAgent:
             blocks=len(elements),
             primitives=len(elements) * 2 + 10,
             chars=len(str(fields.get("description") or "")),
+            **_braille_metrics([f"{spec.dof}轴机械臂", "基座", "关节", "连杆", "夹爪"]),
         )
         canvas = canvas_for(paper)
         payload = {
@@ -2951,7 +2995,14 @@ class TouchLearnAgent:
         mesh_preview_svg(result.mesh, job_dir / "preview.svg", title=f"{spec.dof} AXIS ROBOT ARM", subtitle="VOLUMETRIC MODEL / PEDESTAL + QR PAD")
         _write_json(job_dir / "decision_trace.json", [{"stage": "volumetric", "action": "build_robot_volume", "decision": result.meta}])
         report = check_volumetric(result.mesh, qr_area_mm=34.0)
-        report.checks.append(Check("encoding.chinese_braille", STATUS_REVIEW, "UEB + Arabic numerals", "底座铭牌使用 UEB 英文；中文盲文模块尚未接入。"))
+        report.checks.append(
+            Check(
+                "encoding.chinese_braille",
+                STATUS_REVIEW,
+                "GF 0019-2018 (Chinese) + UEB (digits/Latin)",
+                "中文标题、底座图例和部件表面盲文按 GF 0019-2018 编码并按词连写；盲符方距 6.9 mm，比二手参考上限多 0.1 mm，是 FDM 防粘连补偿。数字与拉丁字母仍用 UEB。交付前建议由盲校教师复核多音字与分词。",
+            )
+        )
         size = result.meta["size_mm"]
         audio = robot_volume_narration(spec, size)
         return [], {
@@ -3130,6 +3181,10 @@ class TouchLearnAgent:
                 blocks=len(scene.get("blocks") or []),
                 primitives=sum(len(block.get("primitives") or []) for block in scene.get("blocks") or []),
                 chars=sum(len(str(block.get("label") or "")) + len(str(block.get("label_zh") or "")) for block in scene.get("blocks") or []),
+                **_braille_metrics(
+                    [str(scene.get("title_zh") or "")]
+                    + [str(block.get("label_zh") or "") for block in scene.get("blocks") or []]
+                ),
             )
 
             def companion_progress(value: int, message: str) -> None:
@@ -3726,6 +3781,10 @@ class TouchLearnAgent:
                 blocks=len(scene.get("blocks") or []),
                 primitives=sum(len(block.get("primitives") or []) for block in scene.get("blocks") or []),
                 chars=sum(len(str(block.get("label") or "")) + len(str(block.get("label_zh") or "")) for block in scene.get("blocks") or []),
+                **_braille_metrics(
+                    [str(scene.get("title_zh") or "")]
+                    + [str(block.get("label_zh") or "") for block in scene.get("blocks") or []]
+                ),
             )
 
             def companion_progress(value: int, message: str) -> None:

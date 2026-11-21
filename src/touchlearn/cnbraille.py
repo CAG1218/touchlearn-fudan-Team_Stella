@@ -8,8 +8,11 @@ a character outside the bundled GB2312 pinyin table raises
 :class:`BrailleError` instead of silently producing an unrelated syllable.
 
 The bundled table contains the most common reading of each GB2312 character.
-Polyphonic characters in a label should be overridden by the caller when the
-context requires another reading.
+That default is wrong for some domain words (对称轴 was read as ``cheng1``,
+夹爪 as ``zhao3``), so labels are segmented against a small phrase lexicon
+before the per-character table is used.  The same segmentation drives
+GF 0019 分词连写: syllables inside one word are written without extra gaps,
+while two adjacent words are separated by one blank cell.
 """
 
 from __future__ import annotations
@@ -165,10 +168,78 @@ INITIAL_ORDER = sorted(INITIALS, key=len, reverse=True)
 
 DOT_DIAMETER_MM = 1.6
 DOT_SPACING_MM = 2.6
-CELL_SPACING_MM = 6.4
+# 6.4 mm pitch leaves a 2.2 mm clear gap between cells.  FDM printers with a
+# 0.4 mm nozzle can bridge that gap at 0.2 mm layers and merge neighbouring
+# cells, so the pitch carries 0.5 mm of extra clearance.  Dot spacing inside a
+# cell is unchanged because it is the parameter the standards actually cover.
+CELL_SPACING_MM = 6.9
 CELL_WIDTH_MM = DOT_SPACING_MM + DOT_DIAMETER_MM
 CELL_HEIGHT_MM = 5.2 + DOT_DIAMETER_MM
-SYLLABLE_GAP_MM = 1.8
+# Kept for callers that still pass it explicitly.  GF 0019 uses a blank cell
+# between words, so no millimetre gap is added by default.
+SYLLABLE_GAP_MM = 0.0
+
+# Phrase-level readings.  Longest match wins.  Besides fixing polyphones, each
+# entry is one word for 分词连写 and therefore gets no internal blank cell.
+PHRASES: dict[str, tuple[str, ...]] = {
+    "二次函数图像": ("er4", "ci4", "han2", "shu4", "tu2", "xiang4"),
+    "二次函数": ("er4", "ci4", "han2", "shu4"),
+    "函数图像": ("han2", "shu4", "tu2", "xiang4"),
+    "函数": ("han2", "shu4"),
+    "图像": ("tu2", "xiang4"),
+    "对称轴": ("dui4", "chen4", "zhou2"),
+    "对称": ("dui4", "chen4"),
+    "横轴": ("heng2", "zhou2"),
+    "纵轴": ("zong4", "zhou2"),
+    "原点": ("yuan2", "dian3"),
+    "顶点": ("ding3", "dian3"),
+    "零点": ("ling2", "dian3"),
+    "交点": ("jiao1", "dian3"),
+    "截距": ("jie2", "ju4"),
+    "极小值": ("ji2", "xiao3", "zhi2"),
+    "极大值": ("ji2", "da4", "zhi2"),
+    "定义域": ("ding4", "yi4", "yu4"),
+    "值域": ("zhi2", "yu4"),
+    "曲线": ("qu1", "xian4"),
+    "横坐标": ("heng2", "zuo4", "biao1"),
+    "纵坐标": ("zong4", "zuo4", "biao1"),
+    "坐标": ("zuo4", "biao1"),
+    "六轴机械臂": ("liu4", "zhou2", "ji1", "xie4", "bi4"),
+    "机械臂": ("ji1", "xie4", "bi4"),
+    "关节": ("guan1", "jie2"),
+    "连杆": ("lian2", "gan1"),
+    "基座": ("ji1", "zuo4"),
+    "底座": ("di3", "zuo4"),
+    "夹爪": ("jia1", "zhua3"),
+    "末端执行器": ("mo4", "duan1", "zhi2", "xing2", "qi4"),
+    "末端": ("mo4", "duan1"),
+    "执行器": ("zhi2", "xing2", "qi4"),
+    "自由度": ("zi4", "you2", "du4"),
+    "三视图": ("san1", "shi4", "tu2"),
+    "照片重建": ("zhao4", "pian4", "chong2", "jian4"),
+    "触觉": ("chu4", "jue2"),
+    "盲文": ("mang2", "wen2"),
+    "中文盲文": ("zhong1", "wen2", "mang2", "wen2"),
+    "毫米": ("hao2", "mi3"),
+    "比例": ("bi3", "li4"),
+    "方向": ("fang1", "xiang4"),
+    "太阳系": ("tai4", "yang2", "xi4"),
+    "站立小狗": ("zhan4", "li4", "xiao3", "gou3"),
+    "小狗": ("xiao3", "gou3"),
+    "小鸟": ("xiao3", "niao3"),
+    "翅膀": ("chi4", "bang3"),
+    "头部": ("tou2", "bu4"),
+    "手臂": ("shou3", "bi4"),
+    "尾巴": ("wei3", "ba5"),
+    "触见": ("chu4", "jian4"),
+}
+
+# Single-character corrections that are unambiguous in tactile textbook labels.
+CHAR_FIXES: dict[str, str] = {
+    "爪": "zhua3",
+}
+
+MAX_PHRASE = max(len(key) for key in PHRASES)
 
 
 class BrailleError(ValueError):
@@ -295,6 +366,114 @@ def _digits_and_ascii(character: str) -> list[tuple[int, ...]]:
     return braille.encode(character)
 
 
+PUNCTUATION_CELLS: dict[str, tuple[int, ...]] = {
+    "，": (5,),
+    "、": (5,),
+    "。": (5, 6),
+    "．": (5, 6),
+    "：": (2, 5),
+    "；": (2, 3),
+    "（": (1, 2, 3, 5, 6),
+    "）": (2, 3, 4, 5, 6),
+    "·": (3,),
+    "！": (2, 3, 5),
+    "？": (2, 6),
+}
+
+
+def _is_han(character: str) -> bool:
+    return "\u4e00" <= character <= "\u9fff"
+
+
+def _phrase_at(text: str, index: int) -> str | None:
+    for length in range(min(MAX_PHRASE, len(text) - index), 1, -1):
+        candidate = text[index : index + length]
+        if candidate in PHRASES:
+            return candidate
+    return None
+
+
+def _reading_of(character: str, table: dict[str, str]) -> str:
+    reading = CHAR_FIXES.get(character) or table.get(character)
+    if not reading:
+        raise BrailleError(f"拼音表未收录字符：{character}")
+    return reading
+
+
+def _tokens(text: str) -> list[tuple[str, list[tuple[int, ...]]]]:
+    """Split ``text`` into word / ASCII / punctuation / space tokens.
+
+    A Chinese word is either a lexicon phrase or a maximal run of characters
+    that do not start another phrase.  This deliberately under-segments rather
+    than inserting a space between every character, which is what the old
+    implementation did and which broke GF 0019 分词连写.
+    """
+    table = pinyin_table()
+    tokens: list[tuple[str, list[tuple[int, ...]]]] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        character = text[index]
+        if character == " ":
+            tokens.append(("space", [()]))
+            index += 1
+            continue
+        if _is_han(character):
+            word = _phrase_at(text, index)
+            if word:
+                cells: list[tuple[int, ...]] = []
+                readings = PHRASES[word]
+                if len(readings) != len(word):
+                    raise BrailleError(f"词条音节数与字数不一致：{word}")
+                for reading in readings:
+                    cells.extend(encode_syllable(reading).cells)
+                tokens.append(("word", cells))
+                index += len(word)
+                continue
+            end = index + 1
+            while end < length and _is_han(text[end]) and _phrase_at(text, end) is None:
+                end += 1
+            cells = []
+            for item in text[index:end]:
+                cells.extend(encode_syllable(_reading_of(item, table)).cells)
+            tokens.append(("word", cells))
+            index = end
+            continue
+        if character.isascii():
+            end = index
+            while end < length and text[end].isascii() and text[end] != " ":
+                end += 1
+            tokens.append(("ascii", _digits_and_ascii(text[index:end])))
+            index = end
+            continue
+        cell = PUNCTUATION_CELLS.get(character)
+        if cell is None:
+            raise BrailleError(f"未收录标点：{character}")
+        tokens.append(("punct", [cell]))
+        index += 1
+    return tokens
+
+
+def _layout_cells(text: str) -> list[tuple[int, ...]]:
+    """Flatten tokens into physical cells, inserting one blank between words."""
+    cells: list[tuple[int, ...]] = []
+    previous_word = False
+    for kind, group in _tokens(text):
+        if kind == "space":
+            cells.append(())
+            previous_word = False
+            continue
+        if kind == "word":
+            if previous_word:
+                cells.append(())
+            cells.extend(group)
+            previous_word = True
+            continue
+        cells.extend(group)
+        previous_word = False
+    return cells
+
+
 def encode_text(text: str, *, full_tone: bool = False) -> list[tuple[int, ...]]:
     """Encode a Chinese label, keeping ASCII runs in UEB.
 
@@ -302,84 +481,57 @@ def encode_text(text: str, *, full_tone: bool = False) -> list[tuple[int, ...]]:
     characters raise :class:`BrailleError` so a caller can fall back to an
     English label instead of printing an unrelated syllable.
     """
-    table = pinyin_table()
-    cells: list[tuple[int, ...]] = []
-    ascii_run: list[str] = []
-
-    def flush_ascii() -> None:
-        if ascii_run:
-            cells.extend(_digits_and_ascii("".join(ascii_run)))
-            ascii_run.clear()
-
-    for character in text:
-        if character == " ":
-            flush_ascii()
-            cells.append(())
-            continue
-        if "\u4e00" <= character <= "\u9fff":
-            flush_ascii()
-            reading = table.get(character)
-            if not reading:
-                raise BrailleError(f"拼音表未收录字符：{character}")
-            cells.extend(encode_syllable(reading, full_tone=full_tone).cells)
-            continue
-        if character.isascii():
-            ascii_run.append(character)
-            continue
-        flush_ascii()
-        if character in {"，", "、"}:
-            cells.append((5,))
-        elif character in {"。", "．"}:
-            cells.append((5, 6))
-        elif character == "：":
-            cells.append((2, 5))
-        elif character == "；":
-            cells.append((2, 3))
-        elif character == "（":
-            cells.append((1, 2, 3, 5, 6))
-        elif character == "）":
-            cells.append((2, 3, 4, 5, 6))
-        elif character == "·":
-            cells.append((3,))
-        else:
-            raise BrailleError(f"未收录标点：{character}")
-    flush_ascii()
-    return cells
+    if full_tone:
+        # Re-encode Chinese characters with the tone cells forced on.  The
+        # phrase lexicon stores TONE3 readings, so expanding them again keeps
+        # word segmentation intact.
+        cells: list[tuple[int, ...]] = []
+        table = pinyin_table()
+        index = 0
+        while index < len(text):
+            character = text[index]
+            if _is_han(character):
+                word = _phrase_at(text, index)
+                if word:
+                    for reading in PHRASES[word]:
+                        cells.extend(encode_syllable(reading, full_tone=True).cells)
+                    index += len(word)
+                    continue
+                cells.extend(encode_syllable(_reading_of(character, table), full_tone=True).cells)
+                index += 1
+                continue
+            if character.isascii():
+                end = index
+                while end < len(text) and text[end].isascii() and text[end] != " ":
+                    end += 1
+                cells.extend(_digits_and_ascii(text[index:end]))
+                index = end
+                continue
+            if character == " ":
+                cells.append(())
+            else:
+                cell = PUNCTUATION_CELLS.get(character)
+                if cell is None:
+                    raise BrailleError(f"未收录标点：{character}")
+                cells.append(cell)
+            index += 1
+        return cells
+    return _layout_cells(text)
 
 
 def _syllable_groups(text: str) -> list[list[tuple[int, ...]]]:
-    """Split encoded cells into per-syllable groups for tactile spacing."""
-    table = pinyin_table()
-    groups: list[list[tuple[int, ...]]] = []
-    ascii_run: list[str] = []
-    for character in text:
-        if "\u4e00" <= character <= "\u9fff":
-            if ascii_run:
-                groups.append(_digits_and_ascii("".join(ascii_run)))
-                ascii_run.clear()
-            reading = table.get(character)
-            if not reading:
-                raise BrailleError(f"拼音表未收录字符：{character}")
-            groups.append(list(encode_syllable(reading).cells))
-        elif character.isascii():
-            ascii_run.append(character)
-        else:
-            if ascii_run:
-                groups.append(_digits_and_ascii("".join(ascii_run)))
-                ascii_run.clear()
-            groups.append(list(encode_text(character)))
-    if ascii_run:
-        groups.append(_digits_and_ascii("".join(ascii_run)))
-    return [group for group in groups if group]
+    """Backward-compatible word groups (each group is one 词)."""
+    return [list(group) for kind, group in _tokens(text) if kind == "word" and group]
 
 
 def width(text: str, *, syllable_gap_mm: float = 0.0) -> float:
-    groups = _syllable_groups(text)
-    if not groups:
+    cells = _layout_cells(text)
+    if not cells:
         return 0.0
-    cell_count = sum(len(group) for group in groups)
-    gaps = max(0, len(groups) - 1) * syllable_gap_mm
-    return CELL_SPACING_MM * (cell_count - 1) + CELL_WIDTH_MM + gaps
+    gaps = 0.0
+    if syllable_gap_mm:
+        gaps = max(0, len(_syllable_groups(text)) - 1) * syllable_gap_mm
+    return CELL_SPACING_MM * (len(cells) - 1) + CELL_WIDTH_MM + gaps
 
 
 def height() -> float:
@@ -391,63 +543,90 @@ def dot_centers(
     x: float,
     y: float,
     *,
-    syllable_gap_mm: float = SYLLABLE_GAP_MM,
+    syllable_gap_mm: float = 0.0,
     dot_spacing_mm: float = DOT_SPACING_MM,
 ) -> list[tuple[float, float]]:
     """Return dot centres for a label whose top-left corner is ``x, y``."""
-    groups = _syllable_groups(text)
+    cells = _layout_cells(text)
     radius = DOT_DIAMETER_MM / 2.0
     centres: list[tuple[float, float]] = []
     cursor = x
-    for group in groups:
-        for cell in group:
-            cell_x = cursor + radius
-            cell_y = y + radius
-            for dot in cell:
-                column = 1 if dot >= 4 else 0
-                row = (dot - 1) % 3
-                centres.append((cell_x + column * dot_spacing_mm, cell_y + row * dot_spacing_mm))
-            cursor += CELL_SPACING_MM
-        cursor += syllable_gap_mm
+    for cell in cells:
+        cell_x = cursor + radius
+        cell_y = y + radius
+        for dot in cell:
+            column = 1 if dot >= 4 else 0
+            row = (dot - 1) % 3
+            centres.append((cell_x + column * dot_spacing_mm, cell_y + row * dot_spacing_mm))
+        cursor += CELL_SPACING_MM
     return centres
 
 
 def bbox(text: str, x: float, y: float) -> tuple[float, float, float, float]:
-    return (x, y, width(text, syllable_gap_mm=SYLLABLE_GAP_MM), height())
+    return (x, y, width(text), height())
+
+
+def _char_readings(text: str) -> list[str]:
+    table = pinyin_table()
+    result: list[str] = []
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if _is_han(character):
+            word = _phrase_at(text, index)
+            if word:
+                result.extend(PHRASES[word])
+                index += len(word)
+                continue
+            result.append(_reading_of(character, table))
+        index += 1
+    return result
 
 
 def readings(text: str) -> list[str]:
+    return _char_readings(text)
+
+
+def _reading_at(text: str, index: int) -> str:
     table = pinyin_table()
-    result: list[str] = []
-    for character in text:
-        if "\u4e00" <= character <= "\u9fff":
-            reading = table.get(character)
-            if not reading:
-                raise BrailleError(f"拼音表未收录字符：{character}")
-            result.append(reading)
-    return result
+    word = _phrase_at(text, index)
+    if word:
+        # The caller walks character by character; return the reading for the
+        # first syllable of the phrase so the rows stay aligned.
+        return PHRASES[word][0]
+    return _reading_of(text[index], table)
 
 
 def describe(text: str) -> list[dict[str, object]]:
     """Debug helper: show the reading and dot cells for each syllable."""
     table = pinyin_table()
     rows: list[dict[str, object]] = []
-    for character in text:
-        if "\u4e00" <= character <= "\u9fff":
-            reading = table.get(character)
-            if not reading:
-                raise BrailleError(f"拼音表未收录字符：{character}")
-            syllable = encode_syllable(reading)
-            rows.append(
-                {
-                    "char": character,
-                    "pinyin": reading,
-                    "initial": syllable.initial,
-                    "final": syllable.final,
-                    "tone": syllable.tone,
-                    "cells": [list(cell) for cell in syllable.cells],
-                }
-            )
+    phrase_offset = 0
+    phrase: str | None = None
+    for index, character in enumerate(text):
+        if not _is_han(character):
+            continue
+        if phrase is None or phrase_offset >= len(phrase):
+            phrase = _phrase_at(text, index)
+            phrase_offset = 0
+        if phrase:
+            reading = PHRASES[phrase][phrase_offset]
+            phrase_offset += 1
+            if phrase_offset >= len(phrase):
+                phrase = None
+        else:
+            reading = _reading_of(character, table)
+        syllable = encode_syllable(reading)
+        rows.append(
+            {
+                "char": character,
+                "pinyin": reading,
+                "initial": syllable.initial,
+                "final": syllable.final,
+                "tone": syllable.tone,
+                "cells": [list(cell) for cell in syllable.cells],
+            }
+        )
     return rows
 
 
@@ -462,6 +641,8 @@ def describe_text(text: str) -> list[dict[str, object]]:
     table = pinyin_table()
     rows: list[dict[str, object]] = []
     ascii_run: list[str] = []
+    phrase: str | None = None
+    phrase_offset = 0
 
     def flush_ascii() -> None:
         if not ascii_run:
@@ -477,15 +658,23 @@ def describe_text(text: str) -> list[dict[str, object]]:
         )
         ascii_run.clear()
 
-    for character in text:
+    for index, character in enumerate(text):
         if character == " ":
             flush_ascii()
             rows.append({"char": "空格", "kind": "space", "pinyin": "", "cells": [[]]})
-        elif "\u4e00" <= character <= "\u9fff":
+            phrase = None
+        elif _is_han(character):
             flush_ascii()
-            reading = table.get(character)
-            if not reading:
-                raise BrailleError(f"拼音表未收录字符：{character}")
+            if phrase is None or phrase_offset >= len(phrase):
+                phrase = _phrase_at(text, index)
+                phrase_offset = 0
+            if phrase:
+                reading = PHRASES[phrase][phrase_offset]
+                phrase_offset += 1
+                if phrase_offset >= len(phrase):
+                    phrase = None
+            else:
+                reading = _reading_of(character, table)
             syllable = encode_syllable(reading)
             rows.append(
                 {
@@ -502,12 +691,16 @@ def describe_text(text: str) -> list[dict[str, object]]:
             ascii_run.append(character)
         else:
             flush_ascii()
+            phrase = None
+            cell = PUNCTUATION_CELLS.get(character)
+            if cell is None:
+                raise BrailleError(f"未收录标点：{character}")
             rows.append(
                 {
                     "char": character,
                     "kind": "punct",
                     "pinyin": "",
-                    "cells": [list(cell) for cell in encode_text(character)],
+                    "cells": [list(cell)],
                 }
             )
     flush_ascii()

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import DiagramError
+from .paper import PAPER_SIZES
 
 ALLOWED_ENGINES = {"kinematic_chain", "cartesian_plot", "function_plot", "robot_relief", "scene"}
 ALLOWED_DOMAINS = {"robotics", "math", "scene", "other"}
@@ -30,8 +31,6 @@ ALLOWED_ELEMENT_KINDS = {
     "other",
 }
 
-A5_WIDTH = 148.0
-A5_HEIGHT = 210.0
 
 
 @dataclass(frozen=True)
@@ -127,8 +126,10 @@ def _manual_checks(payload: dict[str, Any]) -> list[SchemaIssue]:
         size = canvas.get("size")
         if not isinstance(width, (int, float)) or not isinstance(height, (int, float)):
             error("$.canvas", "width_mm and height_mm must be numbers")
-        elif size == "A5" and (abs(width - A5_WIDTH) > 0.01 or abs(height - A5_HEIGHT) > 0.01):
-            error("$.canvas", "A5 must be 148 x 210 mm")
+        elif isinstance(size, str) and size.upper() in PAPER_SIZES:
+            expected_width, expected_height = PAPER_SIZES[size.upper()]
+            if abs(width - expected_width) > 0.01 or abs(height - expected_height) > 0.01:
+                error("$.canvas", f"{size.upper()} must be {expected_width:g} x {expected_height:g} mm")
         margin = canvas.get("margin_mm", 5.0)
         if isinstance(margin, (int, float)) and isinstance(width, (int, float)):
             if margin * 2 >= min(width, height):

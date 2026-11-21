@@ -78,7 +78,7 @@ def _clean_label(text: str) -> str:
 
 
 def _fits(text: str, max_width: float) -> bool:
-    return cnbraille.width(text, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM) <= max_width
+    return cnbraille.width(text) <= max_width
 
 
 def _fit_braille(text: str, max_width: float) -> str:
@@ -257,7 +257,7 @@ def compose_printable(
     max_legend_rows = max(1, int((max_legend_depth - 4.0) // LEGEND_ROW_MM))
     legend_max_width = 0.0
     for line in legend_lines:
-        legend_max_width = max(legend_max_width, cnbraille.width(line, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM))
+        legend_max_width = max(legend_max_width, cnbraille.width(line))
     needed_columns = max(1, math.ceil(len(legend_lines) / max_legend_rows)) if legend_lines else 0
     needed_half = (needed_columns * (legend_max_width + 5.0) + 4.0) / 2.0
     base_tab_half = max(38.0, min(base_radius - 10.0, 54.0))
@@ -294,14 +294,10 @@ def compose_printable(
     # also makes the cell groups much easier to inspect by eye.
     title_lines, title_truncated = _wrap_braille(title_text, plaque_width - 6.0)
     line_step = cnbraille.height() + BRAILLE_LINE_GAP_MM
-    if len(title_lines) <= 2:
-        _emboss_text_on_top(mesh, "AI 3D", plaque_left + 4.0, plaque_front + 2.0, top + 2.0, top + 2.9, 4.0)
-        first_line_y = plaque_front + 9.0
-    else:
-        # Three short lines need the whole plaque; drop the decorative header.
-        first_line_y = plaque_front + 2.0
+    block_height = len(title_lines) * cnbraille.height() + (len(title_lines) - 1) * BRAILLE_LINE_GAP_MM
+    first_line_y = plaque_front + max(1.5, (plaque_depth - block_height) / 2.0)
     for line_index, line in enumerate(title_lines):
-        line_width = cnbraille.width(line, syllable_gap_mm=cnbraille.SYLLABLE_GAP_MM)
+        line_width = cnbraille.width(line)
         line_x = plaque_left + max(2.0, (plaque_width - line_width) / 2.0)
         _braille_on_top(
             mesh,

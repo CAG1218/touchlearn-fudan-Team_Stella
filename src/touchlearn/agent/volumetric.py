@@ -329,7 +329,7 @@ def _robot_once(spec: RobotSpec, scale: float) -> tuple[Mesh, dict[str, Any]]:
     text_primitive = Primitive("text", ((-pedestal_w / 2.0 + 7.0, 22.0),), text="ROBOT ARM", height=3.4)
     for polygon in primitive_polygons(text_primitive):
         _prism_xy(mesh, [(x, -y) for x, y in polygon], pedestal_top - 0.1, pedestal_top + 0.9)
-    braille_primitive = Primitive("braille", ((-pedestal_w / 2.0 + 7.0, 31.0),), text="robot")
+    braille_primitive = Primitive("braille", ((-pedestal_w / 2.0 + 7.0, 31.0),), text="机械臂")
     for polygon in primitive_polygons(braille_primitive):
         _prism_xy(mesh, [(x, -y) for x, y in polygon], pedestal_top - 0.1, pedestal_top + 0.7)
 
@@ -384,7 +384,7 @@ def _robot_once(spec: RobotSpec, scale: float) -> tuple[Mesh, dict[str, Any]]:
         "dof": spec.dof,
         "end_effector": spec.end_effector,
         "size_mm": [round(bounds[3] - bounds[0], 2), round(bounds[4] - bounds[1], 2), round(bounds[5] - bounds[2], 2)],
-        "nameplate": {"print": "ROBOT ARM", "braille": "robot"},
+        "nameplate": {"print": "ROBOT ARM", "braille": "机械臂"},
     }
     return mesh, meta
 

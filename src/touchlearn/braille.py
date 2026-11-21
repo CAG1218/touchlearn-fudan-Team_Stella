@@ -71,7 +71,9 @@ NUMBER_SIGN = (3, 4, 5, 6)
 
 DOT_DIAMETER_MM = 1.5
 DOT_SPACING_MM = 2.5
-CELL_SPACING_MM = 6.0
+# Same 0.5 mm print-clearance bump as the Chinese cells: 2.0 mm became 2.5 mm
+# between adjacent cells so FDM bridging cannot fuse letters.
+CELL_SPACING_MM = 6.5
 CELL_WIDTH_MM = 2.5 + DOT_DIAMETER_MM
 CELL_HEIGHT_MM = 5.0 + DOT_DIAMETER_MM
 

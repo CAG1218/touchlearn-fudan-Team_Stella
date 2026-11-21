@@ -49,6 +49,19 @@
     ["print", "打印说明"],
   ];
   const SELECTION_KEY = "touchlearn.llm.selection.v1";
+  const PAPER_KEY = "touchlearn.paper.v1";
+  // Mirrors touchlearn.paper.PAPER_SIZES.  The server validates the value
+  // again, so a stale local choice can never reach the geometry.
+  const PAPER_CHOICES = [
+    { id: "", label: "自动", note: "按盲文选型" },
+    { id: "A5", label: "A5", note: "148 × 210" },
+    { id: "B5", label: "B5", note: "176 × 250" },
+    { id: "16K", label: "16K", note: "185 × 260" },
+    { id: "A4", label: "A4", note: "210 × 297" },
+    { id: "B4", label: "B4", note: "250 × 353" },
+    { id: "A3", label: "A3", note: "297 × 420" },
+  ];
+  const PAPER_IDS = new Set(PAPER_CHOICES.map((item) => item.id));
   const GENERATION_MODES_KEY = "touchlearn.generation.modes.v1";
   const AUTH_TAB_KEY = "touchlearn.auth.tab.v1";
   const savedAuthTab = (() => {
@@ -69,6 +82,15 @@
     providers: null,
     models: null,
     selection: null,
+    paper: (() => {
+      try {
+        const saved = window.localStorage.getItem(PAPER_KEY) || "";
+        return PAPER_IDS.has(saved) ? saved : "";
+      } catch (error) {
+        return "";
+      }
+    })(),
+    paperOpen: false,
     generationModes: (() => {
       try {
         const saved = JSON.parse(window.localStorage.getItem(GENERATION_MODES_KEY) || "[]");
@@ -555,6 +577,7 @@
       }
       setStatus("ok", health.authenticated ? "在线" : "待登录", `二维码地址：${health.public_base_url}`);
       renderModelChip();
+      renderPaperChip();
       renderAccountButton();
       applyAuthConfig(health.auth);
       if (health.auth_required && !health.authenticated) {
@@ -789,6 +812,7 @@
       openSettings();
       return;
     }
+    closePaperPopover();
     state.popoverView = view === "effort" && supportsEffort() ? "effort" : "models";
     state.popoverOpen = true;
     renderModelPopover();
@@ -813,6 +837,88 @@
       return;
     }
     openModelPopover("models");
+  }
+
+  /* Paper size -------------------------------------------------------- */
+  /* "" means auto: the server picks the smallest catalogue size that still
+     fits every braille line at its physical width and row count. */
+
+  function paperEntry(id) {
+    return PAPER_CHOICES.find((item) => item.id === id) || PAPER_CHOICES[0];
+  }
+
+  function savePaper(value) {
+    try {
+      window.localStorage.setItem(PAPER_KEY, value);
+    } catch (error) {
+      /* Private mode: the choice still applies to this session. */
+    }
+  }
+
+  function renderPaperChip() {
+    const chip = $("#paperChip");
+    if (!chip) return;
+    const entry = paperEntry(state.paper);
+    const label = entry.id ? entry.label : "自动纸张";
+    const text = $("#paperChipText");
+    if (text) text.textContent = label;
+    else chip.textContent = label;
+    chip.title = entry.id
+      ? `板材 ${entry.label}（${entry.note} mm）`
+      : "按中文盲文的行数与宽度自动选纸";
+    chip.classList.toggle("active", Boolean(entry.id) || state.paperOpen);
+  }
+
+  function renderPaperPopover() {
+    const grid = $("#paperOptions");
+    if (!grid) return;
+    grid.innerHTML = PAPER_CHOICES.map((item) => {
+      const active = item.id === state.paper;
+      return `
+        <button class="paper-option${active ? " selected" : ""}" type="button" role="option" aria-selected="${active}" data-paper="${escapeHtml(item.id)}">
+          <strong>${escapeHtml(item.label)}</strong>
+          <small>${escapeHtml(item.note)}</small>
+        </button>`;
+    }).join("");
+  }
+
+  function openPaperPopover() {
+    closeModelPopover();
+    state.paperOpen = true;
+    renderPaperPopover();
+    const popover = $("#paperPopover");
+    if (popover) popover.classList.remove("hidden");
+    const chip = $("#paperChip");
+    if (chip) chip.setAttribute("aria-expanded", "true");
+    renderPaperChip();
+  }
+
+  function closePaperPopover() {
+    if (!state.paperOpen) return;
+    state.paperOpen = false;
+    const popover = $("#paperPopover");
+    if (popover) popover.classList.add("hidden");
+    const chip = $("#paperChip");
+    if (chip) chip.setAttribute("aria-expanded", "false");
+    renderPaperChip();
+  }
+
+  function togglePaperPopover() {
+    if (state.paperOpen) {
+      closePaperPopover();
+      return;
+    }
+    openPaperPopover();
+  }
+
+  function choosePaper(id) {
+    state.paper = PAPER_IDS.has(id) ? id : "";
+    savePaper(state.paper);
+    closePaperPopover();
+    const entry = paperEntry(state.paper);
+    toast(entry.id
+      ? `板材已切换为 ${entry.label}（${entry.note} mm）`
+      : "已改回自动选纸：按中文盲文的行数与宽度选最小规格");
   }
 
   function chooseModel(id) {
@@ -1137,6 +1243,9 @@
       if (request.template) payload.template = request.template;
       if (request.scene) payload.scene = request.scene;
       if (request.circuit) payload.circuit = request.circuit;
+      // Empty means "auto": the backend picks the smallest paper that fits
+      // every braille line, so only a concrete choice is sent.
+      if (state.paper) payload.paper = state.paper;
       // Follow-up turns must not feel like a new conversation.  The previous
       // draft id lets the server reuse its photos; the compact history keeps
       // "这是同一人物的三视图" attached to the earlier description.
@@ -4781,11 +4890,13 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
     $("#newChatBtn").addEventListener("click", newChat);
     $("#settingsBtn").addEventListener("click", openSettings);
     $("#templateBtn").addEventListener("click", openTemplates);
+    $("#paperChip").addEventListener("click", togglePaperPopover);
     $("#modelChip").addEventListener("click", toggleModelPopover);
     $$(".mode-option").forEach((button) => {
       button.addEventListener("click", () => toggleGenerationMode(button.dataset.mode));
     });
     applyGenerationModes();
+    renderPaperChip();
 
     $("#sceneEditorClose").addEventListener("click", () => closeSceneEditor());
     $("#sceneEditorApply").addEventListener("click", applySceneEditor);
@@ -4875,10 +4986,24 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
         openSettings();
       }
     });
+    $("#paperPopover").addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (event.target.closest("[data-close-paper]")) {
+        closePaperPopover();
+        return;
+      }
+      const option = event.target.closest("[data-paper]");
+      if (option) choosePaper(option.dataset.paper || "");
+    });
     document.addEventListener("click", (event) => {
-      if (!state.popoverOpen) return;
-      if (event.target.closest("#modelPopover") || event.target.closest("#modelChip")) return;
-      closeModelPopover();
+      if (state.popoverOpen) {
+        if (event.target.closest("#modelPopover") || event.target.closest("#modelChip")) return;
+        closeModelPopover();
+      }
+      if (state.paperOpen) {
+        if (event.target.closest("#paperPopover") || event.target.closest("#paperChip")) return;
+        closePaperPopover();
+      }
     });
 
     $("#composerForm").addEventListener("submit", handleSubmit);
@@ -5078,6 +5203,10 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
 
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
+      if (state.paperOpen) {
+        closePaperPopover();
+        return;
+      }
       if (state.popoverOpen) {
         closeModelPopover();
         return;

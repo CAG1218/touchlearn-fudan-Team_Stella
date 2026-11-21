@@ -13,6 +13,7 @@ from tests import EXAMPLES  # noqa: F401  (ensures src is on sys.path)
 from touchlearn.agent.agent import TouchLearnAgent
 from touchlearn.agent.router import RouteDecision
 from touchlearn.agent.scene import SceneGeneration
+from touchlearn.paper import PAPER_ORDER
 from touchlearn.schema import has_errors, validate_payload
 
 SELECTION_ENV = {
@@ -74,6 +75,94 @@ class AgentPipelineTests(unittest.TestCase):
         diagram = json.loads((job_dir / "diagram.json").read_text(encoding="utf-8"))
         issues = validate_payload(diagram)
         self.assertFalse(has_errors(issues), msg=[issue.to_dict() for issue in issues])
+
+    def test_chinese_plate_reports_cell_pitch_print_clearance(self) -> None:
+        draft = self.agent.analyze({"subject": "function", "expression": "x^2-2x-3", "paper": "A4"})
+        with patch(
+            "touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)
+        ):
+            result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
+        job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
+        report = json.loads((job_dir / "compliance.json").read_text(encoding="utf-8"))
+        rules = {check["rule_id"]: check for check in report["checks"]}
+        self.assertIn("braille.cell_pitch", rules)
+        self.assertEqual(rules["braille.cell_pitch"]["status"], "DEVIATION")
+        self.assertIn("6.90", rules["braille.cell_pitch"]["measured"])
+        self.assertIn("0.1 mm", rules["braille.cell_pitch"]["message"])
+        self.assertTrue(report["printable"])
+
+    def test_robot_volume_nameplate_uses_chinese_braille(self) -> None:
+        draft = self.agent.analyze(
+            {
+                "subject": "robot",
+                "dof": 6,
+                "link_length_mm": 90,
+                "end_effector": "gripper",
+                "output_mode": "volume",
+                "target_height_mm": 150,
+            }
+        )
+        self.assertTrue(draft["ready"], msg=draft.get("questions"))
+        with patch(
+            "touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)
+        ):
+            result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
+        job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
+        manifest = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
+        nameplate = manifest["geometry"]["meta"]["nameplate"]
+        self.assertEqual(nameplate["braille"], "机械臂")
+        self.assertEqual(nameplate["print"], "ROBOT ARM")
+
+    def test_explicit_paper_reaches_every_plate_builder(self) -> None:
+        cases = [
+            ({"subject": "function", "expression": "x^2-2x-3", "paper": "A4"}, "A4"),
+            ({"subject": "scene", "template": "triangle", "paper": "B4"}, "B4"),
+            (
+                {
+                    "subject": "robot",
+                    "dof": 6,
+                    "end_effector": "gripper",
+                    "output_mode": "relief",
+                    "paper": "B4",
+                },
+                "B4",
+            ),
+        ]
+        for payload, expected in cases:
+            with self.subTest(subject=payload["subject"]):
+                draft = self.agent.analyze(payload)
+                self.assertTrue(draft["ready"], msg=draft.get("questions"))
+                self.assertEqual(draft["fields"].get("paper"), expected)
+                with patch(
+                    "touchlearn.agent.agent.synthesize_speech",
+                    return_value=(False, "test environment", None),
+                ):
+                    result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
+                job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
+                diagram = json.loads((job_dir / "diagram.json").read_text(encoding="utf-8"))
+                self.assertEqual(diagram["canvas"]["size"], expected)
+                report = json.loads((job_dir / "compliance.json").read_text(encoding="utf-8"))
+                self.assertTrue(report["printable"])
+
+    def test_auto_paper_grows_past_a5_for_chinese_braille_labels(self) -> None:
+        draft = self.agent.analyze({"subject": "scene", "template": "flowchart"})
+        self.assertTrue(draft["ready"])
+        self.assertEqual(draft["fields"].get("paper"), "")
+        with patch(
+            "touchlearn.agent.agent.synthesize_speech",
+            return_value=(False, "test environment", None),
+        ):
+            result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
+        job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
+        diagram = json.loads((job_dir / "diagram.json").read_text(encoding="utf-8"))
+        paper = diagram["canvas"]["size"]
+        self.assertIn(paper, PAPER_ORDER)
+        # Every block carries a Chinese braille label, so the automatic size
+        # has to leave A5 rather than crowd the 2 mm clearances.
+        self.assertGreater(PAPER_ORDER.index(paper), PAPER_ORDER.index("A5"))
+        report = json.loads((job_dir / "compliance.json").read_text(encoding="utf-8"))
+        self.assertTrue(report["printable"])
+        self.assertEqual(report["counts"].get("FAIL", 0), 0)
 
     def test_edge_audio_is_recorded_and_wired_into_the_page(self) -> None:
         draft = self.agent.analyze({"subject": "auto", "text": "请画函数 y=x^2-2x-3 的图像"})

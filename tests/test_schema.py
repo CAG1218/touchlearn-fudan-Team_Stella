@@ -54,6 +54,22 @@ class SchemaTests(unittest.TestCase):
         issues = validate_payload(payload, use_jsonschema=False)
         self.assertTrue(any(issue.path == "$.constraints.min_line_width_mm" for issue in issues))
 
+    def test_every_catalogue_paper_size_validates(self) -> None:
+        from touchlearn.paper import PAPER_ORDER, PAPER_SIZES
+
+        for name in PAPER_ORDER:
+            payload = _load("quadratic")
+            width, height = PAPER_SIZES[name]
+            payload["canvas"]["size"] = name
+            payload["canvas"]["width_mm"] = width
+            payload["canvas"]["height_mm"] = height
+            for use_jsonschema in (True, False):
+                issues = validate_payload(payload, use_jsonschema=use_jsonschema)
+                self.assertFalse(
+                    has_errors(issues),
+                    f"{name} (jsonschema={use_jsonschema}): {[i.to_dict() for i in issues]}",
+                )
+
     def test_package_data_schema_matches_repository_schema(self) -> None:
         from tests import ROOT
 

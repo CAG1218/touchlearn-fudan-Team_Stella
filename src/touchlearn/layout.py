@@ -258,8 +258,10 @@ class _Builder:
     def footer(self) -> None:
         footer = self.feature("footer", "footer")
         self.line(footer, ((8.0, 202.0), (18.0, 202.0)), 1.2)
-        self.text(footer, 8.0, 194.0, "10MM", 5.0)
-        self.text(footer, 55.0, 198.0, "TOUCHLEARN", 5.0)
+        # Chinese braille only: raised Latin letters cannot be read by touch.
+        # Stack the two lines at the left so they stay clear of the QR zone.
+        self.braille(footer, 8.0, 182.0, "触摸学习")
+        self.braille(footer, 8.0, 190.5, "单位毫米")
 
     def qr_zone(self) -> None:
         feature = self.feature("qr_zone", "qr_zone")
@@ -267,7 +269,9 @@ class _Builder:
         self.dashed_line(feature, (142.0, 176.0), (142.0, 204.0), 1.0, 3.0, 3.0)
         self.dashed_line(feature, (142.0, 204.0), (114.0, 204.0), 1.0, 3.0, 3.0)
         self.dashed_line(feature, (114.0, 204.0), (114.0, 176.0), 1.0, 3.0, 3.0)
-        self.text(feature, 114.0, 168.0, "QR", 5.0)
+        # "扫码" is three braille cells wide; start it far enough left that it
+        # does not cross the right-hand print margin.
+        self.braille(feature, 100.0, 166.0, "扫码")
 
 
 def _layout_robot(diagram: Diagram) -> LayoutResult:
@@ -286,14 +290,13 @@ def _layout_robot(diagram: Diagram) -> LayoutResult:
 
     elements = diagram.element_map()
     title = builder.feature("title", "title")
-    title_text = "SIX-AXIS ROBOT ARM"
-    builder.text(title, (width - text_width(title_text, 6.0)) / 2.0, 12.0, title_text, 6.0)
+    builder.braille(title, (width - braille.width("六轴机械臂")) / 2.0, 10.0, "六轴机械臂")
 
     base = builder.feature("BASE", "link", "BASE", semantic_id="BASE")
     builder.polygon(base, rect_polygon(40.0, 180.0, 30.0, 12.0, chamfer=2.0))
     for x0 in (43.0, 49.0, 55.0, 61.0):
         builder.line(base, ((x0, 189.0), (x0 + 7.0, 183.0)), 1.2)
-    builder.index_label(builder.feature("label_BASE", "label", "1", semantic_id="BASE", index=1), 18.0, 176.0, 1)
+    builder.index_label(builder.feature("label_BASE", "label", "1", semantic_id="BASE", index=1), 14.0, 166.0, 1)
 
     l1 = builder.feature("L1", "link", "L1", semantic_id="L1")
     builder.line(l1, ((55.0, 180.0), (55.0, 145.0)), 11.0)
@@ -301,7 +304,7 @@ def _layout_robot(diagram: Diagram) -> LayoutResult:
 
     j1 = builder.feature("J1", "joint", "J1", semantic_id="J1")
     builder.circle(j1, 55.0, 180.0, 6.0)
-    builder.index_label(builder.feature("label_J1", "label", "4", semantic_id="J1", index=4), 34.0, 172.0, 4)
+    builder.index_label(builder.feature("label_J1", "label", "4", semantic_id="J1", index=4), 34.0, 160.0, 4)
 
     l2 = builder.feature("L2", "link", "L2", semantic_id="L2")
     builder.line(l2, ((55.0, 145.0), (90.0, 115.0)), 10.0)
@@ -399,12 +402,13 @@ def _layout_quadratic(diagram: Diagram) -> LayoutResult:
         }
     )
 
-    title_text = "QUADRATIC FUNCTION"
     title = builder.feature("title", "title")
-    builder.text(title, (width - text_width(title_text, 6.0)) / 2.0, 12.0, title_text, 6.0)
+    builder.braille(title, (width - braille.width("二次函数图像")) / 2.0, 10.0, "二次函数图像")
 
     equation = builder.feature("equation", "label")
-    builder.text(equation, 30.0, 30.0, expression, 6.0)
+    # The spelled-out sentence is 162.9 mm wide and cannot fit on A5; keep the
+    # mathematical shorthand, which is still read as "y 等于 x 的平方减 2x 减 3".
+    builder.braille(equation, 20.0, 28.0, "y=x的平方-2x-3")
 
     def to_canvas(x_value: float, y_value: float) -> Point:
         return (50.0 + x_value * scale, 110.0 - y_value * scale)
@@ -433,8 +437,9 @@ def _layout_quadratic(diagram: Diagram) -> LayoutResult:
 
     symmetry = builder.feature("symmetry_axis", "axis", "X=1", semantic_id="symmetry_axis")
     builder.dashed_line(symmetry, (60.0, 50.0), (60.0, 160.0), 1.2, 5.0, 5.0)
-    symmetry_label = builder.feature("label_symmetry", "label", "x=1", semantic_id="symmetry_axis")
-    builder.text_with_braille(symmetry_label, 62.0, 42.0, "x=1")
+    symmetry_label = builder.feature("label_symmetry", "label", "对称轴", semantic_id="symmetry_axis")
+    # Keep clear of the axis labels and of the parabola's lower-right branch.
+    builder.braille(symmetry_label, 88.0, 150.0, "对称轴")
 
     vertex = builder.feature("vertex", "point", "V", semantic_id="vertex")
     builder.circle(vertex, 60.0, 150.0, 3.5)
@@ -450,12 +455,15 @@ def _layout_quadratic(diagram: Diagram) -> LayoutResult:
     builder.index_label(root_right_label, 94.0, 116.0, 3)
     builder.line(root_right_label, ((94.0, 116.0), (84.0, 115.0)), 1.2)
 
-    axis_x = builder.feature("label_x", "label", "x", semantic_id="x_axis")
-    builder.text_with_braille(axis_x, 94.0, 88.0, "x")
-    axis_y = builder.feature("label_y", "label", "y", semantic_id="y_axis")
-    builder.text_with_braille(axis_y, 53.0, 62.0, "y")
-    origin = builder.feature("label_origin", "label", "o", semantic_id="origin")
-    builder.text_with_braille(origin, 53.0, 92.0, "o")
+    axis_x = builder.feature("label_x", "label", "横轴", semantic_id="x_axis")
+    builder.braille(axis_x, 94.0, 86.0, "横轴")
+    axis_y = builder.feature("label_y", "label", "纵轴", semantic_id="y_axis")
+    builder.braille(axis_y, 54.0, 41.0, "纵轴")
+    origin = builder.feature("label_origin", "label", "原点", semantic_id="origin")
+    # The parabola and both axes fill the area around the origin.  A 3-cell
+    # Chinese label does not fit there, so it sits below the plot, clear of
+    # every raised feature.
+    builder.braille(origin, 8.0, 166.0, "原点")
 
     builder.footer()
     builder.qr_zone()

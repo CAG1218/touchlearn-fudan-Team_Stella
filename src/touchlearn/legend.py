@@ -56,12 +56,15 @@ def other_marks(layout: LayoutResult) -> list[tuple[str, str]]:
     for feature in layout.labels():
         if feature.index is not None or not feature.semantic_id:
             continue
-        visible = next((primitive.text for primitive in feature.primitives if primitive.kind == "text"), "")
-        if not visible:
-            continue
         try:
             element = layout.diagram.element(feature.semantic_id)
         except Exception:
+            continue
+        # Plates now carry braille only, so the legend falls back to the
+        # machine-readable element label for its sighted key column.
+        visible = next((primitive.text for primitive in feature.primitives if primitive.kind == "text"), "")
+        visible = visible or (element.label or "").lower()
+        if not visible:
             continue
         marks.append((visible, element.label_zh))
     return marks

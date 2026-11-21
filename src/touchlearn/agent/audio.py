@@ -67,7 +67,7 @@ def function_narration(
     y_min: float,
     y_max: float,
     key_points: Sequence[Any],
-    letters: Sequence[str],
+    numbers: Sequence[str],
     *,
     title_zh: str = "函数图像",
 ) -> dict[str, Any]:
@@ -77,10 +77,10 @@ def function_narration(
         "找到两条最粗的直线，横的是 x 轴，竖的是 y 轴，交点是原点。",
     ]
     if key_points:
-        steps.append("按字母顺序摸关键点：")
-        for point, letter in zip(key_points, letters):
+        steps.append("按编号顺序摸关键点：")
+        for point, number in zip(key_points, numbers):
             steps.append(
-                f"字母 {letter} 是{_point_name(point.kind)}，坐标是 x 等于 {_number(point.x)}，y 等于 {_number(point.y)}。"
+                f"编号 {number} 是{_point_name(point.kind)}，坐标是 x 等于 {_number(point.x)}，y 等于 {_number(point.y)}。"
             )
     steps.append("沿粗曲线从左向右慢慢滑动，再滑回来，感受曲线的弯曲方向和开口。")
     steps.append(
@@ -97,9 +97,9 @@ def robot_relief_narration(spec: Any) -> dict[str, Any]:
     steps = [
         "先摸左上角的缺口，确认图的方向。",
         "从底部宽大的基座开始，基座标着数字 0。",
-        "沿最粗的连杆向上，摸到数字 1 到 6 表示的关节，字母 A 到 F 表示连杆。",
+        "沿最粗的连杆向上，摸到数字 1 到 6 表示的关节，中文盲文“杆”加数字表示连杆。",
         "每个关节旁边都有一个数字，数字越大，离底座越远。",
-        "摸到右上角的末端执行器，标着字母 T。夹爪形状像两片张开的钳口。",
+        "摸到右上角的末端执行器，标着中文盲文“夹爪”。夹爪形状像两片张开的钳口。",
         "最后从基座沿粗线一路摸到夹爪，这就是从底座到末端的运动链。",
     ]
     outro = "这张图只表达关节顺序和连接关系，不表示真实尺寸和姿态。"
@@ -109,7 +109,7 @@ def robot_relief_narration(spec: Any) -> dict[str, Any]:
 def robot_volume_narration(spec: Any, size_mm: Sequence[float]) -> dict[str, Any]:
     intro = f"这是一个按比例缩小的 {spec.dof} 轴机械臂立体模型。"
     steps = [
-        "模型底部是一块方形底板，正面刻着英文 ROBOT ARM 和对应的盲文。",
+        "模型底部是一块方形底板，正面刻着中文盲文“机械臂”。",
         "底板右侧有一块平整的方形区域，用来贴二维码，扫码可以播放这段讲解。",
         "从底板中央的圆形基座开始，向上摸到第一个关节。",
         "沿连杆继续向上，依次经过六个关节，每个关节都是横向的圆柱。",

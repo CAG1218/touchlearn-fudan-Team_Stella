@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# TouchLearn v0.3.6 一键更新脚本（在服务器上以 root 运行）
+# TouchLearn v0.3.7 一键更新脚本（在服务器上以 root 运行）
 #
 # 用法：
 #   bash /root/install.sh
 # 或指定发布包和项目目录：
-#   APP_DIR=/root/touchlearn-fudan-Team_Stella bash /root/install-update.sh /root/touchlearn-0.3.6.tar.gz
+#   APP_DIR=/root/touchlearn-fudan-Team_Stella bash /root/install-update.sh /root/touchlearn-0.3.7.tar.gz
 
 set -euo pipefail
 
-ARCHIVE="${1:-/root/touchlearn-0.3.6.tar.gz}"
+ARCHIVE="${1:-/root/touchlearn-0.3.7.tar.gz}"
 
 say()  { printf '\n\033[1;36m%s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m%s\033[0m\n' "$*"; }
@@ -57,10 +57,10 @@ else
   warn "没有找到 touchlearn-outputs 数据卷，跳过数据备份。"
 fi
 
-say "解压 v0.3.6 代码..."
+say "解压 v0.3.7 代码..."
 tar -xzf "$ARCHIVE" -C "$APP_DIR"
-grep -q '__version__ = "0.3.6"' src/touchlearn/__init__.py \
-  || die "解压后版本不是 0.3.6，已停止；原 deploy/.env 未改动。"
+grep -q '__version__ = "0.3.7"' src/touchlearn/__init__.py \
+  || die "解压后版本不是 0.3.7，已停止；原 deploy/.env 未改动。"
 
 ENV_FILE="$APP_DIR/deploy/.env"
 set_env() {
@@ -117,7 +117,7 @@ else
   die "没有找到 docker compose，请先安装 Docker Compose 插件。"
 fi
 
-say "使用 $COMPOSE_FILE 构建并启动 v0.3.6（首次约 3–8 分钟）..."
+say "使用 $COMPOSE_FILE 构建并启动 v0.3.7（首次约 3–8 分钟）..."
 cd deploy
 "${DC[@]}" --env-file .env -f "$COMPOSE_FILE" up -d --build --remove-orphans
 

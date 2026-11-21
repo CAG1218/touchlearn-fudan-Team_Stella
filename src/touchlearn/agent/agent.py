@@ -211,17 +211,9 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(_json_safe(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _letter_map(points: Sequence[Any]) -> list[str]:
-    letters = "ABCDEFGH"
-    mapping: list[str] = []
-    cursor = 0
-    for point in points:
-        if getattr(point, "kind", "") == "y_intercept" and "I" not in mapping:
-            mapping.append("I")
-        else:
-            mapping.append(letters[cursor] if cursor < len(letters) else "?")
-            cursor += 1
-    return mapping
+def _point_number_map(points: Sequence[Any]) -> list[str]:
+    """Number key points 1..N for both the plate and the audio guide."""
+    return [str(index) for index in range(1, len(points) + 1)]
 
 
 def _number(value: float) -> str:
@@ -2654,10 +2646,10 @@ class TouchLearnAgent:
         y_min = window["y_min"]
         y_max = window["y_max"]
         points = expression.key_points(x_min, x_max, y_min, y_max, max_points=6)
-        letters = _letter_map(points)
+        numbers = _point_number_map(points)
         title = "QUADRATIC FUNCTION" if "^2" in expression.canonical else "FUNCTION GRAPH"
         title_zh = "二次函数图像" if "^2" in expression.canonical else "函数图像"
-        audio = function_narration(expression.canonical, x_min, x_max, y_min, y_max, points, letters, title_zh=title_zh)
+        audio = function_narration(expression.canonical, x_min, x_max, y_min, y_max, points, numbers, title_zh=title_zh)
 
         elements: list[dict[str, Any]] = [
             {
@@ -2686,13 +2678,13 @@ class TouchLearnAgent:
             },
         ]
         relations: list[dict[str, Any]] = []
-        for index, (point, letter) in enumerate(zip(points, letters), start=4):
+        for index, (point, number) in enumerate(zip(points, numbers), start=4):
             element_id = f"kp_{index}"
             elements.append(
                 {
                     "id": element_id,
                     "kind": "point",
-                    "label": letter,
+                    "label": number,
                     "label_zh": point.kind,
                     "order": index,
                     "semantics": {"x": point.x, "y": point.y, "kind": point.kind},

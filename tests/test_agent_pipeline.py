@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,8 @@ from tests import EXAMPLES  # noqa: F401  (ensures src is on sys.path)
 from touchlearn.agent.agent import TouchLearnAgent
 from touchlearn.agent.router import RouteDecision
 from touchlearn.agent.scene import SceneGeneration
+from touchlearn.layout import build_layout
+from touchlearn.model import diagram_from_dict
 from touchlearn.paper import PAPER_ORDER
 from touchlearn.schema import has_errors, validate_payload
 
@@ -111,7 +114,9 @@ class AgentPipelineTests(unittest.TestCase):
         manifest = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
         nameplate = manifest["geometry"]["meta"]["nameplate"]
         self.assertEqual(nameplate["braille"], "机械臂")
-        self.assertEqual(nameplate["print"], "ROBOT ARM")
+        # A raised Latin nameplate cannot be read by touch, so the model no
+        # longer carries an English "print" variant.
+        self.assertNotIn("print", nameplate)
 
     def test_explicit_paper_reaches_every_plate_builder(self) -> None:
         cases = [
@@ -366,6 +371,39 @@ class AgentPipelineTests(unittest.TestCase):
         kwargs = generate.call_args.kwargs
         self.assertEqual(kwargs["model"], "deepseek/deepseek-flash")
         self.assertEqual(kwargs["effort"], "medium")
+
+    def test_plates_raise_no_latin_letters(self) -> None:
+        """Only Arabic digits and Chinese braille may be raised on a plate."""
+        cases = [
+            {"subject": "function", "expression": "x^2-2x-3", "paper": "A5"},
+            {"subject": "scene", "template": "triangle", "paper": "A5"},
+        ]
+        for payload in cases:
+            with self.subTest(subject=payload["subject"]):
+                draft = self.agent.analyze(payload)
+                self.assertTrue(draft["ready"], msg=draft.get("questions"))
+                with patch(
+                    "touchlearn.agent.agent.synthesize_speech",
+                    return_value=(False, "test environment", None),
+                ):
+                    result = self.agent.build(
+                        draft["id"], public_base_url="http://127.0.0.1:8765"
+                    )
+                job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
+                diagram = json.loads((job_dir / "diagram.json").read_text(encoding="utf-8"))
+                layout = build_layout(diagram_from_dict(diagram))
+                raised = [
+                    primitive.text
+                    for feature in layout.features
+                    for primitive in feature.primitives
+                    if primitive.kind == "text"
+                ]
+                self.assertTrue(raised, "plate should still carry numeric markers")
+                for value in raised:
+                    self.assertIsNone(
+                        re.search(r"[A-Za-z]", value),
+                        msg=f"raised outline text contains Latin letters: {value!r}",
+                    )
 
 
 if __name__ == "__main__":

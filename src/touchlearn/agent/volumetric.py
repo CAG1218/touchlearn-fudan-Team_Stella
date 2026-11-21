@@ -325,11 +325,9 @@ def _robot_once(spec: RobotSpec, scale: float) -> tuple[Mesh, dict[str, Any]]:
         chamfer=2.0,
     )
 
-    # Tactile and print nameplate on the front-left of the pedestal.
-    text_primitive = Primitive("text", ((-pedestal_w / 2.0 + 7.0, 22.0),), text="ROBOT ARM", height=3.4)
-    for polygon in primitive_polygons(text_primitive):
-        _prism_xy(mesh, [(x, -y) for x, y in polygon], pedestal_top - 0.1, pedestal_top + 0.9)
-    braille_primitive = Primitive("braille", ((-pedestal_w / 2.0 + 7.0, 31.0),), text="机械臂")
+    # Braille nameplate on the front-left of the pedestal.  No raised English:
+    # a blind reader cannot feel "ROBOT ARM".
+    braille_primitive = Primitive("braille", ((-pedestal_w / 2.0 + 7.0, 22.0),), text="机械臂")
     for polygon in primitive_polygons(braille_primitive):
         _prism_xy(mesh, [(x, -y) for x, y in polygon], pedestal_top - 0.1, pedestal_top + 0.7)
 
@@ -384,7 +382,7 @@ def _robot_once(spec: RobotSpec, scale: float) -> tuple[Mesh, dict[str, Any]]:
         "dof": spec.dof,
         "end_effector": spec.end_effector,
         "size_mm": [round(bounds[3] - bounds[0], 2), round(bounds[4] - bounds[1], 2), round(bounds[5] - bounds[2], 2)],
-        "nameplate": {"print": "ROBOT ARM", "braille": "机械臂"},
+        "nameplate": {"braille": "机械臂"},
     }
     return mesh, meta
 
@@ -743,11 +741,8 @@ def mesh_relief(
     for index, point in enumerate(perimeter):
         _add_triangle(mesh_out, centre, perimeter[(index + 1) % len(perimeter)], point, (0.0, 0.0, -1.0))
 
-    # Title and a flat 30 mm QR reserve.  They are separate raised shells on
-    # the flat margin, so they do not disturb the heightfield topology.
-    title = Primitive("text", ((margin_mm + 2.0, margin_mm + 4.0),), text="3D RELIEF", height=5.0)
-    for polygon in primitive_polygons(title):
-        _prism_xy(mesh_out, polygon, base_thickness_mm - 0.1, base_thickness_mm + 0.8)
+    # A flat 30 mm QR reserve on the margin.  The old raised "3D RELIEF"
+    # Latin title is deliberately gone: plates carry Chinese braille only.
     qr_x = plate_width_mm - margin_mm - 31.0
     qr_y = margin_mm + 2.0
     frame = 1.0
@@ -771,7 +766,7 @@ def mesh_relief(
         "occupied_cells": sum(1 for row in occupied for value in row if value),
         "plate_mm": [plate_width_mm, plate_height_mm],
         "qr_area_mm": 30.0,
-        "title": "3D RELIEF",
+        "title": "立体轮廓",
         "size_mm": [round(value, 3) for value in (mesh_out.bounds()[3] - mesh_out.bounds()[0], mesh_out.bounds()[4] - mesh_out.bounds()[1], mesh_out.bounds()[5] - mesh_out.bounds()[2])],
         "note": "Outline-only projection. Labels, hidden features and internal structure are not recovered.",
     }

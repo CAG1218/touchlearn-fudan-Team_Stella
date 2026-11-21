@@ -315,7 +315,10 @@ def normalize_scene(raw: Any, *, fallback_title: str = "") -> tuple[dict[str, An
     warnings: list[str] = []
     title = _ascii(raw.get("title"), 32) or _ascii(fallback_title, 32) or "TACTILE DIAGRAM"
     title_zh = _chinese(raw.get("title_zh"), 40) or _chinese(fallback_title, 40) or title
-    subtitle = _ascii(raw.get("subtitle"), 48)
+    subtitle = _plate_text(raw.get("subtitle"), 32)
+    if not any("\u4e00" <= character <= "\u9fff" or character.isdigit() for character in subtitle):
+        # A Latin-only subtitle leaves at most stray punctuation such as "/".
+        subtitle = "示意图"
     blocks_raw = raw.get("blocks")
     if not isinstance(blocks_raw, list) or not blocks_raw:
         raise SceneError("场景至少需要一个 blocks 图块。")
@@ -374,11 +377,11 @@ def normalize_scene(raw: Any, *, fallback_title: str = "") -> tuple[dict[str, An
     raw_footer = raw.get("footer_lines")
     if isinstance(raw_footer, list):
         for item in raw_footer:
-            value = _ascii(item, 42)
+            value = _plate_text(item, 28)
             if value:
                 footer_lines.append(value)
     if not footer_lines:
-        footer_lines = ["SCHEMATIC / NOT TO SCALE", "SCAN QR FOR AUDIO"]
+        footer_lines = ["示意图 不按比例", "扫码听讲解"]
     footer_lines = footer_lines[:2]
 
     notes: list[str] = []
@@ -397,7 +400,7 @@ def normalize_scene(raw: Any, *, fallback_title: str = "") -> tuple[dict[str, An
         "reading_order": order,
         "footer_lines": footer_lines,
         "notes": notes,
-        "scale_note": _ascii(raw.get("scale_note"), 42) or "SCHEMATIC / NOT TO SCALE",
+        "scale_note": _plate_text(raw.get("scale_note"), 28) or "示意图 不按比例",
     }
     hint = str(raw.get("paper_hint") or "").strip().upper()
     if hint in {"A5", "A4", "A3"}:
@@ -433,6 +436,24 @@ def _roadmap_clean(value: Any, limit: int) -> str:
         elif character.isascii() and (character.isalnum() or character in " +-./:=?"):
             kept.append(character)
         elif character in "，、。：；（）·":
+            kept.append(character)
+    return " ".join("".join(kept).split())[:limit]
+
+
+def _plate_text(value: Any, limit: int) -> str:
+    """Keep Chinese, Arabic digits and arithmetic signs; drop Latin letters.
+
+    Scene templates used to carry English words such as START or PARK.  A raised
+    Latin word cannot be read by touch, so those characters are removed rather
+    than printed.
+    """
+    if not isinstance(value, str):
+        return ""
+    kept: list[str] = []
+    for character in " ".join(value.split()):
+        if "\u4e00" <= character <= "\u9fff":
+            kept.append(character)
+        elif character.isdigit() or character in " +-./=():，、。：；·":
             kept.append(character)
     return " ".join("".join(kept).split())[:limit]
 
@@ -530,7 +551,7 @@ def normalize_roadmap(raw: Any, *, fallback_title: str = "") -> tuple[dict[str, 
     warnings: list[str] = []
     title = _ascii(raw.get("title"), 32) or _ascii(fallback_title, 32) or "ROADMAP"
     title_zh = _chinese(raw.get("title_zh"), 40) or _chinese(fallback_title, 40) or title
-    subtitle = _ascii(raw.get("subtitle"), 48) or "ROADMAP / TOP TO BOTTOM"
+    subtitle = _plate_text(raw.get("subtitle"), 32) or "从上到下"
 
     stages_raw = raw.get("stages")
     if not isinstance(stages_raw, list) or not stages_raw:
@@ -689,7 +710,7 @@ def normalize_roadmap(raw: Any, *, fallback_title: str = "") -> tuple[dict[str, 
             "subtitle": subtitle,
             "blocks": blocks,
             "reading_order": [block["id"] for block in blocks],
-            "footer_lines": ["ROADMAP / TOP TO BOTTOM", "SCAN QR FOR AUDIO"],
+            "footer_lines": ["技术路线 从上到下", "扫码听讲解"],
             "notes": ["从上到下依次是各阶段；每个阶段先摸标题，再摸下面的要点。"],
             "paper_hint": paper_hint,
         },
@@ -868,8 +889,18 @@ def _add_primitive(builder: _Builder, feature: Feature, primitive: dict[str, Any
         length = min(6.0, max(2.5, math.dist(tip, previous) * 0.35))
         _axis_arrow(builder, feature, tip, (tip[0] - previous[0], tip[1] - previous[1]), length=length, half=length * 0.55)
     elif kind == "text":
+        # Raised outline text can only render ASCII; Latin words are
+        # unreadable by touch and Chinese has no outline glyph, so keep just
+        # digits and arithmetic signs.  Names travel in braille primitives.
+        value = "".join(
+            character
+            for character in str(primitive["text"])
+            if character.isdigit() or character in " +-./=():^"
+        ).strip()
+        if not value:
+            return
         x, y = to_mm((primitive["x"], primitive["y"]))
-        builder.text(feature, x, y, primitive["text"], primitive["height"])
+        builder.text(feature, x, y, value, primitive["height"])
     elif kind == "braille":
         x, y = to_mm((primitive["x"], primitive["y"]))
         text = primitive["text"]
@@ -891,30 +922,43 @@ def build_scene_layout(diagram: Diagram) -> LayoutResult:
     box = content_box(width, height, margin)
     left, top, box_width, box_height = box
 
-    title_feature = builder.feature("title", "title")
-    title_text, title_height = _fit_text(scene["title"], width - 2 * margin - 4.0, 5.4, 4.2)
-    builder.text(title_feature, (width - text_width(title_text, title_height)) / 2.0, 5.0, title_text, title_height)
-
-    # Chinese braille is the primary title for a blind reader.  A title that
-    # does not fit on one standard-size line is kept on the English line only,
-    # because shrinking the dots would break the 1.6 mm standard.
-    title_zh = _roadmap_clean(scene.get("title_zh") or "触觉示意图", 10)
+    # The plate carries Chinese braille only.  scene["title"] is the English
+    # title for the web UI and the audio, not something to raise as letters.
+    title_zh = _plate_text(scene.get("title_zh") or scene.get("title") or "触觉示意图", 10)
     title_zh = _roadmap_safe(title_zh, warnings)
+    title_feature = builder.feature("title", "title", label=title_zh)
     title_lines = _braille_lines(title_zh, width - 2 * margin, 10, warnings, max_lines=1)
     if title_lines:
-        title_zh_feature = builder.feature("title_zh", "title_zh")
         line = title_lines[0]
         builder.braille(
-            title_zh_feature,
+            title_feature,
             (width - tactile_braille.width(line)) / 2.0,
-            11.9,
+            margin + 2.0,
             line,
         )
 
-    if scene.get("subtitle"):
-        subtitle_feature = builder.feature("subtitle", "label")
-        subtitle_text, subtitle_height = _fit_text(scene["subtitle"], width - 2 * margin - 8.0, 3.4, 2.8)
-        builder.text(subtitle_feature, (width - text_width(subtitle_text, subtitle_height)) / 2.0, 21.7, subtitle_text, subtitle_height)
+    subtitle_zh = _plate_text(scene.get("subtitle"), 16)
+    subtitle_zh = _roadmap_safe(subtitle_zh, warnings)
+    # One braille line only: the title band is a fixed 28.5 mm and a second
+    # line would run into the drawing.  Over-long subtitles are truncated.
+    subtitle_lines = _braille_lines(
+        subtitle_zh,
+        width - 2 * margin - 4.0,
+        10,
+        warnings,
+        max_lines=1,
+    )
+    if subtitle_lines:
+        # kind="label" keeps the subtitle in the same collision pass as the
+        # numbered block labels.
+        subtitle_feature = builder.feature("subtitle", "label", label=subtitle_zh)
+        line = subtitle_lines[0]
+        builder.braille(
+            subtitle_feature,
+            (width - tactile_braille.width(line)) / 2.0,
+            margin + 11.5,
+            line,
+        )
 
     builder.trace.append(
         {
@@ -955,7 +999,12 @@ def build_scene_layout(diagram: Diagram) -> LayoutResult:
     # a later block.  The title band and the footer/QR band are reserved.
     reserved = [(0.0, 0.0, width, 28.5), (0.0, height - 38.0, width, 38.0)]
     for index, block, feature in block_features:
-        label_text = f"{index} {block.get('label') or ''}".strip() if block.get("show_label", True) else str(index)
+        # Only the Arabic index is raised; the block name travels in Chinese
+        # braille, because a Latin word has no tactile letter shape.
+        label_text = str(index)
+        braille_label = _plate_text(block.get("label_zh") or block.get("label") or "", 24)
+        braille_label = _roadmap_safe(braille_label, warnings)
+        braille_label = f"{index} {braille_label}".strip()
         anchor = block.get("marker")
         if anchor is None:
             box = feature.bbox()
@@ -974,14 +1023,15 @@ def build_scene_layout(diagram: Diagram) -> LayoutResult:
             index=index,
             text_height=3.8,
             preferred=(1.0, -1.0),
-            braille_text=f"{index} {block.get('label_zh') or block.get('label') or ''}".strip(),
+            braille_text=braille_label,
         )
 
     qr_rect = _qr_zone(builder, width, height, margin)
     footer_lines = list(scene.get("footer_lines") or [])
     if scene.get("scale_note") and scene["scale_note"] not in footer_lines:
         footer_lines.insert(0, scene["scale_note"])
-    _footer(builder, width, height, margin, qr_rect, lines=footer_lines[:2])
+    footer_braille = [_plate_text(line, 28) for line in footer_lines[:3]]
+    _footer(builder, width, height, margin, qr_rect, braille_lines=[line for line in footer_braille if line])
 
     builder.warnings.extend(warnings)
     return LayoutResult(
@@ -1058,7 +1108,7 @@ SCENE_PROMPT = """请把下面的需求转成触觉场景 JSON。
   "roadmap": {{
     "title": "TECH ROADMAP",
     "title_zh": "技术路线图",
-    "subtitle": "STAGES / TOP TO BOTTOM",
+    "subtitle": "从上到下",
     "stages": [
       {{"heading": "阶段名称", "items": ["要点一", "要点二"]}},
       {{"heading": "阶段名称", "items": ["要点一", "要点二"]}}
@@ -1075,12 +1125,12 @@ SCENE_PROMPT = """请把下面的需求转成触觉场景 JSON。
       "primitives": [
         {{"type": "rect", "x": 35, "y": 40, "w": 30, "h": 14, "width": 2.2}},
         {{"type": "line", "points": [[50, 54], [50, 70]], "width": 2.0}},
-        {{"type": "text", "x": 42, "y": 44, "text": "BATTERY", "height": 4.0}}
+        {{"type": "braille", "x": 42, "y": 44, "text": "电池"}}
       ]
     }}
   ],
   "reading_order": ["battery"],
-  "footer_lines": ["SCHEMATIC / NOT TO SCALE", "SCAN QR FOR AUDIO"],
+  "footer_lines": ["示意图 不按比例", "扫码听讲解"],
   "notes": ["这张板只表达连接关系，不表示真实尺寸。"],
   "questions": ["请确认开关位置是否正确。"],
   "unsupported_reason": ""
@@ -1090,7 +1140,7 @@ SCENE_PROMPT = """请把下面的需求转成触觉场景 JSON。
 1. 可用图元：line（points）、polygon（points）、rect（x,y,w,h）、circle（cx,cy,r）、ellipse（cx,cy,rx,ry）、arrow（points）、arc（cx,cy,r,start_deg,end_deg）、point（cx,cy,r）、text（x,y,text,height）、braille（x,y,text）。
 2. 所有坐标在 0-100；矩形和文字不要越界；图块之间尽量留出 2-3 个单位的空隙。
 3. 每个场景 1-10 个图块；每个图块对应一个可触摸的学习单元，按阅读顺序编号。
-4. label、text 只能用英文字母、数字和 ()+-./:=?^_；中文放在 label_zh 和 note 中。
+4. 触觉板不打印英文。text 图元只能放阿拉伯数字和 ()+-./= 等符号，绝不能放英文字母；中文一律用 braille 图元。label 仅用于网页显示，中文名称放在 label_zh 和 note 中。
 5. 只画轮廓和必要的实心小元素（箭头、圆点）；不要画大面积实心色块。
 6. 如果需求无法用二维线条/形状可靠表达（例如照片美化、写文章、生成任意三维物体），返回 {{"supported": false, "unsupported_reason": "原因", "confidence": 0.0}}。
 7. 如果用户给了尺寸，只能把它转换成相对比例，并在 notes 中说明实际尺寸需在打印设置中确认。
@@ -1360,9 +1410,9 @@ def _template_scene(
         "subtitle": subtitle,
         "blocks": blocks,
         "reading_order": order,
-        "footer_lines": footer or ["SCHEMATIC / NOT TO SCALE", "SCAN QR FOR AUDIO"],
+        "footer_lines": footer or ["示意图 不按比例", "扫码听讲解"],
         "notes": notes,
-        "scale_note": "SCHEMATIC / NOT TO SCALE",
+        "scale_note": "示意图 不按比例",
     }
 
 
@@ -1370,26 +1420,26 @@ def _triangle_scene() -> dict[str, Any]:
     return _template_scene(
         "TRIANGLE",
         "三角形与高",
-        "GEOMETRY / VERTICES A B C",
+        "几何 三个顶点",
         [
             {
                 "id": "triangle",
                 "label": "TRIANGLE",
                 "label_zh": "三角形",
-                "note": "三条边围成三角形，中间细线是从顶点 A 落到底边的高。",
+                "note": "三条边围成三角形，中间细线是从顶点 1 落到底边的高。",
                 "marker": [50, 45],
                 "primitives": [
                     {"type": "polygon", "points": [[50, 6], [10, 88], [90, 88]], "width": 2.6},
                     {"type": "line", "points": [[50, 6], [50, 88]], "width": 1.2},
                     {"type": "line", "points": [[50, 82], [56, 82], [56, 88]], "width": 1.2},
-                    {"type": "text", "x": 50, "y": 0.5, "text": "A", "height": 4.5},
-                    {"type": "text", "x": 4, "y": 90, "text": "B", "height": 4.5},
-                    {"type": "text", "x": 92, "y": 90, "text": "C", "height": 4.5},
+                    {"type": "braille", "x": 50, "y": 0.5, "text": "1"},
+                    {"type": "braille", "x": 4, "y": 90, "text": "2"},
+                    {"type": "braille", "x": 92, "y": 90, "text": "3"},
                 ],
             }
         ],
         ["triangle"],
-        ["底边 BC 水平放置，顶点 A 在上方；高与底边垂直。"],
+        ["底边水平放置，顶点 1 在上方；高与底边垂直。"],
     )
 
 
@@ -1397,24 +1447,24 @@ def _pythagorean_scene() -> dict[str, Any]:
     return _template_scene(
         "RIGHT TRIANGLE",
         "直角三角形与边长",
-        "GEOMETRY / SIDES 3 4 5",
+        "几何 边长比例",
         [
             {
                 "id": "triangle",
                 "label": "RIGHT TRIANGLE",
                 "label_zh": "直角三角形",
-                "note": "直角在 B。竖直直角边 AB 标 3，水平直角边 BC 标 4，斜边 AC 标 5。",
+                "note": "直角在顶点 2。竖直直角边标 3，水平直角边标 4，斜边标 5。",
                 "marker": [2, 5],
                 "show_label": False,
                 "primitives": [
                     {"type": "polygon", "points": [[20, 15], [20, 75], [80, 75]], "width": 2.8},
                     {"type": "line", "points": [[20, 67], [28, 67], [28, 75]], "width": 1.2},
-                    {"type": "text", "x": 14, "y": 8, "text": "A", "height": 4.5},
-                    {"type": "text", "x": 14, "y": 78, "text": "B", "height": 4.5},
-                    {"type": "text", "x": 84, "y": 78, "text": "C", "height": 4.5},
-                    {"type": "text", "x": 10, "y": 44, "text": "3", "height": 5.0},
-                    {"type": "text", "x": 48, "y": 80, "text": "4", "height": 5.0},
-                    {"type": "text", "x": 44, "y": 40, "text": "5", "height": 5.0},
+                    {"type": "braille", "x": 14, "y": 8, "text": "1"},
+                    {"type": "braille", "x": 14, "y": 78, "text": "2"},
+                    {"type": "braille", "x": 84, "y": 78, "text": "3"},
+                    {"type": "braille", "x": 10, "y": 44, "text": "3"},
+                    {"type": "braille", "x": 48, "y": 80, "text": "4"},
+                    {"type": "braille", "x": 44, "y": 40, "text": "5"},
                 ],
             }
         ],
@@ -1437,7 +1487,7 @@ def _flowchart_scene() -> dict[str, Any]:
     return _template_scene(
         "FLOWCHART",
         "流程图",
-        "LOGIC / START PROCESS DECISION OUTPUT",
+        "逻辑 从上到下",
         [
             {
                 "id": "start",
@@ -1448,7 +1498,7 @@ def _flowchart_scene() -> dict[str, Any]:
                 "show_label": False,
                 "primitives": [
                     {"type": "rect", "x": 35, "y": 4, "w": 30, "h": 12, "width": 2.3},
-                    {"type": "text", "x": 41, "y": 8, "text": "START", "height": 4.0},
+                    {"type": "braille", "x": 41, "y": 8, "text": "开始"},
                 ],
             },
             {
@@ -1460,7 +1510,7 @@ def _flowchart_scene() -> dict[str, Any]:
                 "show_label": False,
                 "primitives": [
                     {"type": "rect", "x": 33, "y": 24, "w": 34, "h": 14, "width": 2.3},
-                    {"type": "text", "x": 37, "y": 28, "text": "READ INPUT", "height": 3.8},
+                    {"type": "braille", "x": 37, "y": 28, "text": "读取输入"},
                 ],
             },
             {
@@ -1472,7 +1522,7 @@ def _flowchart_scene() -> dict[str, Any]:
                 "show_label": False,
                 "primitives": [
                     {"type": "polygon", "points": [[50, 44], [78, 59], [50, 74], [22, 59]], "width": 2.3},
-                    {"type": "text", "x": 43, "y": 56, "text": "CHECK", "height": 4.0},
+                    {"type": "braille", "x": 43, "y": 56, "text": "判断"},
                 ],
             },
             {
@@ -1484,7 +1534,7 @@ def _flowchart_scene() -> dict[str, Any]:
                 "show_label": False,
                 "primitives": [
                     {"type": "rect", "x": 33, "y": 81, "w": 34, "h": 13, "width": 2.3},
-                    {"type": "text", "x": 39, "y": 85, "text": "OUTPUT", "height": 4.0},
+                    {"type": "braille", "x": 39, "y": 85, "text": "输出"},
                 ],
             },
             {
@@ -1503,7 +1553,7 @@ def _flowchart_scene() -> dict[str, Any]:
         ],
         ["start", "process", "decision", "output", "arrows"],
         ["矩形是步骤，菱形是判断，箭头表示执行顺序。"],
-        ["LOGIC / TOP TO BOTTOM", "SCHEMATIC / NOT TO SCALE"],
+        ["逻辑 从上到下", "示意图 不按比例"],
     )
 
 
@@ -1511,7 +1561,7 @@ def _coordinate_scene() -> dict[str, Any]:
     return _template_scene(
         "COORDINATE PLANE",
         "平面直角坐标系",
-        "MATH / FOUR QUADRANTS",
+        "数学 四个象限",
         [
             {
                 "id": "axes",
@@ -1524,29 +1574,29 @@ def _coordinate_scene() -> dict[str, Any]:
                     {"type": "arrow", "points": [[8, 55], [92, 55]], "width": 2.4},
                     {"type": "arrow", "points": [[50, 92], [50, 8]], "width": 2.4},
                     {"type": "point", "cx": 50, "cy": 55, "r": 1.4},
-                    {"type": "text", "x": 92, "y": 50, "text": "X", "height": 4.5},
-                    {"type": "text", "x": 53, "y": 5, "text": "Y", "height": 4.5},
-                    {"type": "text", "x": 53, "y": 58, "text": "O", "height": 4.0},
+                    {"type": "braille", "x": 92, "y": 50, "text": "横轴"},
+                    {"type": "braille", "x": 53, "y": 5, "text": "纵轴"},
+                    {"type": "braille", "x": 53, "y": 58, "text": "原点"},
                 ],
             },
             {
                 "id": "quadrants",
                 "label": "QUADRANTS",
                 "label_zh": "四个象限",
-                "note": "从右上角开始逆时针依次是 I、II、III、IV 象限。",
+                "note": "从右上角开始逆时针依次是第一、第二、第三、第四象限，板上标 1 到 4。",
                 "marker": [78, 18],
                 "show_label": False,
                 "primitives": [
-                    {"type": "text", "x": 72, "y": 24, "text": "I", "height": 4.5},
-                    {"type": "text", "x": 22, "y": 24, "text": "II", "height": 4.5},
-                    {"type": "text", "x": 20, "y": 78, "text": "III", "height": 4.5},
-                    {"type": "text", "x": 72, "y": 78, "text": "IV", "height": 4.5},
+                    {"type": "braille", "x": 72, "y": 24, "text": "1"},
+                    {"type": "braille", "x": 22, "y": 24, "text": "2"},
+                    {"type": "braille", "x": 20, "y": 78, "text": "3"},
+                    {"type": "braille", "x": 72, "y": 78, "text": "4"},
                 ],
             },
         ],
         ["axes", "quadrants"],
         ["坐标轴只表示方向和象限，不表示具体刻度。"],
-        ["MATH / QUADRANTS I-IV", "SCHEMATIC / NOT TO SCALE"],
+        ["数学 四个象限", "示意图 不按比例"],
     )
 
 
@@ -1554,7 +1604,7 @@ def _route_scene() -> dict[str, Any]:
     return _template_scene(
         "ROUTE MAP",
         "路线示意图",
-        "ORIENTATION / HOME CROSSING SCHOOL PARK",
+        "方向示意",
         [
             {
                 "id": "home",
@@ -1565,7 +1615,7 @@ def _route_scene() -> dict[str, Any]:
                 "show_label": False,
                 "primitives": [
                     {"type": "rect", "x": 5, "y": 82, "w": 14, "h": 12, "width": 2.3},
-                    {"type": "text", "x": 7, "y": 86, "text": "HOME", "height": 3.4},
+                    {"type": "braille", "x": 7, "y": 86, "text": "家"},
                 ],
             },
             {
@@ -1601,7 +1651,7 @@ def _route_scene() -> dict[str, Any]:
                 "show_label": False,
                 "primitives": [
                     {"type": "rect", "x": 65, "y": 16, "w": 20, "h": 12, "width": 2.3},
-                    {"type": "text", "x": 68, "y": 20, "text": "SCHOOL", "height": 3.2},
+                    {"type": "braille", "x": 68, "y": 20, "text": "学校"},
                 ],
             },
             {
@@ -1613,13 +1663,13 @@ def _route_scene() -> dict[str, Any]:
                 "show_label": False,
                 "primitives": [
                     {"type": "circle", "cx": 82, "cy": 55, "r": 8, "width": 2.3},
-                    {"type": "text", "x": 78, "y": 53, "text": "PARK", "height": 3.4},
+                    {"type": "braille", "x": 78, "y": 53, "text": "公园"},
                 ],
             },
         ],
         ["home", "route", "crossing", "school", "park"],
         ["路线图只表达先后和转弯方向，不代表真实距离与比例。"],
-        ["ORIENTATION / NOT TO SCALE", "SCAN QR FOR AUDIO"],
+        ["方向示意 不按比例", "扫码听讲解"],
     )
 
 
@@ -1627,7 +1677,7 @@ def _bar_chart_scene() -> dict[str, Any]:
     return _template_scene(
         "BAR CHART",
         "柱状图",
-        "DATA / FOUR VALUES",
+        "数据 四个数值",
         [
             {
                 "id": "axes",
@@ -1663,16 +1713,16 @@ def _bar_chart_scene() -> dict[str, Any]:
                 "marker": [8, 92],
                 "show_label": False,
                 "primitives": [
-                    {"type": "text", "x": 23, "y": 88, "text": "1", "height": 4.0},
-                    {"type": "text", "x": 38, "y": 88, "text": "2", "height": 4.0},
-                    {"type": "text", "x": 53, "y": 88, "text": "3", "height": 4.0},
-                    {"type": "text", "x": 68, "y": 88, "text": "4", "height": 4.0},
+                    {"type": "braille", "x": 23, "y": 88, "text": "1"},
+                    {"type": "braille", "x": 38, "y": 88, "text": "2"},
+                    {"type": "braille", "x": 53, "y": 88, "text": "3"},
+                    {"type": "braille", "x": 68, "y": 88, "text": "4"},
                 ],
             },
         ],
         ["axes", "bars", "labels"],
         ["柱子的高度是相对比例；具体数值以音频和说明中的 40、65、30、55 为准。"],
-        ["DATA / RELATIVE HEIGHT", "SCHEMATIC / NOT TO SCALE"],
+        ["数据 相对高度", "示意图 不按比例"],
     )
 
 
@@ -1682,7 +1732,7 @@ def _cell_scene() -> dict[str, Any]:
     return _template_scene(
         "PLANT CELL",
         "植物细胞结构",
-        "BIOLOGY / MEMBRANE NUCLEUS MITOCHONDRIA",
+        "生物 植物细胞",
         [
             {
                 "id": "membrane",
@@ -1733,7 +1783,7 @@ def _cell_scene() -> dict[str, Any]:
         ],
         ["membrane", "nucleus", "mitochondria", "vacuole"],
         ["这是示意图，细胞器的数量和比例不是真实细胞的比例。"],
-        ["BIOLOGY / PLANT CELL", "SCHEMATIC / NOT TO SCALE"],
+        ["生物 植物细胞", "示意图 不按比例"],
     )
 
 
@@ -1742,7 +1792,7 @@ def _roadmap_scene() -> dict[str, Any]:
         {
             "title": "TECH ROADMAP",
             "title_zh": "技术路线图",
-            "subtitle": "STAGES / TOP TO BOTTOM",
+            "subtitle": "从上到下",
             "stages": [
                 {"heading": "需求分析", "items": ["明确目标", "调研现状"]},
                 {"heading": "方案设计", "items": ["总体架构", "关键指标"]},

@@ -651,12 +651,14 @@ def circuit_to_scene(raw: Any) -> dict[str, Any]:
         "version": 1,
         "title": circuit["title"],
         "title_zh": circuit["title_zh"],
-        "subtitle": circuit["subtitle"],
+        # The raised plate carries Chinese braille; the English subtitle is
+        # only used by the web UI.
+        "subtitle": "电路示意",
         "blocks": blocks,
         "reading_order": [component["id"] for component in circuit["components"]] + ["wires"],
-        "footer_lines": ["PHYSICS / SERIES CIRCUIT", "SCHEMATIC / NOT TO SCALE"],
+        "footer_lines": ["电路示意 不按比例", "扫码听讲解"],
         "notes": notes,
-        "scale_note": "SCHEMATIC / NOT TO SCALE",
+        "scale_note": "示意图 不按比例",
     }
 
 

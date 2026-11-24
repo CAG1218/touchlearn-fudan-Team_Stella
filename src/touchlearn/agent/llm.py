@@ -702,10 +702,22 @@ def _missing_message(kind: str) -> str:
     return f"未配置接口。设置 {prefix}_URL 与 {prefix}_MODEL（或 {prefix}_PROVIDER 使用预置）后启用。"
 
 
+def _fallback_status() -> dict[str, Any] | None:
+    config = _local_fallback_config("text")
+    if config is None:
+        return None
+    return {
+        "label": config.label,
+        "model": config.model,
+        "endpoint_host": _public_endpoint(config.endpoint),
+    }
+
+
 def provider_status(kind: str = "text") -> dict[str, Any]:
     load_env()
     prefix = "TOUCHLEARN_VLM" if kind == "vision" else "TOUCHLEARN_LLM"
     config = resolve_config(kind)
+    fallback = _fallback_status() if kind != "vision" else None
     if config is None:
         return {
             "configured": False,
@@ -719,6 +731,7 @@ def provider_status(kind: str = "text") -> dict[str, Any]:
             "timeout": _timeout(),
             "effort": "",
             "mode": "offline",
+            "fallback": fallback,
             "message": _missing_message(kind),
         }
     return {
@@ -733,6 +746,7 @@ def provider_status(kind: str = "text") -> dict[str, Any]:
         "timeout": config.timeout,
         "effort": _effort(config.provider) or "default",
         "mode": "remote-vlm" if kind == "vision" else "remote-llm",
+        "fallback": fallback,
         "message": "接口已配置。",
     }
 
@@ -779,6 +793,10 @@ def providers_payload() -> dict[str, Any]:
                 "TOUCHLEARN_SCENE_EFFORT",
                 "TOUCHLEARN_LLM_PROXY",
                 "TOUCHLEARN_ENV_FILE",
+                "TOUCHLEARN_LOCAL_FALLBACK",
+                "TOUCHLEARN_LOCAL_URL",
+                "TOUCHLEARN_LOCAL_MODEL",
+                "TOUCHLEARN_LOCAL_TIMEOUT",
             ],
         },
         "privacy": "密钥只从环境变量或本机 .env 读取，不写入作业目录，也不会通过 API 返回。",
@@ -830,7 +848,7 @@ def _error_detail(body: bytes) -> str:
     return text[:300]
 
 
-def chat(
+def _chat_once(
     messages: list[dict[str, Any]],
     *,
     kind: str = "text",
@@ -956,6 +974,83 @@ def chat(
         usage=data.get("usage"),
         finish_reason=finish_reason,
     )
+
+
+def _local_fallback_config(kind: str) -> ProviderConfig | None:
+    """Local OpenAI-compatible endpoint used when a cloud call fails.
+
+    Enabled with ``TOUCHLEARN_LOCAL_FALLBACK=1``.  Only text calls fall back:
+    vision needs a multimodal cloud model, which a small local text model
+    cannot replace.  The endpoint defaults to llama-server on port 8080.
+    """
+    if kind != "text":
+        return None
+    if _env("TOUCHLEARN_LOCAL_FALLBACK").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    url = _env("TOUCHLEARN_LOCAL_URL") or "http://127.0.0.1:8080/v1"
+    model = _env("TOUCHLEARN_LOCAL_MODEL") or "qwen2.5-3b-instruct-q4_k_m"
+    try:
+        timeout = float(_env("TOUCHLEARN_LOCAL_TIMEOUT") or 60)
+    except ValueError:
+        timeout = 60.0
+    return ProviderConfig(
+        provider="custom",
+        label="本地兜底（llama.cpp）",
+        endpoint=_chat_endpoint(url),
+        model=model,
+        timeout=max(5.0, min(300.0, timeout)),
+        source="fallback",
+    )
+
+
+def chat(
+    messages: list[dict[str, Any]],
+    *,
+    kind: str = "text",
+    config: ProviderConfig | None = None,
+    temperature: float = 0.0,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+    effort: str | None = None,
+    model: str | None = None,
+) -> LLMResult:
+    """Chat with one automatic fallback to the local model.
+
+    The primary provider is tried first.  When it fails and
+    ``TOUCHLEARN_LOCAL_FALLBACK`` is on, the same request is replayed against
+    the local OpenAI-compatible server and the successful local answer is
+    returned with a message that records the degraded path.
+    """
+    result = _chat_once(
+        messages,
+        kind=kind,
+        config=config,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        effort=effort,
+        model=model,
+    )
+    if result.ok:
+        return result
+    fallback = _local_fallback_config(kind)
+    if fallback is None:
+        return result
+    primary = config or resolve_config(kind)
+    if primary is not None and primary.endpoint == fallback.endpoint:
+        return result
+    retry = _chat_once(
+        messages,
+        kind=kind,
+        config=fallback,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        effort=effort,
+    )
+    if retry.ok:
+        retry.message = f"ok（云端异常，已回落本地模型：{result.message}）"
+        return retry
+    return result
 
 
 def chat_text(

@@ -24,7 +24,7 @@ echo.
 echo [2/3] Extract the update script and rebuild on the server.
 echo       Enter the root password again. The rebuild takes 3-8 minutes.
 echo       deploy/.env and the touchlearn-outputs volume are backed up first.
-ssh %SERVER% "tar -xzf /root/touchlearn-0.4.0.tar.gz -O ./deploy/install-update.sh > /root/install-update-040.sh && bash /root/install-update-040.sh /root/touchlearn-0.4.0.tar.gz"
+ssh %SERVER% "tar -xzf /root/touchlearn-0.4.0.tar.gz -O deploy/install-update.sh > /root/install-update-040.sh && bash /root/install-update-040.sh /root/touchlearn-0.4.0.tar.gz"
 if errorlevel 1 goto fail
 
 echo.

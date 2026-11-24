@@ -1,4 +1,4 @@
-# 把 v0.3.9 更新到阿里云 ECS
+# 把 v0.4.0 更新到阿里云 ECS
 
 目标服务器：`47.103.61.115`（上海，2 vCPU / 4 GiB + 2 GiB swap，IP 模式，端口 8765）
 
@@ -16,14 +16,14 @@ v0.3.5 包含：服务端 edge-tts 语音合成、音频 HTTP Range、中文盲�
 
 ## 0. 一键部署（推荐）
 
-本机安装 Git for Windows 后，直接双击 `release/deploy-remote-0.3.9.cmd`，按提示输入两次服务器 root 密码即可。脚本会依次完成上传、备份 `deploy/.env` 与 `touchlearn-outputs` 数据卷、解压、重建容器和健康检查。下面的手动步骤仅用于脚本失败时排查。
+本机安装 Git for Windows 后，直接双击 `release/deploy-remote-0.4.0.cmd`，按提示输入两次服务器 root 密码即可。脚本会依次完成上传、备份 `deploy/.env` 与 `touchlearn-outputs` 数据卷、解压、重建容器和健康检查。下面的手动步骤仅用于脚本失败时排查。
 
 ## 1. 本机上传发布包
 
-发布包已经生成：`touchlearn-0.3.9.tar.gz`。
+发布包已经生成：`touchlearn-0.4.0.tar.gz`。
 
 ```bash
-scp touchlearn-0.3.9.tar.gz root@47.103.61.115:/root/
+scp touchlearn-0.4.0.tar.gz root@47.103.61.115:/root/
 ```
 
 如果本机没有配置 SSH 密钥，`scp` 会提示输入服务器密码。
@@ -62,14 +62,14 @@ docker run --rm \
 
 ```bash
 cd "$APP_DIR"
-tar -xzf /root/touchlearn-0.3.9.tar.gz -C "$APP_DIR"
+tar -xzf /root/touchlearn-0.4.0.tar.gz -C "$APP_DIR"
 ```
 
 解压后确认版本：
 
 ```bash
 grep '__version__' src/touchlearn/__init__.py
-# 应输出 __version__ = "0.3.9"
+# 应输出 __version__ = "0.4.0"
 ```
 
 ## 5. 修改 `deploy/.env`
@@ -144,7 +144,7 @@ curl -s http://127.0.0.1:8765/api/health | python3 -m json.tool
 ```json
 {
   "ok": true,
-  "version": "0.3.9",
+  "version": "0.4.0",
   "public_base_url": "http://47.103.61.115:8765"
 }
 ```

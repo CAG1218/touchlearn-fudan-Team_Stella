@@ -83,7 +83,7 @@ class CliTests(unittest.TestCase):
             out = Path(directory) / "build"
             code = main(["all", str(EXAMPLES / "quadratic" / "diagram.json"), "--out", str(out)])
             self.assertEqual(code, 0)
-            for name in ("model.stl", "preview.svg", "legend.svg", "report.json", "trace.jsonl", "audio.txt", "diagram.json"):
+            for name in ("model.stl", "preview.svg", "legend.svg", "legend_card.stl", "braille_map.md", "report.json", "trace.jsonl", "audio.txt", "diagram.json"):
                 self.assertTrue((out / name).is_file(), name)
             report = json.loads((out / "report.json").read_text(encoding="utf-8"))
             self.assertTrue(report["passed"])

@@ -10,9 +10,10 @@ from typing import Any
 
 from . import __version__
 from .audio import write_script
+from .braille_map import write_braille_map
 from .geometry import build_mesh
 from .layout import build_layout
-from .legend import write_legend_svg
+from .legend import indexed_entries, other_marks, write_legend_card_stl, write_legend_svg
 from .model import Diagram, DiagramError, diagram_from_dict
 from .printability import check_layout
 from .schema import has_errors, validate_payload
@@ -118,6 +119,12 @@ def _compile(diagram: Diagram, out_dir: Path) -> dict[str, Any]:
     stl_path = write_binary_stl(mesh, out_dir / "model.stl")
     svg_path = write_svg(layout, out_dir / "preview.svg")
     legend_path = write_legend_svg(layout, out_dir / "legend.svg")
+    # A numbered plate gets the matching A6 tactile card as well as the visual
+    # legend, so a braille reader can resolve indices without a sighted reader.
+    legend_card_path: Path | None = None
+    if indexed_entries(layout) or other_marks(layout):
+        legend_card_path = write_legend_card_stl(layout, out_dir / "legend_card.stl")
+    braille_map_path = write_braille_map(layout, out_dir / "braille_map.md")
     report_path = out_dir / "report.json"
     report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     trace_path = trace.write_jsonl(out_dir / "trace.jsonl")
@@ -135,6 +142,8 @@ def _compile(diagram: Diagram, out_dir: Path) -> dict[str, Any]:
             "stl": str(stl_path),
             "svg": str(svg_path),
             "legend": str(legend_path),
+            "legend_card": str(legend_card_path) if legend_card_path else "",
+            "braille_map": str(braille_map_path),
             "report": str(report_path),
             "trace": str(trace_path),
             "audio": str(audio_path),
@@ -149,6 +158,9 @@ def _print_build_result(result: dict[str, Any]) -> None:
     print(f"model: {result['paths']['stl']}")
     print(f"preview: {result['paths']['svg']}")
     print(f"legend: {result['paths']['legend']}")
+    if result["paths"].get("legend_card"):
+        print(f"legend card: {result['paths']['legend_card']}")
+    print(f"braille map: {result['paths']['braille_map']}")
     print(f"report: {result['paths']['report']}")
     print(f"trace: {result['paths']['trace']}")
     print(f"audio: {result['paths']['audio']}")

@@ -33,6 +33,8 @@ from .. import __version__ as core_version
 from .. import cnbraille
 from ..geometry import Mesh, build_mesh
 from ..layout import LayoutResult, build_layout
+from ..braille_map import write_braille_map
+from ..legend import indexed_entries, other_marks, write_legend_card_stl, write_legend_svg
 from ..model import Diagram, diagram_from_dict
 from ..model3d import (
     Model3DError,
@@ -2633,6 +2635,25 @@ class TouchLearnAgent:
             )
             raise
 
+    def _write_legend_assets(self, layout: LayoutResult, job_dir: Path, prefix: str = "") -> dict[str, Any]:
+        """Write the visual A6 legend, the tactile A6 card and the decoder sheet.
+
+        Only numbered or marked plates carry a legend, so an unlabelled scene
+        does not ship an empty card.  The card is a separate thin plate; the
+        job ZIP picks it up through :meth:`_artifact_list`.  The decoder sheet
+        is written for every plate because every plate carries braille.
+        """
+        map_path = write_braille_map(layout, job_dir / f"{prefix}braille_map.md")
+        if not (indexed_entries(layout) or other_marks(layout)):
+            return {"legend": None, "legend_card": None, "braille_map": map_path.name}
+        legend_path = write_legend_svg(layout, job_dir / f"{prefix}legend.svg")
+        card_path = write_legend_card_stl(layout, job_dir / f"{prefix}legend_card.stl")
+        return {
+            "legend": legend_path.name,
+            "legend_card": card_path.name,
+            "braille_map": map_path.name,
+        }
+
     def _build_function(self, job_dir: Path, fields: dict[str, Any], progress: Progress) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         progress(10, "解析函数与关键点")
         expression_text = str(fields.get("expression") or "").strip()
@@ -2733,6 +2754,7 @@ class TouchLearnAgent:
         mesh = build_mesh(layout)
         write_binary_stl(mesh, job_dir / "model.stl")
         write_svg(layout, job_dir / "preview.svg")
+        legend_assets = self._write_legend_assets(layout, job_dir)
         _write_json(job_dir / "decision_trace.json", layout.trace + [{"stage": "layout", "action": "summary", "decision": layout.summary()}])
         report = check_plate(layout, mesh, audio_ready=False)
         return [], {
@@ -2747,6 +2769,7 @@ class TouchLearnAgent:
             "geometry": {
                 "kind": "tactile_plate",
                 "diagram": payload,
+                "legend": legend_assets,
                 "layout_summary": layout.summary(),
                 "mesh": mesh.stats(),
                 "warnings": layout.warnings,
@@ -2850,6 +2873,7 @@ class TouchLearnAgent:
         mesh = build_mesh(layout)
         write_binary_stl(mesh, job_dir / f"{prefix}model.stl")
         write_svg(layout, job_dir / f"{prefix}preview.svg")
+        legend_assets = self._write_legend_assets(layout, job_dir, prefix)
         _write_json(
             job_dir / f"{prefix}decision_trace.json",
             layout.trace + [{"stage": "layout", "action": "summary", "decision": layout.summary()}],
@@ -2869,6 +2893,7 @@ class TouchLearnAgent:
                 "diagram": payload,
                 "circuit": circuit,
                 "scene_summary": summary,
+                "legend": legend_assets,
                 "layout_summary": layout.summary(),
                 "mesh": mesh.stats(),
                 "warnings": warnings + list(layout.warnings),
@@ -2957,6 +2982,7 @@ class TouchLearnAgent:
         mesh = build_mesh(layout)
         write_binary_stl(mesh, job_dir / "model.stl")
         write_svg(layout, job_dir / "preview.svg")
+        legend_assets = self._write_legend_assets(layout, job_dir)
         _write_json(job_dir / "decision_trace.json", layout.trace + [{"stage": "layout", "action": "summary", "decision": layout.summary()}])
         report = check_plate(layout, mesh, audio_ready=False)
         return [], {
@@ -2971,6 +2997,7 @@ class TouchLearnAgent:
             "geometry": {
                 "kind": "tactile_plate",
                 "diagram": payload,
+                "legend": legend_assets,
                 "layout_summary": layout.summary(),
                 "mesh": mesh.stats(),
                 "warnings": layout.warnings,
@@ -4079,6 +4106,9 @@ class TouchLearnAgent:
             "文件",
             "- model.stl            触觉板或三维模型，可直接送入切片软件",
             "- preview.svg          预览图（不是打印文件）",
+            "- legend.svg           A6 图例卡（视觉版，给教师与陪同者）",
+            "- legend_card.stl      A6 触觉图例卡（中文盲文，可与主板配套打印）",
+            "- braille_map.md       中文盲文逐字对照表（板上的点阵对应哪个字）",
             "- plate_model.stl      双模式输出的配套触觉总览板（若有）",
             "- plate_preview.svg    配套触觉板预览（若有）",
             "- model_spec.json      三维模型的结构化规格（若有）",

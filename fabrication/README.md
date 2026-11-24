@@ -10,13 +10,16 @@
 |---|---|---:|---|
 | A5 机械臂板 | `dist/robot-arm-6axis/model.stl` | 3 | FDM 打印，PLA，浮雕朝上 |
 | A5 函数板 | `dist/quadratic-y-x2-2x-3/model.stl` | 3 | 同上 |
-| A6 机械臂图例 | `fabrication/print/robot-arm-6axis-legend-A6.pdf` | 2（1 用 1 备） | 250–300 g 白卡，100% 原尺寸 |
-| A6 函数图例 | `fabrication/print/quadratic-y-x2-2x-3-legend-A6.pdf` | 2（1 用 1 备） | 同上 |
+| A6 机械臂图例（视觉版） | `fabrication/print/robot-arm-6axis-legend-A6.pdf` | 2（1 用 1 备） | 250–300 g 白卡，100% 原尺寸 |
+| A6 函数图例（视觉版） | `fabrication/print/quadratic-y-x2-2x-3-legend-A6.pdf` | 2（1 用 1 备） | 同上 |
+| A6 机械臂图例（触觉版） | `dist/robot-arm-6axis/legend_card.stl` | 2（1 用 1 备） | FDM 打印，PLA，1.2 mm 薄板 |
+| A6 函数图例（触觉版） | `dist/quadratic-y-x2-2x-3/legend_card.stl` | 2（1 用 1 备） | 同上 |
 | 试运行音频 | `fabrication/audio/*.wav` | 2 | 本地或线上播放，见第 3 节 |
 | 二维码 | 用 `scripts/make_qr.py` 生成 | 每案例 1 张 | 等音频页面 URL 确定后再生成 |
-| 图例源文件 | `dist/<case>/legend.svg` | — | 需要改版时编辑这个文件 |
+| 图例源文件 | `dist/<case>/legend.svg`、`dist/<case>/legend_card.stl` | — | 视觉版与触觉版分别生成 |
+| 逐字对照表 | `dist/<case>/braille_map.md` | 每案例 1 份 | 随板交付，核对每个盲文字符的点序 |
 
-A6 PDF 已经把图例底色改成白色，减少打印墨水并提高黑白对比度。`dist/<case>/legend.svg` 仍是屏幕预览用的暖白底版本。
+A6 PDF 已经把图例底色改成白色，减少打印墨水并提高黑白对比度。`dist/<case>/legend.svg` 仍是屏幕预览用的暖白底版本。触觉版不需要纸张，直接打印 `legend_card.stl`；两版内容同源，编号与名称一致。
 
 ## 1. A5 触觉板
 
@@ -104,7 +107,17 @@ PDF 页面由浏览器导出，实测约 **105.16 × 148.17 mm**，比标准 A6 
 - 图例卡不是触觉板，它的作用是让教师、家长或陪同者把编号映射到名称；盲人读者主要依靠板上的盲文编号和音频。
 - 两张卡分别对应机械臂和函数图，不要混用。发放时让图例卡与板子的方向一致：缺口朝左上。
 
-### 2.3 送打印店时直接发这段
+### 2.3 触觉版 A6 图例卡（可选，推荐）
+
+视觉版给陪同者看；触觉版让盲人读者自己摸到完整中文名称，不依赖别人朗读。
+
+- 文件：`dist/<case>/legend_card.stl`，105 × 148 mm，底板 1.2 mm，盲文点高 0.8 mm。
+- 材料与参数同 A5 板：PLA，0.4 mm 喷嘴，0.2 mm 层高，3 圈墙，15–20% 填充，不加支撑，浮雕朝上。
+- 不需要缩放。卡片较薄，取件时从热床上整体推起，不要只捏一角；首层附着好可以不加裙边。
+- 左上角同样有 5 × 5 mm 方向缺口，发放时与主板方向一致。
+- 首件检查：序号数字清楚、盲文点圆润不粘连、卡片不翘曲；长名称（如“末端执行器”）换行后仍能按行读完。
+
+### 2.4 送打印店时直接发这段
 
 ```text
 纸张打印需求：

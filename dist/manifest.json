@@ -7,8 +7,10 @@
     {
       "files": {
         "audio": "dist/robot-arm-6axis/audio.txt",
+        "braille_map": "dist/robot-arm-6axis/braille_map.md",
         "diagram": "dist/robot-arm-6axis/diagram.json",
         "legend": "dist/robot-arm-6axis/legend.svg",
+        "legend_card": "dist/robot-arm-6axis/legend_card.stl",
         "report": "dist/robot-arm-6axis/report.json",
         "stl": "dist/robot-arm-6axis/model.stl",
         "svg": "dist/robot-arm-6axis/preview.svg",
@@ -48,8 +50,10 @@
     {
       "files": {
         "audio": "dist/quadratic-y-x2-2x-3/audio.txt",
+        "braille_map": "dist/quadratic-y-x2-2x-3/braille_map.md",
         "diagram": "dist/quadratic-y-x2-2x-3/diagram.json",
         "legend": "dist/quadratic-y-x2-2x-3/legend.svg",
+        "legend_card": "dist/quadratic-y-x2-2x-3/legend_card.stl",
         "report": "dist/quadratic-y-x2-2x-3/report.json",
         "stl": "dist/quadratic-y-x2-2x-3/model.stl",
         "svg": "dist/quadratic-y-x2-2x-3/preview.svg",
@@ -87,5 +91,5 @@
       "title_zh": "二次函数 y=x²-2x-3 图像"
     }
   ],
-  "tool": "touchlearn 0.3.9"
+  "tool": "touchlearn 0.4.0"
 }

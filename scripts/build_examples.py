@@ -51,7 +51,7 @@ def build_case(source: Path) -> dict:
         "mesh": report.metrics.get("mesh", {}),
         "files": {
             name: str(Path(result["paths"][name]).relative_to(ROOT)).replace("\\", "/")
-            for name in ("stl", "svg", "legend", "report", "trace", "audio", "diagram")
+            for name in ("stl", "svg", "legend", "legend_card", "braille_map", "report", "trace", "audio", "diagram")
         },
     }
 

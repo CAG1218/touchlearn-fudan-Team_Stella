@@ -312,7 +312,10 @@ class PrintableCompositionTests(unittest.TestCase):
         self.assertEqual("".join(braille["title_lines"]), "站立小狗")
         self.assertFalse(braille["title_truncated"])
         self.assertEqual(braille["pinyin"], ["zhan4", "li4", "xiao3", "gou3"])
-        self.assertEqual([row["char"] for row in braille["title_cells"]], list("站立小狗"))
+        self.assertEqual(
+            [row["char"] for row in braille["title_cells"]],
+            ["站", "立", "分词空方", "小", "狗"],
+        )
         self.assertEqual(braille["title_dots"], 28)
 
     def test_legend_line_separates_number_and_reports_real_dots(self) -> None:

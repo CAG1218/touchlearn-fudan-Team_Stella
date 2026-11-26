@@ -197,6 +197,13 @@ class _Builder:
 
     def braille(self, feature: Feature, x: float, y: float, text: str) -> None:
         feature.primitives.append(Primitive("braille", ((x, y),), text=text))
+        # The lexicon is finite: a long unmatched run is written with no
+        # internal blank cell.  The readings are still correct, but the word
+        # break is a guess, so the build says so instead of staying silent.
+        for run in braille.unverified_segments(text):
+            note = f"盲文分词未核验：「{run}」词典未收录，按连写处理，请对照 braille_map 复核空方。"
+            if note not in self.warnings:
+                self.warnings.append(note)
 
     def index_label(self, feature: Feature, x: float, y: float, index: int) -> None:
         # A number is standard print, not braille.  Duplicating it in dots
@@ -206,6 +213,15 @@ class _Builder:
     def text_with_braille(self, feature: Feature, x: float, y: float, text: str) -> None:
         self.text(feature, x, y, text, 6.0)
         self.braille(feature, x, y + 7.5, text)
+
+    def prune_empty(self) -> None:
+        """Drop features that never got a primitive.
+
+        A title or equation whose braille text has an unencodable character is
+        created before the encoder runs; without this, its empty bbox crashes
+        the clearance checks and the printability report.
+        """
+        self.features[:] = [item for item in self.features if item.primitives]
 
     def dashed_line(self, feature: Feature, start: Point, end: Point, width: float, dash: float = 5.0, gap: float = 5.0) -> None:
         dx = end[0] - start[0]
@@ -407,9 +423,25 @@ def _layout_quadratic(diagram: Diagram) -> LayoutResult:
     builder.braille(title, (width - braille.width("二次函数图像")) / 2.0, 10.0, "二次函数图像")
 
     equation = builder.feature("equation", "label")
-    # The spelled-out sentence is 162.9 mm wide and cannot fit on A5; keep the
-    # mathematical shorthand, which is still read as "y 等于 x 的平方减 2x 减 3".
-    builder.braille(equation, 20.0, 28.0, "y=x的平方-2x-3")
+    # The equation is maths, not prose, so it uses GB/T 18028: a 数号 before
+    # every digit, a 字母号 before each variable and a 点乘号 for the scalar
+    # product.  The 点乘号 is the sign print uses between letters and it keeps
+    # the line at 128 mm; a 乘号 would add a blank cell before every factor and
+    # run to 149 mm, past the 136 mm printable width of A5.
+    equation_text = "y=x·x-2x-3"
+    equation_width = braille.width(equation_text)
+    if equation_width <= width - 2.0 * 4.0:
+        builder.braille(equation, (width - equation_width) / 2.0, 28.0, equation_text)
+        builder.trace.append(
+            {
+                "stage": "layout",
+                "action": "encode_equation",
+                "decision": f"GB/T 18028 maths: {equation_text} ({equation_width:.1f} mm)",
+                "reason": "Digits take 数号, letters take 字母号, and the scalar product uses the 点乘号 so the line fits the plate.",
+            }
+        )
+    else:
+        builder.warnings.append("解析式盲文超出版面宽度，已省略；请缩小公式或换更大纸张。")
 
     def to_canvas(x_value: float, y_value: float) -> Point:
         return (50.0 + x_value * scale, 110.0 - y_value * scale)

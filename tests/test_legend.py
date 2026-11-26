@@ -135,7 +135,8 @@ class BrailleMapTests(unittest.TestCase):
         for source in (self.robot, self.quadratic):
             sheet = build_braille_map(source)
             self.assertIn("GF 0019-2018", sheet)
-            self.assertIn("| 字符 | 类别 | 拼音 | 点序 |", sheet)
+            self.assertIn("| 内容 | 类别 | 读音 | 点序 | 说明 |", sheet)
+            self.assertIn("GB/T 18028-2010", sheet)
             texts = {
                 primitive.text
                 for feature in source.features

@@ -459,6 +459,20 @@ def _chinese_label(text: str, *, max_chars: int = 8) -> str:
     return value[:max_chars]
 
 
+def _han_label(text: str, *, max_chars: int = 10) -> str:
+    """Keep only Chinese characters, for a heading that has no maths in it.
+
+    A title such as "二次函数 y=x²-2x-3 图像" cannot be one braille line: the
+    ASCII part is not raised for touch and "²" has no checked cell.  The
+    equation is spelled on its own line below the heading, so the heading
+    keeps just the Chinese words.
+    """
+    value = "".join(
+        character for character in str(text or "") if "\u4e00" <= character <= "\u9fff"
+    )
+    return value[:max_chars]
+
+
 def _footer(
     builder: _Builder,
     width: float,
@@ -525,6 +539,100 @@ def _format_number(value: float) -> str:
     if abs(value - round(value)) < 1e-6:
         return str(int(round(value)))
     return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+class MathLabelError(ValueError):
+    """The expression needs a symbol whose GB/T 18028 cell is not checked."""
+
+
+# Linearising the AST into one line can drop a bracket only when the child is
+# strong enough to bind on its own.  Levels follow school maths: + - then * /,
+# a unary sign binds tighter, and a power expands to a product, so it prints at
+# the product level.
+_MATH_LEVEL = {"+": 1, "-": 1, "*": 2, "/": 2}
+_MATH_MAX_POWER = 4
+
+
+def _math_level(node: tuple) -> int:
+    kind = node[0]
+    if kind in {"num", "var"}:
+        return 4
+    if kind == "unary":
+        return 3
+    if kind == "call":
+        raise MathLabelError("函数名暂未收录函数号")
+    if kind == "bin":
+        operator = node[1]
+        if operator == "^":
+            return 2
+        if operator in _MATH_LEVEL:
+            return _MATH_LEVEL[operator]
+    raise MathLabelError(f"未收录的表达式结构：{kind}")
+
+
+def _math_label(node: tuple, minimum: int = 0) -> str:
+    """Print one AST as GB/T 18028 maths text for the braille encoder.
+
+    ``x^2`` becomes ``x·x`` because the 乘方号 cell is not verified here; the
+    scalar product uses the 点乘号 that print itself puts between letters.
+    Anything that would need brackets, a 乘方号 or a 函数号 raises
+    :class:`MathLabelError`, so the plate drops the line instead of printing a
+    guessed dot pattern.
+    """
+    if _math_level(node) < minimum:
+        raise MathLabelError("需要括号")
+    kind = node[0]
+    if kind == "num":
+        value = float(node[1])
+        if not math.isfinite(value) or value < 0:
+            raise MathLabelError("数字超出可打印范围")
+        return _format_number(value)
+    if kind == "var":
+        return "x"
+    if kind == "unary":
+        sign = node[1]
+        if sign not in {"+", "-"}:
+            raise MathLabelError(f"未收录一元符号：{sign}")
+        body = _math_label(node[2], 2)
+        if sign == "+":
+            return body
+        if body.startswith("-"):
+            raise MathLabelError("双重负号需要括号")
+        return "-" + body
+
+    operator, left_node, right_node = node[1], node[2], node[3]
+    if operator == "^":
+        if right_node[0] != "num":
+            raise MathLabelError("乘方指数暂只支持整数")
+        exponent = float(right_node[1])
+        if exponent != int(exponent) or not 1 <= exponent <= _MATH_MAX_POWER:
+            raise MathLabelError(f"乘方指数 {exponent:g} 暂无规范点形（只支持 1-4 次）")
+        base = _math_label(left_node, 4)
+        return "·".join([base] * int(exponent))
+    if operator == "*":
+        # A factor of one is invisible on paper, so it is invisible here too.
+        if left_node[0] == "num" and float(left_node[1]) == 1.0:
+            return _math_label(right_node, minimum)
+        left = _math_label(left_node, 2)
+        if left_node[0] == "num" and right_node[0] == "var":
+            return left + "x"
+        right = _math_label(right_node, 2)
+        if right[0] in "+-":
+            raise MathLabelError("点乘号后不能直接跟正负号")
+        return left + "·" + right
+    if operator == "/":
+        return _math_label(left_node, 2) + "÷" + _math_label(right_node, 4)
+
+    left = _math_label(left_node, 1)
+    if operator == "+" and right_node[0] == "unary" and right_node[1] == "-":
+        # "+ -2x" is just "-2x"; two signs would read as two operations.
+        return left + _math_label(right_node, 2)
+    right = _math_label(right_node, 2)
+    if operator == "+" and right[0] == "-":
+        return left + right
+    if operator == "-" and right[0] == "-":
+        raise MathLabelError("减去负数需要括号")
+    return left + operator + right
 
 
 def _axis_arrow(builder: _Builder, feature: Feature, tip: Point, direction: Point, length: float = 5.0, half: float = 2.0) -> None:
@@ -621,12 +729,15 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
     # The plate carries no raised Latin title.  A blind reader cannot feel
     # letter shapes, so the title is Chinese braille only; the English title
     # stays in the web UI and the audio track.
-    title_zh = _chinese_label(getattr(diagram, "title_zh", "") or "函数图像", max_chars=10)
+    raw_title = getattr(diagram, "title_zh", "") or "函数图像"
+    title_zh = _han_label(raw_title) or _chinese_label(raw_title, max_chars=10)
     title = builder.feature("title", "title", label=title_zh)
     if title_zh and tactile_braille.safe_text(title_zh):
         title_braille_width = tactile_braille.width(title_zh)
         if title_braille_width <= width - 2 * margin:
             builder.braille(title, (width - title_braille_width) / 2.0, margin + 2.0, title_zh)
+    elif title_zh:
+        builder.warnings.append(f"标题“{title_zh}”含无法编码的字符，盲文标题已省略。")
 
     # The expression is mathematical notation, not prose: keep the standard
     # raised glyphs so it can be compared with a printed textbook.  Chinese
@@ -648,9 +759,47 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
                 equation_height,
             )
 
+    # Below the printed form the same equation is repeated in GB/T 18028
+    # maths code: 数号 before every digit, 字母号 before each variable, and the
+    # 点乘号 between the factors of x².  A sign without a checked cell stops the
+    # line rather than guessing a pattern, and the warning says which one.
+    equation_braille = None
+    try:
+        math_text = "y=" + _math_label(expression.node)
+    except MathLabelError as error:
+        math_text = ""
+        builder.warnings.append(f"解析式盲文已省略：{error}")
+        builder.trace.append(
+            {
+                "stage": "layout",
+                "action": "skip_equation_braille",
+                "decision": str(error),
+                "reason": "GB/T 18028 has no verified cell for this construct, so the braille line is left out instead of printed with a guess.",
+            }
+        )
+    if math_text:
+        math_width = tactile_braille.width(math_text)
+        if math_width <= width - 2.0 * margin:
+            equation_braille = builder.feature("equation_braille", "equation", label=expression.canonical)
+            builder.braille(equation_braille, (width - math_width) / 2.0, margin + 16.0, math_text)
+            builder.trace.append(
+                {
+                    "stage": "layout",
+                    "action": "encode_equation",
+                    "decision": f"GB/T 18028 maths: {math_text} ({math_width:.1f} mm)",
+                    "reason": "Digits take 数号, letters take 字母号 and the squared term is spelled x·x because the 乘方号 cell is unverified.",
+                }
+            )
+        else:
+            builder.warnings.append(f"解析式盲文 {math_width:.1f} mm 超出版面宽度，已省略。")
+
+    # Header stack measured from the top margin: braille title 2.0-8.8,
+    # printed equation 10-15, braille equation 16-22.8.  plot_top leaves 3.2 mm
+    # of clear paper under the last braille line so the y-axis label, placed a
+    # few mm below it, keeps its 2 mm annotation clearance.
     plot_left = margin + 11.0
     plot_right = width - margin - 3.0
-    plot_top = margin + 24.0
+    plot_top = margin + 26.0
     plot_bottom = height - margin - 42.0
     plot_width = plot_right - plot_left
     plot_height = plot_bottom - plot_top
@@ -755,8 +904,11 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
 
     # The braille title and equation occupy physical space above the plot even
     # though they are not obstacles for the curve; without them a crowded plate
-    # can drop an axis label into the title band.
-    obstacles: list[Feature] = [title, equation, axes]
+    # can drop an axis label into the title band.  A label that could not be
+    # encoded has no primitive and no bbox, so it is left out of the geometry.
+    obstacles: list[Feature] = [
+        item for item in (title, equation, equation_braille, axes) if item is not None and item.primitives
+    ]
     reserved: list[BBox] = [(*_qr_zone(builder, width, height, margin),)]
 
     # Mark discontinuities with a dashed vertical line before clipping the curve.
@@ -987,6 +1139,7 @@ def build_function_layout(diagram: Diagram) -> LayoutResult:
         }
     )
 
+    builder.prune_empty()
     return LayoutResult(
         diagram=diagram,
         width=width,
@@ -1411,6 +1564,7 @@ def build_robot_layout(diagram: Diagram) -> LayoutResult:
         }
     )
 
+    builder.prune_empty()
     return LayoutResult(
         diagram=diagram,
         width=width,

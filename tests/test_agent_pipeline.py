@@ -375,8 +375,12 @@ class AgentPipelineTests(unittest.TestCase):
         self.assertEqual(kwargs["model"], "deepseek/deepseek-flash")
         self.assertEqual(kwargs["effort"], "medium")
 
-    def test_plates_use_braille_only_for_chinese_text(self) -> None:
-        """Chinese prose is braille; mathematics keeps standard raised glyphs."""
+    def test_plates_use_braille_only_for_chinese_text_and_maths(self) -> None:
+        """Chinese prose and the GB/T 18028 maths line are the only braille.
+
+        A Latin title or a key-point coordinate must stay in standard raised
+        print; if one leaked into the dot layer this would catch it.
+        """
         cases = [
             {"subject": "function", "expression": "x^2-2x-3", "paper": "A5"},
             {"subject": "scene", "template": "triangle", "paper": "A5"},
@@ -410,12 +414,18 @@ class AgentPipelineTests(unittest.TestCase):
                 self.assertTrue(raised, "plate should carry standard raised notation")
                 self.assertTrue(braille_texts, "plate should carry Chinese braille")
                 for value in braille_texts:
-                    self.assertRegex(
+                    if any("\u4e00" <= character <= "\u9fff" for character in value):
+                        continue
+                    # The one allowed non-Chinese braille line is the equation in
+                    # GB/T 18028 code.  It is lowercase because the variables are
+                    # lowercase; the printed form keeps the uppercase convention.
+                    self.assertEqual(
                         value,
-                        r"[\u4e00-\u9fff]",
-                        msg=f"braille is reserved for Chinese text, found {value!r}",
+                        "y=x·x-2x-3",
+                        msg=f"only the GB/T 18028 equation may be non-Chinese braille, found {value!r}",
                     )
                 if payload["subject"] == "function":
+                    self.assertIn("y=x·x-2x-3", braille_texts)
                     # The expression and each key-point coordinate stay in
                     # standard print instead of turning into dot patterns.
                     self.assertTrue(

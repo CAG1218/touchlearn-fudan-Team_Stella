@@ -1413,7 +1413,7 @@ class TouchLearnAgent:
             notes.append("y 范围根据当前 x 区间的曲线与关键点自动计算。")
         if clip["clipped"] and window_warnings:
             notes.append(f"注意：{window_warnings[-1]}")
-        questions.append("标题与中文标注使用中文盲文（GF 0019-2018），数字和拉丁字母使用 UEB，并附中文讲解音频；建议交付前由盲校教师复核多音字与分词。")
+        questions.append("标题与中文标注使用中文盲文（GF 0019-2018），数字、拉丁字母和运算符号使用 GB/T 18028-2010 数学盲文，并附中文讲解音频；建议交付前由盲校教师复核多音字与分词。")
         if images:
             notes.append("图片已保存为来源证据；本次几何使用你确认的解析式。")
         return Draft(
@@ -3018,8 +3018,8 @@ class TouchLearnAgent:
             Check(
                 "encoding.chinese_braille",
                 STATUS_REVIEW,
-                "GF 0019-2018 (Chinese) + UEB (digits/Latin)",
-                "中文标题、底座图例和部件表面盲文按 GF 0019-2018 编码并按词连写；盲符方距 6.9 mm，比二手参考上限多 0.1 mm，是 FDM 防粘连补偿。数字与拉丁字母仍用 UEB。交付前建议由盲校教师复核多音字与分词。",
+                "GF 0019-2018 (Chinese) + GB/T 18028-2010 (digits/Latin/maths)",
+                "中文标题、底座图例和部件表面盲文按 GF 0019-2018 编码并按词连写；盲符方距 6.9 mm，比二手参考上限多 0.1 mm，是 FDM 防粘连补偿。数字、拉丁字母和数学符号按 GB/T 18028-2010 加数号/字母号。交付前建议由盲校教师复核多音字与分词。",
             )
         )
         size = result.meta["size_mm"]
@@ -4076,7 +4076,7 @@ class TouchLearnAgent:
                 "",
                 "## 已知限制",
                 "",
-                "- 三维模型的中文名称使用 GF 0019-2018 盲文点字（1.6 mm 点径、0.8 mm 点高），优先刻在部件可触摸表面；行星和过小部件刻在底座表面，不生成竖立名牌。平面场景板仍使用 UEB 英文字母和阿拉伯数字，报告标记 `NEEDS_REVIEW`。",
+                "- 三维模型的中文名称使用 GF 0019-2018 盲文点字（1.6 mm 点径、0.8 mm 点高），优先刻在部件可触摸表面；行星和过小部件刻在底座表面，不生成竖立名牌。平面场景板的中文标签同样走 GF 0019-2018，数字、拉丁字母和数学符号按 GB/T 18028-2010 编码；尚未经盲人读者或盲校教师实测，报告标记 `NEEDS_REVIEW`。",
                 "- GB/T 40142-2021 的公开全文只获取到封面和目录；触摸图形参数采用公开解读值，条款级核对标记为待复核。",
                 "- GB/T 15720-2008 已于 2025-11-03 废止，本报告不把它作为现行依据。",
                 "- 图片和工程图在离线模式下只作为来源留档，不凭空测量尺寸；确认后的解析式或参数才进入几何。",
@@ -4148,6 +4148,7 @@ class TouchLearnAgent:
                 pinyin = f"  {row.get('pinyin')}" if row.get("pinyin") else ""
                 lines.append(f"  {row.get('char')}{pinyin}  {cells}")
             lines.append("  点格顺序：左上 1、左中 2、左下 3；右上 4、右中 5、右下 6。")
+            lines.append("  每方是声母、韵母或声调符号，不是英文字母；用拉丁字母盲文表读会得到无意义的字母串。")
             for item in braille.get("labels") or []:
                 suffix = "（名称过长，图例只放下了部分字符）" if item.get("truncated") else ""
                 lines.append(f"- 图例 {item.get('legend_index')}：{item.get('text')} → {item.get('legend_line')}{suffix}")
@@ -4216,7 +4217,7 @@ class TouchLearnAgent:
             "print": metadata.get("print"),
             "artifacts": artifacts,
             "known_limitations": [
-                "3D models label parts with Chinese Braille (GF 0019-2018) directly on touchable surfaces; planets and parts too small for a name use a braille legend on the base instead of standing flags. Flat scene plates still use UEB letters and Arabic numerals.",
+                "3D models label parts with Chinese Braille (GF 0019-2018) directly on touchable surfaces; planets and parts too small for a name use a braille legend on the base instead of standing flags. Flat scene plates use the same Chinese Braille, with digits and Latin letters taking GB/T 18028-2010 number/letter signs; both paths are marked NEEDS_REVIEW until a blind reader checks them.",
                 "GB/T 40142-2021 clause values are taken from public summaries; the official full text was not obtained.",
                 "Images and engineering drawings are archived as provenance, not measured automatically in offline mode.",
                 "Generated scenes are structural schematics; they do not reproduce photo detail or represent true dimensions.",

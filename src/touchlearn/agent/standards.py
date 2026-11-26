@@ -175,7 +175,7 @@ STANDARDS: tuple[StandardRef, ...] = (
         authority="教育部、国家语委、中国残联",
         url="http://www.moe.gov.cn/jyb_sjzl/ziliao/A19/201807/W020180725666187054299.pdf",
         scope="国家通用盲文的声母、韵母、声调、标点和书写规则。",
-        note="编码规则必须以此为准。当前 v1 触觉板仍使用 UEB 英文与阿拉伯数字，中文盲文标注尚未开启，报告中单列为待复核项。",
+        note="编码规则必须以此为准。中文标注已按声母、韵母、声调与二级标调规则编码，并启用 §11 定字简写；每块板附 braille_map 逐方对照。尚未经盲文专家或盲人读者实测，报告中单列为待复核项。",
     ),
     StandardRef(
         number="国歌盲文方案（2025）",
@@ -219,7 +219,7 @@ STANDARDS: tuple[StandardRef, ...] = (
         authority="国家市场监督管理总局、国家标准化管理委员会",
         url="https://std.samr.gov.cn/gb/search/gbDetailed?id=71F772D7D8D5D3A7E05397BE0A0AB82A",
         scope="盲文数学、物理、化学符号的写法和使用规则；适用于盲文教育、出版及有关领域。",
-        note="2026-03-02 复审结论为修订，修订计划 20261379-T-314 正在起草。v1 尚未接入中文盲文数学符号，函数板使用 UEB/ASCII 标注并单列为待复核项。",
+        note="2026-03-02 复审结论为修订，修订计划 20261379-T-314 正在起草。函数板解析式已按该标准的数号、字母号和运算符号编码；括号、乘方号、函数号没有可核对的公开点表，遇到时省略盲文行而不猜点形。",
     ),
     StandardRef(
         number="GB/T 16431-2008",
@@ -397,7 +397,7 @@ RULES: tuple[Rule, ...] = (
         source_url="http://www.moe.gov.cn/jyb_sjzl/ziliao/A19/201807/W020180725666187054299.pdf",
         confidence="official-scope",
         applicability="tactile_plate",
-        note="v1 触觉板仍使用 UEB 英文和阿拉伯数字；中文盲文编码模块尚未启用，报告标为待复核。",
+        note="中文标注由 cnbraille 按 GF 0019-2018 编码（含 §11 定字简写与分词连写）；数字、拉丁字母和数学符号走 GB/T 18028-2010。尚未经盲文专家或盲人读者实测，报告保持待复核。",
     ),
     Rule(
         id="encoding.chinese_math_braille",
@@ -410,7 +410,7 @@ RULES: tuple[Rule, ...] = (
         source_url="https://std.samr.gov.cn/gb/search/gbDetailed?id=71F772D7D8D5D3A7E05397BE0A0AB82A",
         confidence="official-scope",
         applicability="tactile_plate",
-        note="该标准 2026 年复审结论为修订。v1 的函数板使用 UEB/ASCII 标注，中文盲文数学模块尚未接入，报告中与中文盲文一并列为待复核。",
+        note="该标准 2026 年复审结论为修订。函数板解析式已接入数号、字母号与运算符号点表；括号、乘方号、函数号未收录时省略该行并在报告里写明原因。",
     ),
     Rule(
         id="audio.script",
@@ -699,8 +699,8 @@ def check_plate(
         Check(
             "encoding.chinese_braille",
             STATUS_REVIEW,
-            "GF 0019-2018（中文）+ UEB（数字/英文）" if has_cn_braille else "UEB + 阿拉伯数字",
-            "中文标注已按 GF 0019-2018 编码声母、韵母、声调并按词连写；数字和拉丁字母仍用 UEB，数学符号尚未接入 GB/T 18028-2010。交付前建议由盲校教师复核多音字与分词。"
+            "GF 0019-2018（中文）+ GB/T 18028-2010（数字/字母/数学）" if has_cn_braille else "UEB + 阿拉伯数字",
+            "中文标注已按 GF 0019-2018 编码声母、韵母、声调并按词连写，启用 §11 定字简写；数字、拉丁字母和数学符号按 GB/T 18028-2010 加数号/字母号，未收录的符号省略而不猜点形。尚未经盲人读者或盲校教师实测，交付前建议按 docs/standards/braille-review-protocol.md 逐方读校。"
             if has_cn_braille
             else "当前板面没有中文盲文标注，使用 UEB 英文和阿拉伯数字；需要中文刻字时请启用中文标注或换用更大的板材。",
         )

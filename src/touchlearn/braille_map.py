@@ -28,9 +28,14 @@ def build_braille_map(layout: LayoutResult) -> str:
         "# 中文盲文逐字对照表",
         "",
         f"- 图：{title}（`{diagram.id}`）",
-        "- 编码：GF 0019-2018《汉语盲文点字方案》二级标调",
+        "- 编码：GF 0019-2018《国家通用盲文方案》，按声母 + 韵母 + 声调三格拼写",
+        "- 数学：数字、拉丁字母与运算符号按 GB/T 18028-2010，数字前加数号，字母前加字母号",
         "- 点序：`1 4` / `2 5` / `3 6`；单元格内按点号升序排列",
-        "- 说明：同一段文本只列一次；数字与拉丁字母按 UEB 点字列出",
+        "- 分词：词内连写，词与词之间空一方（表中记作「分词空方」）",
+        "- 说明：同一段文本只列一次；「简写」一行是 GF 0019 §11 的定字简写",
+        "",
+        "> 注意：中文盲文的每一方是「声母 / 韵母 / 声调」符号，不是英文字母。",
+        "> 用拉丁字母盲文表逐格去读会得到无意义的字母串，请按本表的读音列对照。",
         "",
     ]
 
@@ -47,18 +52,21 @@ def build_braille_map(layout: LayoutResult) -> str:
             lines.append("")
             lines.append(f"文本：{text}")
             lines.append("")
-            lines.append("| 字符 | 类别 | 拼音 | 点序 |")
-            lines.append("|---|---|---|---|")
+            lines.append("| 内容 | 类别 | 读音 | 点序 | 说明 |")
+            lines.append("|---|---|---|---|---|")
             try:
                 rows = cnbraille.describe_text(text)
             except cnbraille.BrailleError as error:
-                lines.append(f"| {text} | 无法编码 | - | {error} |")
+                lines.append(f"| {text} | 无法编码 | - | - | {error} |")
                 lines.append("")
                 continue
             for row in rows:
                 kind = row.get("kind") or "han"
-                pinyin = row.get("pinyin") or "-"
-                lines.append(f"| {row['char']} | {kind} | {pinyin} | {_dot_order(row['cells'])} |")
+                reading = row.get("pinyin") or row.get("symbol") or "-"
+                note = "简写" if row.get("shorthand") else "-"
+                lines.append(
+                    f"| {row['char']} | {kind} | {reading} | {_dot_order(row['cells'])} | {note} |"
+                )
             lines.append("")
 
     lines.append("")

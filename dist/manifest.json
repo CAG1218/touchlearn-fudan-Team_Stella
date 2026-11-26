@@ -41,7 +41,7 @@
       "printability": "PASS",
       "stl": {
         "bytes": 697884,
-        "sha256": "580bcf71f1e303cd404c16e61050c11a5ef6fe0562eaf199339c29e101a5034d",
+        "sha256": "a4dc0035b13d3f8d0404b94bf622bccab266497c64e559cd9618eca8d1c7d24c",
         "triangles": 13956
       },
       "title": "Six-Axis Robot Arm",
@@ -77,15 +77,15 @@
           210.0,
           3.8
         ],
-        "triangles": 21240,
-        "volume_mm3": 94964.551,
+        "triangles": 20880,
+        "volume_mm3": 94956.909,
         "watertight": true
       },
       "printability": "PASS",
       "stl": {
-        "bytes": 1062084,
-        "sha256": "f4c0567b13671874a8c96a2f824159e3ae2ffed808db98a2aa2de6d5dbf348bb",
-        "triangles": 21240
+        "bytes": 1044084,
+        "sha256": "47c6c6e08ee5989caaabf13f707cdd64bb515aed09a6d38f35378efa6f6751b0",
+        "triangles": 20880
       },
       "title": "Quadratic Function",
       "title_zh": "二次函数 y=x²-2x-3 图像"

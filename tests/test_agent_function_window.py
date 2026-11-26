@@ -215,6 +215,35 @@ class FunctionPreviewTests(unittest.TestCase):
         self.assertTrue(compliance["printable"])
         self.assertGreaterEqual(compliance["metrics"]["mesh_min_edge_mm"], 0.2)
 
+    def test_function_plate_carries_title_and_maths_braille_with_clearance(self) -> None:
+        """The header stack must stay printable after the maths braille line.
+
+        The braille title and the GB/T 18028 equation line are two separate
+        physical rows.  When the y-axis label was allowed to sit 1.81 mm under
+        the equation line the whole plate was reported non-printable, so this
+        locks both the clearance and the encoded content.
+        """
+        draft = self.agent.analyze({"subject": "function", "expression": "x^2-2x-3", "paper": "A5"})
+        self.assertTrue(draft["ready"], msg=draft.get("questions"))
+        with patch("touchlearn.agent.agent.synthesize_speech", return_value=(False, "test environment", None)):
+            result = self.agent.build(draft["id"], public_base_url="http://127.0.0.1:8765")
+        job_dir = Path(self.temp.name) / "jobs" / result["job_id"]
+
+        compliance = json.loads((job_dir / "compliance.json").read_text(encoding="utf-8"))
+        checks = {check["rule_id"]: check for check in compliance["checks"]}
+        self.assertTrue(compliance["printable"])
+        self.assertEqual(checks["tactile.annotation_distance"]["status"], "PASS")
+        self.assertGreaterEqual(float(checks["tactile.annotation_distance"]["measured"].split()[0]), 2.0)
+
+        sheet = (job_dir / "braille_map.md").read_text(encoding="utf-8")
+        self.assertIn("二次函数图像", sheet)
+        self.assertIn("y=x·x-2x-3", sheet)
+
+        trace = json.loads((job_dir / "decision_trace.json").read_text(encoding="utf-8"))
+        actions = [step["action"] for step in trace]
+        self.assertIn("encode_equation", actions)
+        self.assertNotIn("skip_equation_braille", actions)
+
 
 if __name__ == "__main__":
     unittest.main()

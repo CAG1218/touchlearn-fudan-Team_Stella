@@ -62,6 +62,12 @@
     { id: "A3", label: "A3", note: "297 × 420" },
   ];
   const PAPER_IDS = new Set(PAPER_CHOICES.map((item) => item.id));
+  // Free-form plates are named 自定义W×H and validated on the server too.
+  // Bounds mirror touchlearn.paper: never smaller than A5, never larger than A3.
+  const CUSTOM_PAPER_RE = /^自定义([0-9]+(?:\.[0-9]+)?)×([0-9]+(?:\.[0-9]+)?)$/;
+  const CUSTOM_MIN_SIDE = 148;
+  const CUSTOM_MAX_SIDE = 420;
+  const CUSTOM_MIN_AREA = 148 * 210;
   const GENERATION_MODES_KEY = "touchlearn.generation.modes.v1";
   const AUTH_TAB_KEY = "touchlearn.auth.tab.v1";
   const savedAuthTab = (() => {
@@ -85,7 +91,7 @@
     paper: (() => {
       try {
         const saved = window.localStorage.getItem(PAPER_KEY) || "";
-        return PAPER_IDS.has(saved) ? saved : "";
+        return PAPER_IDS.has(saved) || CUSTOM_PAPER_RE.test(saved) ? saved : "";
       } catch (error) {
         return "";
       }
@@ -179,6 +185,88 @@
     node.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => node.classList.remove("show"), 4200);
+    // Error toasts are invisible to a blind user who is not looking at the
+    // corner; repeat them through the same voice when that mode is on.
+    if (isError && window.touchlearnVoice && window.touchlearnVoice.isOn && window.touchlearnVoice.isOn()) {
+      window.touchlearnVoice.announce(message);
+    }
+  }
+
+  /* Keyboard focus stays inside a modal.  Without this a blind user can Tab
+     out of a dialog into the page behind it and lose their place. */
+  const FOCUS_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  const focusTraps = [];
+
+  function focusableIn(container) {
+    return Array.from(container.querySelectorAll(FOCUS_SELECTOR)).filter((node) => {
+      if (node.closest(".hidden")) return false;
+      return node.getClientRects().length > 0;
+    });
+  }
+
+  function pushFocusTrap(container, initial) {
+    if (!container) return;
+    if (focusTraps.some((trap) => trap.container === container)) {
+      if (initial && typeof initial.focus === "function") initial.focus();
+      return;
+    }
+    const previous = document.activeElement;
+    const onKeydown = (event) => {
+      if (event.key !== "Tab") return;
+      const items = focusableIn(container);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (!container.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    container.addEventListener("keydown", onKeydown);
+    focusTraps.push({ container, onKeydown, previous });
+    const target = initial || focusableIn(container)[0];
+    if (target && typeof target.focus === "function") {
+      try {
+        target.focus({ preventScroll: true });
+      } catch (error) {
+        target.focus();
+      }
+    }
+  }
+
+  function popFocusTrap(container, options) {
+    if (!container) return;
+    const restore = !options || options.restore !== false;
+    const index = focusTraps.findIndex((trap) => trap.container === container);
+    if (index < 0) return;
+    const [trap] = focusTraps.splice(index, 1);
+    trap.container.removeEventListener("keydown", trap.onKeydown);
+    const previous = trap.previous;
+    if (!restore || !previous || previous === document.body) return;
+    if (typeof previous.focus === "function" && document.contains(previous)) {
+      try {
+        previous.focus({ preventScroll: true });
+      } catch (error) {
+        /* focus is best effort */
+      }
+    }
+  }
+
+  const TRAP_TARGETS = ["#paperPopover", "#modelPopover", "#settingsSheet", "#templateSheet", "#accountSheet", "#sceneEditor"];
+
+  function popAllFocusTraps(options) {
+    TRAP_TARGETS.forEach((selector) => {
+      const node = $(selector);
+      if (node) popFocusTrap(node, options);
+    });
   }
 
   async function fetchJSON(url, options = {}) {
@@ -355,7 +443,14 @@
   function showLogin() {
     const overlay = $("#loginOverlay");
     if (!overlay.classList.contains("hidden")) return;
+    // The login overlay sits above every sheet, so background traps must go
+    // first; otherwise Tab keeps circling a dialog the user cannot see.
+    popAllFocusTraps({ restore: false });
+    closeSheets({ restore: false });
+    closePaperPopover();
+    closeModelPopover();
     overlay.classList.remove("hidden");
+    pushFocusTrap(overlay);
     applyAuthConfig();
     setTimeout(() => {
       const input = state.authTab === "email" ? $("#loginEmail") : $("#loginPhone");
@@ -364,7 +459,15 @@
   }
 
   function hideLogin() {
-    $("#loginOverlay").classList.add("hidden");
+    const overlay = $("#loginOverlay");
+    overlay.classList.add("hidden");
+    popFocusTrap(overlay);
+    // The scene editor stays open across an auth round-trip, so give it its
+    // trap back instead of leaving a visible modal that Tab can escape.
+    const editor = $("#sceneEditor");
+    if (state.sceneEditor && editor && !editor.classList.contains("hidden")) {
+      pushFocusTrap(editor, $("#sceneEditorApply"));
+    }
     $("#loginError").classList.add("hidden");
   }
 
@@ -450,6 +553,9 @@
     if (!error) return;
     error.textContent = message;
     error.classList.remove("hidden");
+    if (window.touchlearnVoice && window.touchlearnVoice.isOn && window.touchlearnVoice.isOn()) {
+      window.touchlearnVoice.announce(message);
+    }
   }
 
   function showDevCode(code) {
@@ -819,6 +925,7 @@
     $("#modelPopover").classList.remove("hidden");
     $("#modelChip").setAttribute("aria-expanded", "true");
     renderModelChip();
+    pushFocusTrap($("#modelPopover"), $("#modelPopover").querySelector(".model-row.selected, .effort-row.selected, .model-row, .effort-row"));
   }
 
   function closeModelPopover() {
@@ -829,6 +936,7 @@
     const chip = $("#modelChip");
     if (chip) chip.setAttribute("aria-expanded", "false");
     renderModelChip();
+    popFocusTrap(popover);
   }
 
   function toggleModelPopover() {
@@ -843,7 +951,38 @@
   /* "" means auto: the server picks the smallest catalogue size that still
      fits every braille line at its physical width and row count. */
 
+  function parseCustomPaper(value) {
+    const match = CUSTOM_PAPER_RE.exec(String(value || "").trim());
+    if (!match) return null;
+    return { width: Number(match[1]), height: Number(match[2]) };
+  }
+
+  function mmLabel(value) {
+    return String(Number(Number(value).toFixed(2)));
+  }
+
+  function customPaperProblem(width, height) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return "请填写宽和高，单位毫米。";
+    }
+    const shortSide = Math.min(width, height);
+    const longSide = Math.max(width, height);
+    if (shortSide < CUSTOM_MIN_SIDE) return "短边不能小于 148 mm（A5 宽度）。";
+    if (longSide > CUSTOM_MAX_SIDE) return "长边不能大于 420 mm（A3 长度）。";
+    if (width * height < CUSTOM_MIN_AREA) return "面积不能小于 A5（148×210 mm）。";
+    return "";
+  }
+
   function paperEntry(id) {
+    const custom = parseCustomPaper(id);
+    if (custom) {
+      return {
+        id,
+        label: `自定义 ${custom.width}×${custom.height}`,
+        note: `${custom.width} × ${custom.height}`,
+        custom: true,
+      };
+    }
     return PAPER_CHOICES.find((item) => item.id === id) || PAPER_CHOICES[0];
   }
 
@@ -863,9 +1002,11 @@
     const text = $("#paperChipText");
     if (text) text.textContent = label;
     else chip.textContent = label;
-    chip.title = entry.id
-      ? `板材 ${entry.label}（${entry.note} mm）`
-      : "按中文盲文的行数与宽度自动选纸";
+    chip.title = entry.custom
+      ? `自定义板材 ${entry.note} mm，打印按实际毫米出图`
+      : entry.id
+        ? `板材 ${entry.label}（${entry.note} mm）`
+        : "按中文盲文的行数与宽度自动选纸";
     chip.classList.toggle("active", Boolean(entry.id) || state.paperOpen);
   }
 
@@ -875,11 +1016,48 @@
     grid.innerHTML = PAPER_CHOICES.map((item) => {
       const active = item.id === state.paper;
       return `
-        <button class="paper-option${active ? " selected" : ""}" type="button" role="option" aria-selected="${active}" data-paper="${escapeHtml(item.id)}">
+        <button class="paper-option${active ? " selected" : ""}" type="button" aria-pressed="${active}" data-paper="${escapeHtml(item.id)}">
           <strong>${escapeHtml(item.label)}</strong>
           <small>${escapeHtml(item.note)}</small>
         </button>`;
     }).join("");
+    syncCustomPaperFields();
+  }
+
+  function syncCustomPaperFields() {
+    const block = document.querySelector(".paper-custom");
+    const width = $("#paperCustomW");
+    const height = $("#paperCustomH");
+    const custom = parseCustomPaper(state.paper);
+    if (block) block.classList.toggle("is-active", Boolean(custom));
+    if (!width || !height) return;
+    if (custom) {
+      if (!width.value) width.value = mmLabel(custom.width);
+      if (!height.value) height.value = mmLabel(custom.height);
+    }
+  }
+
+  function applyCustomPaper() {
+    const widthInput = $("#paperCustomW");
+    const heightInput = $("#paperCustomH");
+    const hint = $("#paperCustomHint");
+    const width = Number(widthInput?.value);
+    const height = Number(heightInput?.value);
+    const problem = customPaperProblem(width, height);
+    if (problem) {
+      if (hint) {
+        hint.textContent = problem;
+        hint.classList.add("warn");
+      }
+      toast(problem, true);
+      widthInput?.focus();
+      return;
+    }
+    if (hint) {
+      hint.classList.remove("warn");
+      hint.textContent = "范围 148×210 到 297×420 mm；打印机会按实际毫米出图，不缩放盲文点。";
+    }
+    choosePaper(`自定义${mmLabel(width)}×${mmLabel(height)}`);
   }
 
   function openPaperPopover() {
@@ -891,6 +1069,7 @@
     const chip = $("#paperChip");
     if (chip) chip.setAttribute("aria-expanded", "true");
     renderPaperChip();
+    pushFocusTrap(popover, popover && popover.querySelector(".paper-option.selected, .paper-option"));
   }
 
   function closePaperPopover() {
@@ -901,6 +1080,7 @@
     const chip = $("#paperChip");
     if (chip) chip.setAttribute("aria-expanded", "false");
     renderPaperChip();
+    popFocusTrap(popover);
   }
 
   function togglePaperPopover() {
@@ -912,13 +1092,20 @@
   }
 
   function choosePaper(id) {
-    state.paper = PAPER_IDS.has(id) ? id : "";
+    if (id !== "" && !PAPER_IDS.has(id) && !parseCustomPaper(id)) return;
+    state.paper = id;
     savePaper(state.paper);
     closePaperPopover();
     const entry = paperEntry(state.paper);
-    toast(entry.id
-      ? `板材已切换为 ${entry.label}（${entry.note} mm）`
-      : "已改回自动选纸：按中文盲文的行数与宽度选最小规格");
+    const message = entry.custom
+      ? `已切到自定义板材 ${entry.note} mm`
+      : entry.id
+        ? `板材已切换为 ${entry.label}（${entry.note} mm）`
+        : "已改回自动选纸：按中文盲文的行数与宽度选最小规格";
+    toast(message);
+    if (window.touchlearnVoice && window.touchlearnVoice.isOn && window.touchlearnVoice.isOn()) {
+      window.touchlearnVoice.announce(message);
+    }
   }
 
   function chooseModel(id) {
@@ -3071,6 +3258,43 @@
     return ui.detailsPromise;
   }
 
+  const JOB_STEP_LINES = [
+    "正在读取草稿。",
+    "正在做几何建模，计算盲文点位和板体。",
+    "正在生成讲解音频和二维码。",
+    "正在做合规检查并写清单。",
+  ];
+
+  /* A blind user cannot see the progress bar, so each stage change is spoken
+     once.  `notify` queues instead of interrupting whatever is being read. */
+  function announceJobProgress(ui, job) {
+    const voice = window.touchlearnVoice;
+    if (!voice || typeof voice.notify !== "function" || !voice.isOn || !voice.isOn()) return;
+    const status = String(job.status || "");
+    if (status === "done" || status === "failed") {
+      if (ui.spokenStatus === status) return;
+      ui.spokenStatus = status;
+      if (status === "done") {
+        voice.notify("建模完成，产物已经生成。");
+      } else {
+        const reason = String(job.error || job.message || "").trim();
+        voice.notify(reason ? `生成失败。${reason}` : "生成失败，请回到草稿重试。");
+      }
+      return;
+    }
+    const step = Math.min(jobStepIndex(job.progress), JOB_STEP_LINES.length - 1);
+    if (ui.spokenStep === step) return;
+    ui.spokenStep = step;
+    const message = String(job.message || "").trim().replace(/^正在/, "");
+    let line = JOB_STEP_LINES[step];
+    if (status === "queued" || message === "排队中") {
+      line = "已提交，正在等待构建。";
+    } else if (message && message !== "开始构建") {
+      line = `正在${message}。`;
+    }
+    voice.notify(line);
+  }
+
   function startPolling(ui) {
     stopPolling();
     state.activeJob = ui;
@@ -3079,6 +3303,7 @@
         const job = await fetchJSON(`/api/jobs/${encodeURIComponent(ui.jobId)}`);
         ui.job = job;
         ui.pollErrors = 0;
+        announceJobProgress(ui, job);
         renderJob(ui);
         if (job.status === "done") {
           stopPolling();
@@ -3869,7 +4094,9 @@
   function openTemplates() {
     closeModelPopover();
     renderTemplateList();
-    $("#templateSheet").classList.remove("hidden");
+    const sheet = $("#templateSheet");
+    sheet.classList.remove("hidden");
+    pushFocusTrap(sheet, sheet.querySelector(".template-card"));
   }
 
   function chooseTemplate(templateId) {
@@ -4331,6 +4558,7 @@
       applied: false,
     };
     $("#sceneEditor").classList.remove("hidden");
+    pushFocusTrap($("#sceneEditor"), $("#sceneEditorApply"));
     $("#sceneEditorApply").textContent = draft && card ? "应用到草稿" : "用这份电路生成";
     $("#sceneEditorTitle").textContent = template ? template.label : "串联电路";
     $("#sceneStage").innerHTML = '<div class="scene-loading">正在编译可编辑图形…</div>';
@@ -4373,6 +4601,7 @@
     if (inspector) inspector.innerHTML = "";
     const palette = $("#scenePalette");
     if (palette) palette.innerHTML = "";
+    popFocusTrap(overlay);
   }
 
   function applySceneEditor() {
@@ -4507,13 +4736,18 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
   function openSettings() {
     closeModelPopover();
     renderSettings();
-    $("#settingsSheet").classList.remove("hidden");
+    const sheet = $("#settingsSheet");
+    sheet.classList.remove("hidden");
+    pushFocusTrap(sheet, sheet.querySelector(".sheet-close, button, input, select"));
   }
 
-  function closeSheets() {
-    $("#settingsSheet").classList.add("hidden");
-    $("#templateSheet").classList.add("hidden");
-    $("#accountSheet").classList.add("hidden");
+  function closeSheets(options) {
+    const popOptions = options || {};
+    ["#settingsSheet", "#templateSheet", "#accountSheet"].forEach((selector) => {
+      const sheet = $(selector);
+      if (sheet) sheet.classList.add("hidden");
+      popFocusTrap(sheet, popOptions);
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -4560,10 +4794,12 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
 
   function openAccount() {
     closeModelPopover();
-    closeSheets();
+    closeSheets({ restore: false });
     state.linkKind = "";
     renderAccount();
-    $("#accountSheet").classList.remove("hidden");
+    const sheet = $("#accountSheet");
+    sheet.classList.remove("hidden");
+    pushFocusTrap(sheet, sheet.querySelector(".sheet-close, button, input, select"));
   }
 
   function identityRow(kind, identity, user, config) {
@@ -4888,6 +5124,11 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
 
   function bind() {
     $("#newChatBtn").addEventListener("click", newChat);
+    $("#skipLink").addEventListener("click", (event) => {
+      event.preventDefault();
+      const input = $("#promptInput");
+      if (input) input.focus();
+    });
     $("#settingsBtn").addEventListener("click", openSettings);
     $("#templateBtn").addEventListener("click", openTemplates);
     $("#paperChip").addEventListener("click", togglePaperPopover);
@@ -4992,8 +5233,20 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
         closePaperPopover();
         return;
       }
+      if (event.target.closest("#paperCustomApply")) {
+        applyCustomPaper();
+        return;
+      }
       const option = event.target.closest("[data-paper]");
       if (option) choosePaper(option.dataset.paper || "");
+    });
+    $("#paperPopover").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      const id = event.target && event.target.id;
+      if (id === "paperCustomW" || id === "paperCustomH") {
+        event.preventDefault();
+        applyCustomPaper();
+      }
     });
     document.addEventListener("click", (event) => {
       if (state.popoverOpen) {
@@ -5203,6 +5456,11 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
 
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
+      // Siri-like: the first Escape silences the voice before closing anything.
+      if (window.touchlearnVoice && window.touchlearnVoice.isSpeaking && window.touchlearnVoice.isSpeaking()) {
+        window.touchlearnVoice.stop();
+        return;
+      }
       if (state.paperOpen) {
         closePaperPopover();
         return;

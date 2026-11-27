@@ -9,6 +9,9 @@ from touchlearn.paper import (
     PAPER_SIZES,
     canvas_for,
     choose_paper,
+    custom_name,
+    custom_size,
+    is_custom,
     paper_name,
     paper_options,
     parse_paper,
@@ -55,6 +58,41 @@ class PaperCatalogueTests(unittest.TestCase):
         self.assertEqual(canvas["size"], "A4")
         self.assertEqual((canvas["width_mm"], canvas["height_mm"]), paper_size("A4"))
         self.assertEqual(paper_name(canvas["width_mm"], canvas["height_mm"]), "A4")
+        self.assertFalse(canvas["custom"])
+
+
+class CustomPaperTests(unittest.TestCase):
+    def test_parse_free_form_keeps_orientation(self) -> None:
+        self.assertEqual(parse_paper("自定义200×280"), "自定义200×280")
+        self.assertEqual(parse_paper("自定义280x200"), "自定义280×200")
+        self.assertTrue(is_custom(parse_paper("CUSTOM 200*280")))
+        self.assertEqual(paper_size("自定义200×280"), (200.0, 280.0))
+
+    def test_free_numbers_in_prose_are_ignored(self) -> None:
+        # A size mentioned mid-sentence should not hijack automatic sizing.
+        self.assertEqual(parse_paper("把 200x280 的图做成触觉板"), "")
+
+    def test_bounds_reject_too_small_or_too_large(self) -> None:
+        self.assertIsNone(custom_size("自定义100×150"))
+        self.assertIsNone(custom_size("自定义500×600"))
+        # 148×210 is exactly A5's floor and must pass.
+        self.assertEqual(custom_size("自定义148×210"), (148.0, 210.0))
+        with self.assertRaises(ValueError):
+            parse_paper("自定义100×150")
+
+    def test_canvas_marks_custom_and_explicit_request_wins(self) -> None:
+        canvas = canvas_for("自定义200×280")
+        self.assertEqual(canvas["size"], "自定义200×280")
+        self.assertTrue(canvas["custom"])
+        self.assertEqual((canvas["width_mm"], canvas["height_mm"]), (200.0, 280.0))
+        self.assertEqual(
+            choose_paper(requested="自定义200×280", blocks=40, braille_rows=60),
+            "自定义200×280",
+        )
+
+    def test_name_falls_back_to_custom_when_far_from_catalogue(self) -> None:
+        self.assertEqual(paper_name(200.0, 280.0), custom_name(200.0, 280.0))
+        self.assertEqual(paper_name(210.0, 297.0), "A4")
 
 
 if __name__ == "__main__":

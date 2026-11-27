@@ -46,10 +46,11 @@
       "additionalProperties": false,
       "required": ["size", "width_mm", "height_mm"],
       "properties": {
-        "size": {"type": "string", "enum": ["A5", "B5", "16K", "A4", "B4", "A3"]},
+        "size": {"type": "string", "pattern": "^(A5|B5|16K|A4|B4|A3|自定义[0-9]+(\\.[0-9]+)?×[0-9]+(\\.[0-9]+)?)$"},
         "width_mm": {"type": "number", "exclusiveMinimum": 0},
         "height_mm": {"type": "number", "exclusiveMinimum": 0},
-        "margin_mm": {"type": "number", "minimum": 0}
+        "margin_mm": {"type": "number", "minimum": 0},
+        "custom": {"type": "boolean"}
       }
     },
     "source": {

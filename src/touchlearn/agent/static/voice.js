@@ -16,6 +16,11 @@
   "use strict";
 
   const STORE_KEY = "touchlearn.voice.enabled";
+  const RATE_KEY = "touchlearn.voice.rate";
+  // Siri-style pace control.  0.92 is the original default; blind readers
+  // often prefer faster after they get used to the voice.
+  const RATES = [0.75, 0.92, 1.15, 1.4];
+  const RATE_LABELS = ["慢", "标准", "快", "更快"];
   const MAX_READ = 700;
   const MAX_QUEUE = 4;
 
@@ -63,6 +68,14 @@
     afterSpeak: null,
     draftTimer: 0,
     errorCount: 0,
+    rate: (() => {
+      try {
+        const saved = Number(window.localStorage.getItem(RATE_KEY));
+        return RATES.indexOf(saved) >= 0 ? saved : 0.92;
+      } catch (error) {
+        return 0.92;
+      }
+    })(),
   };
 
   const RecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -135,11 +148,43 @@
     state.speakToken += 1;
     clearWatchdog();
     state.speaking = false;
+    state.queue.length = 0;
     try {
       if (window.speechSynthesis) window.speechSynthesis.cancel();
     } catch (error) {
       /* nothing to cancel */
     }
+  }
+
+  function updateRate() {
+    const button = $("#voiceRate");
+    if (!button) return;
+    const index = Math.max(0, RATES.indexOf(state.rate));
+    const label = RATE_LABELS[index] || "标准";
+    button.textContent = `语速 ${label}`;
+    button.setAttribute("aria-label", `朗读速度：${label}，点击切换`);
+    button.setAttribute("title", "朗读速度：慢 / 标准 / 快 / 更快");
+  }
+
+  function cycleRate() {
+    const index = Math.max(0, RATES.indexOf(state.rate));
+    const next = RATES[(index + 1) % RATES.length];
+    state.rate = next;
+    try {
+      window.localStorage.setItem(RATE_KEY, String(next));
+    } catch (error) {
+      /* private mode: the choice still applies to this session */
+    }
+    updateRate();
+    say(`朗读速度已调为${RATE_LABELS[RATES.indexOf(next)]}。`);
+  }
+
+  function setMessagesLive(enabled) {
+    const messages = $("#messages");
+    if (!messages) return;
+    // While our own voice speaks the replies, the polite live region would
+    // repeat every sentence for screen-reader users; mute it only then.
+    messages.setAttribute("aria-live", enabled ? "polite" : "off");
   }
 
   function finishSpeech() {
@@ -178,7 +223,9 @@
     state.speaking = true;
     state.lastPrompt = text;
     pauseListening();
-    live(text);
+    // The synthesiser speaks the line itself.  Only mirror it into the live
+    // region when there is no voice engine, otherwise screen readers announce
+    // the same sentence twice.
     updateBar(text, "speaking");
 
     const token = ++state.speakToken;
@@ -186,7 +233,7 @@
       if (token !== state.speakToken) return;
       const utterance = new Utterance(text);
       utterance.lang = "zh-CN";
-      utterance.rate = 0.92;
+      utterance.rate = state.rate;
       utterance.pitch = 1;
       utterance.volume = 1;
       const voice = pickVoice();
@@ -638,6 +685,7 @@
     state.handoff = isLoginVisible();
     remember(true);
     updateToggles();
+    setMessagesLive(false);
     markSeen();
     updateBar(prompt("greeting"), "speaking");
     if (!asrSupported()) {
@@ -662,6 +710,7 @@
     clearTimeout(state.restartTimer);
     remember(false);
     updateToggles();
+    setMessagesLive(true);
     pauseListening();
     if (!silent) say(prompt("disabled"));
     if (!silent) updateBar(null, "idle");
@@ -702,6 +751,21 @@
         say(prompt("help"));
       });
     }
+    const stop = $("#voiceStop");
+    if (stop) {
+      stop.addEventListener("click", () => {
+        stopSpeech();
+        updateBar("已停止朗读。点「重听」可以再念一遍。", "idle");
+        resumeListening();
+      });
+    }
+    const rate = $("#voiceRate");
+    if (rate) {
+      rate.addEventListener("click", () => {
+        if (!state.on) return;
+        cycleRate();
+      });
+    }
     const close = $("#voiceClose");
     if (close) {
       close.addEventListener("click", () => turnOff({ silent: false }));
@@ -726,8 +790,20 @@
     announce(text) {
       if (state.on && typeof text === "string" && text.trim()) say(text);
     },
+    /** Queue a status line without cutting off the current sentence. */
+    notify(text) {
+      if (state.on && typeof text === "string" && text.trim()) enqueue(text);
+    },
     isOn() {
       return state.on;
+    },
+    isSpeaking() {
+      return state.speaking;
+    },
+    stop() {
+      if (!state.speaking) return;
+      stopSpeech();
+      updateBar("已停止朗读。点「重听」可以再念一遍。", "idle");
     },
   };
 
@@ -741,6 +817,7 @@
     watchMessages();
     watchLogin();
     updateToggles();
+    updateRate();
 
     if (window.speechSynthesis) {
       const refresh = () => {

@@ -25,6 +25,44 @@ PAPER_SIZES: dict[str, tuple[float, float]] = {
 PAPER_ORDER: tuple[str, ...] = tuple(PAPER_SIZES)
 MIN_PAPER = "A5"
 
+# Free-form plates stay inside what an ordinary office printer or a 220 mm
+# FDM bed can actually take.  Anything smaller than A5 cannot hold the braille
+# rows the product promises, and anything larger than A3 is a poster, not a
+# worksheet a student can carry.
+CUSTOM_MIN_SIDE_MM = 148.0
+CUSTOM_MAX_SIDE_MM = 420.0
+CUSTOM_MIN_AREA_MM2 = 148.0 * 210.0
+CUSTOM_PREFIX = "自定义"
+_CUSTOM_RE = re.compile(
+    r"(?:自定义|CUSTOM)[\s:：\-]*(\d{2,4}(?:\.\d+)?)\s*[x×*]\s*(\d{2,4}(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def custom_name(width: float, height: float) -> str:
+    """Canonical size label for a free-form plate."""
+    return f"{CUSTOM_PREFIX}{width:g}×{height:g}"
+
+
+def custom_size(value: object) -> tuple[float, float] | None:
+    """Parse a ``自定义200×280`` label; ``None`` when absent or out of bounds."""
+    match = _CUSTOM_RE.search(str(value or ""))
+    if not match:
+        return None
+    width, height = float(match.group(1)), float(match.group(2))
+    short_side, long_side = sorted((width, height))
+    if short_side < CUSTOM_MIN_SIDE_MM - 1e-6:
+        return None
+    if long_side > CUSTOM_MAX_SIDE_MM + 1e-6:
+        return None
+    if width * height < CUSTOM_MIN_AREA_MM2 - 1e-6:
+        return None
+    return width, height
+
+
+def is_custom(value: object) -> bool:
+    return str(value or "").startswith(CUSTOM_PREFIX)
+
 # Braille geometry used only to estimate layout demand before the plate is
 # built.  The real dots come from cnbraille; this module must not import it to
 # avoid a cycle through layout code.
@@ -35,12 +73,15 @@ BRAILLE_COLUMN_GAP_MM = 6.0    # slack between the widest label and the edge
 
 
 def paper_size(name: str | None) -> tuple[float, float]:
+    parsed = custom_size(name)
+    if parsed:
+        return parsed
     key = str(name or MIN_PAPER).strip().upper()
     return PAPER_SIZES.get(key, PAPER_SIZES[MIN_PAPER])
 
 
 def paper_name(width: float, height: float) -> str:
-    """Return the closest catalogue name for a plate footprint."""
+    """Return a catalogue name, or a custom label when nothing is close."""
     best = MIN_PAPER
     best_error = float("inf")
     for name, (paper_width, paper_height) in PAPER_SIZES.items():
@@ -48,6 +89,8 @@ def paper_name(width: float, height: float) -> str:
         if error < best_error:
             best = name
             best_error = error
+    if best_error > 2.0:
+        return custom_name(width, height)
     return best
 
 
@@ -96,6 +139,17 @@ def parse_paper(text: Any) -> str:
         name = match.group(1).upper()
         if name in PAPER_SIZES:
             return name
+    if _CUSTOM_RE.search(value):
+        parsed = custom_size(value)
+        if parsed:
+            return custom_name(*parsed)
+        # Only an explicit "自定义…" request is an error worth surfacing; a
+        # stray "200x280" in prose should fall back to automatic sizing.
+        if re.match(rf"^\s*(?:{CUSTOM_PREFIX}|CUSTOM)", value, re.IGNORECASE):
+            raise ValueError(
+                "自定义尺寸需在 148×210 mm 到 297×420 mm 之间，且面积不小于 A5；"
+                "超出范围请改用 A3 或分块打印。"
+            )
     return ""
 
 
@@ -165,4 +219,10 @@ def choose_paper(
 
 def canvas_for(name: str, margin_mm: float = 6.0) -> dict[str, Any]:
     width, height = paper_size(name)
-    return {"size": name, "width_mm": width, "height_mm": height, "margin_mm": margin_mm}
+    return {
+        "size": name,
+        "width_mm": width,
+        "height_mm": height,
+        "margin_mm": margin_mm,
+        "custom": is_custom(name),
+    }

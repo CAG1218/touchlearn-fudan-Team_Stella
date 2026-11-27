@@ -202,6 +202,50 @@ def cmd_audio(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Recompute SHA-256 for every artifact in a job manifest."""
+    job_dir = Path(args.job)
+    manifest_path = job_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise DiagramError(f"manifest not found: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise DiagramError(f"invalid JSON in {manifest_path}: {exc}") from exc
+
+    job_id = str(manifest.get("job_id") or job_dir.name)
+    artifacts = manifest.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    checked = 0
+    failed = 0
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        expected = str(item.get("sha256") or "")
+        if not name or not expected:
+            continue
+        target = job_dir / name
+        if not target.is_file():
+            print(f"{job_id:<14} {'missing':<16} {name}  文件缺失")
+            failed += 1
+            continue
+        actual = sha256_file(target)
+        checked += 1
+        if actual != expected:
+            print(f"{job_id:<14} {actual[:8]}…{actual[-7:]:<8} {target.stat().st_size:>12,} B  {name}  SHA-256 不匹配")
+            failed += 1
+        else:
+            print(f"{job_id:<14} {actual[:8]}…{actual[-7:]:<8} {target.stat().st_size:>12,} B  {name}  一致")
+
+    print()
+    if failed:
+        print(f"FAIL  {checked + failed} 个产物中 {failed} 个不一致或缺失，拒绝交付。")
+        return 1
+    print(f"PASS  {checked} 个产物全部与 manifest 一致。")
+    return 0
+
+
 def cmd_all(args: argparse.Namespace) -> int:
     diagram = _checked_diagram(args.diagram)
     out_dir = Path(args.out) if args.out else Path("dist") / diagram.id
@@ -241,6 +285,10 @@ def build_parser() -> argparse.ArgumentParser:
     audio_parser.add_argument("diagram")
     audio_parser.add_argument("-o", "--out", help="output text path")
     audio_parser.set_defaults(func=cmd_audio)
+
+    verify_parser = subparsers.add_parser("verify", help="recompute SHA-256 for a job manifest")
+    verify_parser.add_argument("--job", required=True, help="job directory containing manifest.json")
+    verify_parser.set_defaults(func=cmd_verify)
 
     all_parser = subparsers.add_parser("all", help="run validate, layout, build and check in one pass")
     all_parser.add_argument("diagram")

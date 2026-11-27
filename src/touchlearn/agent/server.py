@@ -1168,6 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
         auth=auth,
         icp=args.icp.strip(),
     )
+    recovered = state.agent.recover_interrupted_jobs()
     server = Server((args.host, port), state)
     local_url = f"http://127.0.0.1:{port}"
     lan_url = f"http://{detect_lan_ip()}:{port}"
@@ -1188,6 +1189,8 @@ def main(argv: list[str] | None = None) -> int:
         print("  验证码:   开发模式，验证码直接显示在登录页（仅限测试）")
         print("  [警告] 公网部署请配置 SMTP 或阿里云短信，并关闭 TOUCHLEARN_AUTH_DEV_MODE。")
     print(f"  产物目录: {output_root.resolve()}")
+    if recovered:
+        print(f"  恢复作业: {len(recovered)} 个上次中断的任务已标记为失败，可回到草稿重试。")
     print("  按 Ctrl+C 停止服务。")
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(local_url)).start()

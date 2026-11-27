@@ -2480,6 +2480,38 @@ class TouchLearnAgent:
         self._write_job(job_dir, status="queued", progress=0, message="排队中", draft_id=draft_id)
         return job_dir
 
+    def recover_interrupted_jobs(self) -> list[str]:
+        """Fail jobs that were left queued/building by a previous process.
+
+        Build threads live inside the server process, so after a restart no
+        worker will ever advance those ``job.json`` files. Leaving them as
+        ``building`` makes the browser poll forever; a failed record with a
+        clear message is honest and lets the user press retry.
+        """
+        jobs_dir = self.root / "jobs"
+        if not jobs_dir.is_dir():
+            return []
+        recovered: list[str] = []
+        for job_dir in sorted(jobs_dir.iterdir()):
+            job_path = job_dir / "job.json"
+            if not job_dir.is_dir() or not job_path.is_file():
+                continue
+            try:
+                job = json.loads(job_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(job, dict) or job.get("status") not in {"queued", "building"}:
+                continue
+            self._write_job(
+                job_dir,
+                status="failed",
+                progress=100,
+                message="服务重启，任务中断",
+                error="构建进程已退出，请回到草稿重新生成；其他已完成作业不受影响。",
+            )
+            recovered.append(job_dir.name)
+        return recovered
+
     def build(
         self,
         draft_id: str,

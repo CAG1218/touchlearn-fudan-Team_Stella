@@ -8,3 +8,7 @@
 *.pdf binary
 *.wav binary
 *.mp3 binary
+
+# Never nest a published package (or its checksum) inside the next release archive.
+release/*.tar.gz export-ignore
+release/*.sha256 export-ignore

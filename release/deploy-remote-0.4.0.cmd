@@ -3,11 +3,13 @@ setlocal
 pushd "%~dp0"
 set SERVER=root@47.103.61.115
 set ARCHIVE=touchlearn-0.4.0.tar.gz
+set APP_DIR=/opt/touchlearn-fudan-Team_Stella
 
 echo ============================================
 echo TouchLearn v0.4.0 deployment
 echo Package: %CD%\%ARCHIVE%
 echo Server:  %SERVER%
+echo Target:  %APP_DIR%
 echo ============================================
 echo.
 
@@ -24,12 +26,13 @@ echo.
 echo [2/3] Extract the update script and rebuild on the server.
 echo       Enter the root password again. The rebuild takes 3-8 minutes.
 echo       deploy/.env and the touchlearn-outputs volume are backed up first.
-ssh %SERVER% "tar -xzf /root/touchlearn-0.4.0.tar.gz -O deploy/install-update.sh > /root/install-update-040.sh && bash /root/install-update-040.sh /root/touchlearn-0.4.0.tar.gz"
+ssh %SERVER% "tar -xzf /root/touchlearn-0.4.0.tar.gz -O deploy/install-update.sh > /root/install-update-040.sh && APP_DIR=%APP_DIR% bash /root/install-update-040.sh /root/touchlearn-0.4.0.tar.gz"
 if errorlevel 1 goto fail
 
 echo.
 echo [3/3] Local health check.
 curl -fsS http://47.103.61.115:8765/api/health
+if errorlevel 1 goto fail
 echo.
 
 echo Deployment finished. Expected version: 0.4.0

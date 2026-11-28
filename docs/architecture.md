@@ -266,7 +266,7 @@ A5 上内容框为 `(8, 28.5, 132, 137.5)` mm：拉丁标题在 `y=5.0`，中文
 | 检查 | 判据 |
 |---|---|
 | `feature_count` | 语义元素不超过 12 |
-| `base_thickness` | 板厚 ≥ 3.0 mm |
+| `base_thickness` | 板厚 ≥ 1.0 mm（默认 3.0；1.0–2.0 mm 为薄板，合规报告标记待复核） |
 | `relief` / `braille_height` | 0.4–0.8 mm |
 | `edge_margin` | 特征不进入边距 |
 | `line_width` | 线宽、圆直径、文字笔画、盲文点径 ≥ 1.0 mm |

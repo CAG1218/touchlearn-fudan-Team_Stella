@@ -62,12 +62,18 @@
     { id: "A3", label: "A3", note: "297 × 420" },
   ];
   const PAPER_IDS = new Set(PAPER_CHOICES.map((item) => item.id));
-  // Free-form plates are named 自定义W×H and validated on the server too.
-  // Bounds mirror touchlearn.paper: never smaller than A5, never larger than A3.
+  // Free-form plates are named 自定义长×宽 and validated on the server too.
+  // Bounds mirror touchlearn.paper: short side at least 148 mm (A5 width), long
+  // side at most 420 mm (A3).  Square plates (150×150) are allowed on purpose.
   const CUSTOM_PAPER_RE = /^自定义([0-9]+(?:\.[0-9]+)?)×([0-9]+(?:\.[0-9]+)?)$/;
   const CUSTOM_MIN_SIDE = 148;
   const CUSTOM_MAX_SIDE = 420;
-  const CUSTOM_MIN_AREA = 148 * 210;
+  // Plate thickness is separate from the sheet: 1–2 mm is the bulk-print range,
+  // 2 mm is the default, and the server keeps 3 mm when the field is omitted.
+  const PLATE_THICKNESS_KEY = "touchlearn.paper.thickness.v1";
+  const PLATE_THICKNESS_MIN = 1;
+  const PLATE_THICKNESS_MAX = 2;
+  const PLATE_THICKNESS_DEFAULT = 2;
   const GENERATION_MODES_KEY = "touchlearn.generation.modes.v1";
   const AUTH_TAB_KEY = "touchlearn.auth.tab.v1";
   const savedAuthTab = (() => {
@@ -94,6 +100,16 @@
         return PAPER_IDS.has(saved) || CUSTOM_PAPER_RE.test(saved) ? saved : "";
       } catch (error) {
         return "";
+      }
+    })(),
+    thickness: (() => {
+      try {
+        const saved = Number(window.localStorage.getItem(PLATE_THICKNESS_KEY));
+        return Number.isFinite(saved) && saved >= PLATE_THICKNESS_MIN && saved <= PLATE_THICKNESS_MAX
+          ? saved
+          : PLATE_THICKNESS_DEFAULT;
+      } catch (error) {
+        return PLATE_THICKNESS_DEFAULT;
       }
     })(),
     paperOpen: false,
@@ -963,23 +979,31 @@
 
   function customPaperProblem(width, height) {
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-      return "请填写宽和高，单位毫米。";
+      return "请填写长和宽，单位毫米。";
     }
     const shortSide = Math.min(width, height);
     const longSide = Math.max(width, height);
     if (shortSide < CUSTOM_MIN_SIDE) return "短边不能小于 148 mm（A5 宽度）。";
     if (longSide > CUSTOM_MAX_SIDE) return "长边不能大于 420 mm（A3 长度）。";
-    if (width * height < CUSTOM_MIN_AREA) return "面积不能小于 A5（148×210 mm）。";
+    return "";
+  }
+
+  function customThicknessProblem(value) {
+    if (!Number.isFinite(value) || value <= 0) return "请填写板厚，单位毫米。";
+    if (value < PLATE_THICKNESS_MIN || value > PLATE_THICKNESS_MAX) {
+      return "板厚需在 1–2 mm 之间；更薄撑不住 0.8 mm 浮雕，更厚请用默认 3 mm 底板。";
+    }
     return "";
   }
 
   function paperEntry(id) {
     const custom = parseCustomPaper(id);
     if (custom) {
+      const thickness = mmLabel(state.thickness);
       return {
         id,
-        label: `自定义 ${custom.width}×${custom.height}`,
-        note: `${custom.width} × ${custom.height}`,
+        label: `自定义 ${custom.width}×${custom.height}×${thickness}`,
+        note: `${custom.width} × ${custom.height} × ${thickness}`,
         custom: true,
       };
     }
@@ -994,6 +1018,14 @@
     }
   }
 
+  function saveThickness(value) {
+    try {
+      window.localStorage.setItem(PLATE_THICKNESS_KEY, mmLabel(value));
+    } catch (error) {
+      /* Private mode: the choice still applies to this session. */
+    }
+  }
+
   function renderPaperChip() {
     const chip = $("#paperChip");
     if (!chip) return;
@@ -1003,7 +1035,7 @@
     if (text) text.textContent = label;
     else chip.textContent = label;
     chip.title = entry.custom
-      ? `自定义板材 ${entry.note} mm，打印按实际毫米出图`
+      ? `自定义板材 ${entry.note} mm（长×宽×厚），打印按实际毫米出图`
       : entry.id
         ? `板材 ${entry.label}（${entry.note} mm）`
         : "按中文盲文的行数与宽度自动选纸";
@@ -1028,8 +1060,10 @@
     const block = document.querySelector(".paper-custom");
     const width = $("#paperCustomW");
     const height = $("#paperCustomH");
+    const thickness = $("#paperCustomT");
     const custom = parseCustomPaper(state.paper);
     if (block) block.classList.toggle("is-active", Boolean(custom));
+    if (thickness) thickness.value = mmLabel(state.thickness);
     if (!width || !height) return;
     if (custom) {
       if (!width.value) width.value = mmLabel(custom.width);
@@ -1040,23 +1074,28 @@
   function applyCustomPaper() {
     const widthInput = $("#paperCustomW");
     const heightInput = $("#paperCustomH");
+    const thicknessInput = $("#paperCustomT");
     const hint = $("#paperCustomHint");
     const width = Number(widthInput?.value);
     const height = Number(heightInput?.value);
-    const problem = customPaperProblem(width, height);
+    const thickness = Number(thicknessInput?.value);
+    const problem = customPaperProblem(width, height) || customThicknessProblem(thickness);
     if (problem) {
       if (hint) {
         hint.textContent = problem;
         hint.classList.add("warn");
       }
       toast(problem, true);
-      widthInput?.focus();
+      const field = customPaperProblem(width, height) ? widthInput : thicknessInput;
+      field?.focus();
       return;
     }
     if (hint) {
       hint.classList.remove("warn");
-      hint.textContent = "范围 148×210 到 297×420 mm；打印机会按实际毫米出图，不缩放盲文点。";
+      hint.textContent = "长与宽：短边不小于 148 mm，长边不超过 420 mm；板厚 1–2 mm。按实际毫米出图，不缩放盲文点。";
     }
+    state.thickness = Math.round(thickness * 10) / 10;
+    saveThickness(state.thickness);
     choosePaper(`自定义${mmLabel(width)}×${mmLabel(height)}`);
   }
 
@@ -1098,7 +1137,7 @@
     closePaperPopover();
     const entry = paperEntry(state.paper);
     const message = entry.custom
-      ? `已切到自定义板材 ${entry.note} mm`
+      ? `已切到自定义板材 ${entry.note} mm（长×宽×厚）`
       : entry.id
         ? `板材已切换为 ${entry.label}（${entry.note} mm）`
         : "已改回自动选纸：按中文盲文的行数与宽度选最小规格";
@@ -1431,8 +1470,10 @@
       if (request.scene) payload.scene = request.scene;
       if (request.circuit) payload.circuit = request.circuit;
       // Empty means "auto": the backend picks the smallest paper that fits
-      // every braille line, so only a concrete choice is sent.
+      // every braille line, so only a concrete choice is sent.  The 1-2 mm
+      // thickness belongs to the custom size; catalogue sizes keep 3 mm.
       if (state.paper) payload.paper = state.paper;
+      if (parseCustomPaper(state.paper)) payload.thickness_mm = state.thickness;
       // Follow-up turns must not feel like a new conversation.  The previous
       // draft id lets the server reuse its photos; the compact history keeps
       // "这是同一人物的三视图" attached to the earlier description.

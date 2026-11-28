@@ -144,6 +144,35 @@ DEFAULT_CONSTRAINTS = {
     "braille_height_mm": 0.6,
 }
 
+# A flat plate may be printed thin on purpose: 1-2 mm is what schools and
+# makerspaces use for bulk runs, where material and time matter more than the
+# 3 mm default.  Anything below 1 mm cannot hold the 0.8 mm relief without the
+# base flexing, and anything above 2 mm is the durable default instead.
+PLATE_THICKNESS_MIN_MM = 1.0
+PLATE_THICKNESS_MAX_MM = 2.0
+
+
+def _plate_thickness(value: Any) -> float | None:
+    """Normalise the optional thin-plate thickness; ``None`` keeps the default."""
+    if value is None or value == "":
+        return None
+    try:
+        thickness = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("板厚需填 1–2 mm 之间的数字。")
+    if not PLATE_THICKNESS_MIN_MM - 1e-9 <= thickness <= PLATE_THICKNESS_MAX_MM + 1e-9:
+        raise ValueError("板厚需在 1–2 mm 之间；更薄撑不住 0.8 mm 浮雕，更厚请用默认 3 mm 底板。")
+    return round(thickness, 2)
+
+
+def _plate_constraints(thickness_mm: Any) -> dict[str, Any]:
+    """Constraints for a flat plate, with the user's thin base when given."""
+    constraints = dict(DEFAULT_CONSTRAINTS)
+    thickness = _plate_thickness(thickness_mm)
+    if thickness is not None:
+        constraints["base_thickness_mm"] = thickness
+    return constraints
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -837,6 +866,9 @@ class TouchLearnAgent:
         # same catalogue name and an unknown value cannot reach the geometry.
         paper_choice = parse_paper(payload.get("paper")) or parse_paper(text)
         payload["paper"] = paper_choice
+        # The thin-plate option travels with the size chip; validating it here
+        # keeps every build path on the same 1-2 mm contract.
+        payload["thickness_mm"] = _plate_thickness(payload.get("thickness_mm"))
 
         # Carry the conversation forward.  The browser sends a compact list of
         # earlier user turns plus the previous draft id; the model sees the
@@ -1244,6 +1276,8 @@ class TouchLearnAgent:
         fields: dict[str, Any] = {"expression": expression_text}
         if payload.get("paper"):
             fields["paper"] = payload["paper"]
+        if payload.get("thickness_mm") is not None:
+            fields["thickness_mm"] = payload["thickness_mm"]
         raw_text = str(payload.get("text") or payload.get("prompt") or payload.get("request") or "").strip()
         if not expression_text and raw_text:
             try:
@@ -1534,6 +1568,7 @@ class TouchLearnAgent:
             "target_height_mm": float(payload.get("target_height_mm") or 135.0),
             "image_received": bool(images),
             "paper": payload.get("paper") or "",
+            "thickness_mm": payload.get("thickness_mm"),
         }
         if vision_confidence:
             fields["vision"] = {
@@ -2150,6 +2185,7 @@ class TouchLearnAgent:
             "output_mode": "tactile_plate",
             "image_received": bool(images),
             "paper": payload.get("paper") or "",
+            "thickness_mm": payload.get("thickness_mm"),
         }
         scene: dict[str, Any] | None = None
         circuit: dict[str, Any] | None = None
@@ -2775,7 +2811,7 @@ class TouchLearnAgent:
                     "y_source": window["y_source"],
                 },
             },
-            "constraints": DEFAULT_CONSTRAINTS,
+            "constraints": _plate_constraints(fields.get("thickness_mm")),
             "audio": audio,
         }
         _write_json(job_dir / "diagram.json", payload)
@@ -2806,7 +2842,9 @@ class TouchLearnAgent:
                 "mesh": mesh.stats(),
                 "warnings": layout.warnings,
             },
-            "print": self._print_settings("tactile_plate", mesh, paper=paper),
+            "print": self._print_settings(
+                "tactile_plate", mesh, paper=paper, thickness_mm=float(payload["constraints"]["base_thickness_mm"])
+            ),
         }
 
     def _build_scene(
@@ -2887,7 +2925,7 @@ class TouchLearnAgent:
                 "elements": elements,
                 "relations": relations,
                 "layout": {"engine": "scene", "options": {"scene": scene}},
-                "constraints": DEFAULT_CONSTRAINTS,
+                "constraints": _plate_constraints(fields.get("thickness_mm")),
                 "audio": audio,
             }
 
@@ -2930,7 +2968,9 @@ class TouchLearnAgent:
                 "mesh": mesh.stats(),
                 "warnings": warnings + list(layout.warnings),
             },
-            "print": self._print_settings("tactile_plate", mesh, paper=paper),
+            "print": self._print_settings(
+                "tactile_plate", mesh, paper=paper, thickness_mm=float(payload["constraints"]["base_thickness_mm"])
+            ),
         }
 
     def _build_robot_relief(self, job_dir: Path, spec: RobotSpec, fields: dict[str, Any], progress: Progress) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -3003,7 +3043,7 @@ class TouchLearnAgent:
             "elements": elements,
             "relations": relations,
             "layout": {"engine": "robot_relief", "options": {"robot": spec.to_dict()}},
-            "constraints": DEFAULT_CONSTRAINTS,
+            "constraints": _plate_constraints(fields.get("thickness_mm")),
             "audio": audio,
         }
         _write_json(job_dir / "diagram.json", payload)
@@ -3034,7 +3074,9 @@ class TouchLearnAgent:
                 "mesh": mesh.stats(),
                 "warnings": layout.warnings,
             },
-            "print": self._print_settings("tactile_plate", mesh, paper=paper),
+            "print": self._print_settings(
+                "tactile_plate", mesh, paper=paper, thickness_mm=float(payload["constraints"]["base_thickness_mm"])
+            ),
         }
 
     def _build_robot_volume(self, job_dir: Path, spec: RobotSpec, fields: dict[str, Any], progress: Progress) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -3993,12 +4035,28 @@ class TouchLearnAgent:
     # Reports and bundle files
     # ------------------------------------------------------------------
 
-    def _print_settings(self, mode: str, mesh: Mesh, paper: str | None = None) -> dict[str, Any]:
+    def _print_settings(
+        self,
+        mode: str,
+        mesh: Mesh,
+        paper: str | None = None,
+        thickness_mm: float | None = None,
+    ) -> dict[str, Any]:
         stats = mesh.stats()
         if mode == "tactile_plate":
             notes = "0.2 mm layers keep the 0.8 mm relief and 0.6 mm braille dots crisp; do not iron the top surface."
             if paper and paper.upper() != "A5":
-                notes += f" 板面为 {paper.upper()}，请确认打印机热床不小于 {paper.upper()} 并预留 6 mm 边距。"
+                if paper.startswith("自定义"):
+                    width_mm, height_mm = paper_size(paper)
+                    label = f"{width_mm:g}×{height_mm:g} mm"
+                else:
+                    label = paper.upper()
+                notes += f" 板面为 {label}，请确认打印机热床不小于 {label} 并预留 6 mm 边距。"
+            if thickness_mm is not None and thickness_mm < 2.0:
+                notes += (
+                    f" 底板 {thickness_mm:g} mm 属于薄板：首层 100% 填充、贴板打印并压平热床，"
+                    "防止翘边后浮雕高度不平。"
+                )
             return {
                 "orientation": "relief face up, base on the bed",
                 "nozzle_mm": 0.4,
@@ -4007,6 +4065,7 @@ class TouchLearnAgent:
                 "infill_percent": 15,
                 "supports": "none",
                 "paper": paper or "A5",
+                "thickness_mm": round(float(thickness_mm), 2) if thickness_mm is not None else None,
                 "notes": notes,
                 "size_mm": stats["size_mm"],
             }

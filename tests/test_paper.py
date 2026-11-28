@@ -74,11 +74,22 @@ class CustomPaperTests(unittest.TestCase):
 
     def test_bounds_reject_too_small_or_too_large(self) -> None:
         self.assertIsNone(custom_size("自定义100×150"))
+        self.assertIsNone(custom_size("自定义147×150"))
+        self.assertIsNone(custom_size("自定义150×421"))
         self.assertIsNone(custom_size("自定义500×600"))
         # 148×210 is exactly A5's floor and must pass.
         self.assertEqual(custom_size("自定义148×210"), (148.0, 210.0))
         with self.assertRaises(ValueError):
             parse_paper("自定义100×150")
+
+    def test_square_plates_are_allowed(self) -> None:
+        # A 150×150 mm plate is the bulk-print size; a paper-like area floor
+        # used to reject it even though both sides are legal.
+        self.assertEqual(custom_size("自定义150×150"), (150.0, 150.0))
+        self.assertEqual(custom_size("自定义148×148"), (148.0, 148.0))
+        self.assertEqual(parse_paper("自定义150×150"), "自定义150×150")
+        canvas = canvas_for("自定义150×150")
+        self.assertEqual((canvas["width_mm"], canvas["height_mm"]), (150.0, 150.0))
 
     def test_canvas_marks_custom_and_explicit_request_wins(self) -> None:
         canvas = canvas_for("自定义200×280")

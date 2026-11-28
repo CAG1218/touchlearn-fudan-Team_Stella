@@ -26,12 +26,14 @@ PAPER_ORDER: tuple[str, ...] = tuple(PAPER_SIZES)
 MIN_PAPER = "A5"
 
 # Free-form plates stay inside what an ordinary office printer or a 220 mm
-# FDM bed can actually take.  Anything smaller than A5 cannot hold the braille
-# rows the product promises, and anything larger than A3 is a poster, not a
-# worksheet a student can carry.
+# FDM bed can actually take.  The short side keeps the A5 width because the
+# braille legend needs that much room; the long side stops at A3, above which
+# the plate is a poster rather than a worksheet a student can carry.  Square
+# plates are allowed (150 x 150 mm is a common bulk-print size), so there is no
+# separate area floor: whether the content actually fits is decided by the
+# layout and reported by the compliance checks, not guessed from an area.
 CUSTOM_MIN_SIDE_MM = 148.0
 CUSTOM_MAX_SIDE_MM = 420.0
-CUSTOM_MIN_AREA_MM2 = 148.0 * 210.0
 CUSTOM_PREFIX = "自定义"
 _CUSTOM_RE = re.compile(
     r"(?:自定义|CUSTOM)[\s:：\-]*(\d{2,4}(?:\.\d+)?)\s*[x×*]\s*(\d{2,4}(?:\.\d+)?)",
@@ -54,8 +56,6 @@ def custom_size(value: object) -> tuple[float, float] | None:
     if short_side < CUSTOM_MIN_SIDE_MM - 1e-6:
         return None
     if long_side > CUSTOM_MAX_SIDE_MM + 1e-6:
-        return None
-    if width * height < CUSTOM_MIN_AREA_MM2 - 1e-6:
         return None
     return width, height
 
@@ -147,7 +147,7 @@ def parse_paper(text: Any) -> str:
         # stray "200x280" in prose should fall back to automatic sizing.
         if re.match(rf"^\s*(?:{CUSTOM_PREFIX}|CUSTOM)", value, re.IGNORECASE):
             raise ValueError(
-                "自定义尺寸需在 148×210 mm 到 297×420 mm 之间，且面积不小于 A5；"
+                "自定义尺寸的短边需不小于 148 mm（A5 宽度），长边不超过 420 mm（A3 长度）；"
                 "超出范围请改用 A3 或分块打印。"
             )
     return ""

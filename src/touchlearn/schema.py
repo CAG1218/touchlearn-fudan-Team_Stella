@@ -223,6 +223,9 @@ def _manual_checks(payload: dict[str, Any]) -> list[SchemaIssue]:
         relief = constraints.get("relief_height_mm")
         if isinstance(relief, (int, float)) and not isinstance(relief, bool) and not 0.4 <= relief <= 0.8:
             error("$.constraints.relief_height_mm", "relief must be within 0.4-0.8 mm")
+        base = constraints.get("base_thickness_mm")
+        if isinstance(base, (int, float)) and not isinstance(base, bool) and not 1.0 <= base <= 10.0:
+            error("$.constraints.base_thickness_mm", "base thickness must be within 1.0-10.0 mm")
     else:
         error("$.constraints", "constraints must be an object")
 

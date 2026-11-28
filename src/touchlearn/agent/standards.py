@@ -672,6 +672,23 @@ def check_plate(
         )
     )
 
+    # 1-2 mm is a deliberate thin plate for bulk printing; it is not a defect,
+    # but it changes the first-layer advice, so it must not silently pass as a
+    # normal 3 mm base.
+    if base_thickness >= 2.0 - 1e-9:
+        report.checks.append(Check("plate.base_thickness", STATUS_PASS, f"{base_thickness:.1f} mm", "底板厚度不低于 2.0 mm，可整板打印"))
+    elif base_thickness >= 1.0 - 1e-9:
+        report.checks.append(
+            Check(
+                "plate.base_thickness",
+                STATUS_REVIEW,
+                f"{base_thickness:.1f} mm",
+                "薄板用于大批量快速打印：首层 100% 填充、贴板并压平热床，防止翘边；低于 1.0 mm 不通过。",
+            )
+        )
+    else:
+        report.checks.append(Check("plate.base_thickness", STATUS_FAIL, f"{base_thickness:.1f} mm", "底板薄于 1.0 mm，撑不住 0.8 mm 浮雕与盲文点"))
+
     bounds = mesh.bounds()
     max_z = bounds[5]
     if max_z <= base_thickness + max(relief, braille_height) + 0.01:
@@ -866,9 +883,23 @@ def check_relief(
         )
     )
     report.checks.append(Check("plate.margin", STATUS_PASS if margin_mm >= 6.0 else STATUS_FAIL, f"{margin_mm:.1f} mm", "四周留出 6 mm 安全边"))
-    report.checks.append(
-        Check("plate.base_thickness", STATUS_PASS if base_thickness_mm >= 2.4 else STATUS_FAIL, f"{base_thickness_mm:.1f} mm", "底板厚度不低于 2.4 mm")
-    )
+    if base_thickness_mm >= 2.0 - 1e-9:
+        report.checks.append(
+            Check("plate.base_thickness", STATUS_PASS, f"{base_thickness_mm:.1f} mm", "底板厚度不低于 2.0 mm，可整板打印")
+        )
+    elif base_thickness_mm >= 1.0 - 1e-9:
+        report.checks.append(
+            Check(
+                "plate.base_thickness",
+                STATUS_REVIEW,
+                f"{base_thickness_mm:.1f} mm",
+                "薄板用于大批量快速打印：首层 100% 填充、贴板并压平热床，防止翘边；低于 1.0 mm 不通过。",
+            )
+        )
+    else:
+        report.checks.append(
+            Check("plate.base_thickness", STATUS_FAIL, f"{base_thickness_mm:.1f} mm", "底板薄于 1.0 mm，撑不住浮雕与盲文点")
+        )
     report.checks.append(
         Check(
             "tactile.line_height",

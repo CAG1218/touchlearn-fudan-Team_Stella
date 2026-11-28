@@ -178,8 +178,18 @@ def check_layout(diagram: Diagram, layout: LayoutResult, mesh: Mesh | None = Non
             )
         )
 
-    if base_thickness < 3.0:
-        issues.append(Issue("error", "base_thickness", f"base is {base_thickness} mm; minimum is 3.0 mm."))
+    # 3.0 mm is the durable default; 1.0-2.0 mm is a thin plate for bulk
+    # printing, which the compliance report flags for a first-layer check
+    # instead of failing outright.  Below 1.0 mm the 0.8 mm relief cannot be
+    # held without the base flexing.
+    if base_thickness < 1.0 - 1e-9:
+        issues.append(
+            Issue(
+                "error",
+                "base_thickness",
+                f"base is {base_thickness} mm; minimum is 1.0 mm (3.0 mm default, 1.0-2.0 mm thin plate).",
+            )
+        )
     if not 0.4 <= relief <= 0.8:
         issues.append(Issue("error", "relief", f"relief is {relief} mm; allowed range is 0.4-0.8 mm."))
     if not 0.4 <= braille_height <= 0.8:

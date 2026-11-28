@@ -26,7 +26,6 @@ from ..model3d import (
     LEGEND_ROW_MM,
     _base_outline,
     _braille_on_top,
-    _emboss_text_on_top,
     _legend_panel,
 )
 from .volumetric import _box_xy, _cylinder, _prism_xy
@@ -45,7 +44,10 @@ MAX_LEGEND_LABELS = 6
 # The front plaque carries the title in one, two or three braille lines.  A
 # six-character title on the smallest base needs three 2-character lines.
 MAX_TITLE_LINES = 3
-BRAILLE_LINE_GAP_MM = 1.2
+# Two braille lines need a fingertip-wide gap; the 1.8 mm matches the flat
+# plate.  A three-line title only has room for the 1.2 mm print clearance.
+BRAILLE_LINE_GAP_MM = 1.8
+THREE_LINE_GAP_MM = 1.2
 PLAQUE_DEPTH_MM = 26.0
 
 
@@ -293,25 +295,29 @@ def compose_printable(
     # user typed.  A four-character title becomes two balanced lines, which
     # also makes the cell groups much easier to inspect by eye.
     title_lines, title_truncated = _wrap_braille(title_text, plaque_width - 6.0)
-    line_step = cnbraille.height() + BRAILLE_LINE_GAP_MM
-    block_height = len(title_lines) * cnbraille.height() + (len(title_lines) - 1) * BRAILLE_LINE_GAP_MM
+    line_gap = THREE_LINE_GAP_MM if len(title_lines) >= 3 else BRAILLE_LINE_GAP_MM
+    line_step = cnbraille.height() + line_gap
+    block_height = len(title_lines) * cnbraille.height() + (len(title_lines) - 1) * line_gap
     first_line_y = plaque_front + max(1.5, (plaque_depth - block_height) / 2.0)
     for line_index, line in enumerate(title_lines):
         line_width = cnbraille.width(line)
         line_x = plaque_left + max(2.0, (plaque_width - line_width) / 2.0)
+        # The reader stands at -Y, so line 0 sits at the far edge of the plaque
+        # and the last line is the one nearest them.
         _braille_on_top(
             mesh,
             line,
             line_x,
-            first_line_y + line_index * line_step,
-            top + 2.0,
-            top + 2.75,
+            first_line_y + (len(title_lines) - 1 - line_index) * line_step,
+            top + 2.1,
+            top + 2.2 + BRAILLE_DOT_HEIGHT_MM,
         )
 
     qr_left = tab_half - 4.0 - qr_size
     qr_front = tab_front + 4.0
     _box_xy(mesh, qr_left, qr_front, qr_size, qr_size, top - 0.1, top + 1.8, chamfer=2.0)
-    _emboss_text_on_top(mesh, "QR", qr_left + qr_size * 0.22, qr_front + qr_size * 0.40, top + 1.7, top + 2.4, 4.0)
+    # Flat pad, no raised lettering: the QR is a printed sticker, and a 0.6 mm
+    # "QR" emboss would keep the sticker from lying flush (docs/tactile_spec.md).
 
     legend_front = plaque_front + plaque_depth + 4.0
     legend_depth, legend_columns = _legend_panel(
@@ -351,6 +357,7 @@ def compose_printable(
             "title_cells": cnbraille.describe_text(title_text),
             "title_dots": sum(len(cell) for cell in cnbraille.encode_text(title_text)),
             "title_truncated": title_truncated,
+            "title_line_pitch_mm": round(line_step, 2),
             "pinyin": cnbraille.readings(title_text),
             "dot_diameter_mm": cnbraille.DOT_DIAMETER_MM,
             "dot_height_mm": BRAILLE_DOT_HEIGHT_MM,
@@ -367,6 +374,8 @@ def compose_printable(
         },
         "standing_flags": 0,
         "qr_pad_mm": qr_size,
+        "qr_pad_corner_mm": [round(qr_left, 2), round(qr_front, 2)],
+        "qr_pad_surface": "flat",
         "watertight": mesh_stats["watertight"],
         "open_edges": mesh_stats["open_edges"],
         "nonmanifold_edges": mesh_stats["nonmanifold_edges"],

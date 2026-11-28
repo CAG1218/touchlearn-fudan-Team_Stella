@@ -40,7 +40,7 @@ from .agent.volumetric import (
     _sub,
     _unit,
 )
-from .geometry import Mesh, Primitive, primitive_polygons, triangulate
+from .geometry import Mesh, triangulate
 from .layout import rect_polygon
 
 Vec3 = tuple[float, float, float]
@@ -735,14 +735,20 @@ def _braille_on_plate(
 
 
 def _braille_on_top(mesh: Mesh, text: str, x: float, y: float, z0: float, z1: float) -> None:
+    """Raise ``text`` on a horizontal top face a reader approaches from -Y.
+
+    ``cnbraille.dot_centers`` lays the cells out page-style, where dot 1 has the
+    smallest Y.  On a plaque the reader stands at -Y, so the far edge of the
+    cell (largest Y) is the top of their page.  Mirroring the dot rows within
+    the cell keeps dot 1 away from the reader; without it the whole glyph is
+    printed upside down and cannot be read by touch.  ``_braille_on_plate``,
+    ``_braille_on_cylinder_wall`` and ``_braille_on_sphere_cap`` already apply
+    the same flip on their own axes.
+    """
+    lift = cnbraille.height()
     for dot_x, dot_y in cnbraille.dot_centers(text, x, y):
+        dot_y = 2.0 * y + lift - dot_y
         _cylinder(mesh, (dot_x, dot_y, z0 - 0.1), (dot_x, dot_y, z1), cnbraille.DOT_DIAMETER_MM / 2.0, segments=12)
-
-
-def _emboss_text_on_top(mesh: Mesh, text: str, x: float, y: float, z0: float, z1: float, height: float) -> None:
-    primitive = Primitive("text", ((x, y),), text=text, height=height)
-    for polygon in primitive_polygons(primitive):
-        _prism_xy(mesh, polygon, z0, z1)
 
 
 # ---------------------------------------------------------------------------
@@ -1113,9 +1119,11 @@ def _legend_panel(
         column = index // rows
         row = index % rows
         x = left + 2.0 + column * column_width
-        y = front + 2.0 + row * row_height
+        # The reader stands at -Y, so their first line must sit at the far edge
+        # of the panel and the following lines come towards them.
+        y = front + 2.0 + (rows - 1 - row) * row_height
         try:
-            _braille_on_top(mesh, line, x, y, top + 1.1, top + 1.1 + BRAILLE_DOT_HEIGHT_MM)
+            _braille_on_top(mesh, line, x, y, top + 1.1, top + 1.2 + BRAILLE_DOT_HEIGHT_MM)
         except cnbraille.BrailleError:
             continue
     return depth, columns
@@ -1235,13 +1243,22 @@ def _solar_system_mesh(spec: dict[str, Any]) -> Model3DResult:
     plaque_left = -56.0
     plaque_front = tab_front + 4.0
     _box_xy(mesh, plaque_left, plaque_front, plaque_width, plaque_depth, top - 0.1, top + 2.2, chamfer=2.0)
-    _braille_on_top(mesh, "太阳系", plaque_left + 6.0, plaque_front + 6.0, top + 2.0, top + 2.75)
+    _braille_on_top(
+        mesh,
+        "太阳系",
+        plaque_left + 6.0,
+        plaque_front + 6.0,
+        top + 2.1,
+        top + 2.2 + BRAILLE_DOT_HEIGHT_MM,
+    )
 
     qr_size = 32.0
     qr_left = 24.0
     qr_front = tab_front + 4.0
     _box_xy(mesh, qr_left, qr_front, qr_size, qr_size, top - 0.1, top + 1.8, chamfer=2.0)
-    _emboss_text_on_top(mesh, "QR", qr_left + 4.0, qr_front + 10.0, top + 1.7, top + 2.4, 4.0)
+    # The pad stays flat.  A raised "QR" mark lifts the sticker's edges, so the
+    # code cannot lie flush and only reads as illegible fragments (see
+    # docs/tactile_spec.md).  The audio QR is a printed sticker instead.
 
     bounds = mesh.bounds()
     size = [bounds[3] - bounds[0], bounds[4] - bounds[1], bounds[5] - bounds[2]]
@@ -1282,6 +1299,8 @@ def _solar_system_mesh(spec: dict[str, Any]) -> Model3DResult:
         },
         "standing_flags": 0,
         "qr_pad_mm": qr_size,
+        "qr_pad_corner_mm": [round(qr_left, 2), round(qr_front, 2)],
+        "qr_pad_surface": "flat",
         "scale_note": spec.get("scale_note"),
         "size_mm": [round(value, 3) for value in size],
         "watertight": mesh.is_watertight(),
@@ -1532,11 +1551,11 @@ def _assembly_mesh(spec: dict[str, Any], *, max_height_mm: float = 180.0) -> Mod
         title_text,
         title_left + max(3.0, (title_width - title_width_mm) / 2.0),
         plaque_front + 5.5,
-        top + 2.0,
-        top + 2.75,
+        top + 2.1,
+        top + 2.2 + BRAILLE_DOT_HEIGHT_MM,
     )
     _box_xy(mesh, qr_left, plaque_front, qr_size, qr_size, top - 0.1, top + 1.8, chamfer=2.0)
-    _emboss_text_on_top(mesh, "QR", qr_left + qr_size * 0.22, plaque_front + qr_size * 0.40, top + 1.7, top + 2.4, 4.0)
+    # Flat pad, no raised lettering: the QR is a printed sticker.
 
     # Anything that could not take a direct surface label goes into one compact
     # braille legend on the same tab.  No standing flags are generated.
@@ -1620,6 +1639,8 @@ def _assembly_mesh(spec: dict[str, Any], *, max_height_mm: float = 180.0) -> Mod
         },
         "standing_flags": 0,
         "qr_pad_mm": qr_size,
+        "qr_pad_corner_mm": [round(qr_left, 2), round(plaque_front, 2)],
+        "qr_pad_surface": "flat",
         "scale_note": spec.get("scale_note"),
         "size_mm": [round(value, 3) for value in size],
         "watertight": mesh.is_watertight(),

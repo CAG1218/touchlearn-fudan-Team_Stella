@@ -516,14 +516,18 @@ def _footer(
         baseline -= text_height + 1.8
 
     step = tactile_braille.height("中") + 1.8
+    valid: list[str] = []
     for text in braille_lines[:3]:
         value = _chinese_label(text, max_chars=28)
         if not value:
             continue
         if tactile_braille.width(value) > available:
             continue
-        builder.braille(feature, x, baseline, value)
-        baseline -= step
+        valid.append(value)
+    # A sheet is read top-down: the first line sits at the smallest y, even
+    # though the block grows upward from the same baseline as before.
+    for index, value in enumerate(valid):
+        builder.braille(feature, x, baseline - (len(valid) - 1 - index) * step, value)
 
 
 def _cn_count(value: int) -> str:

@@ -1468,7 +1468,10 @@ def _tokenhub_download(
     glb_url = urls.get("glb") or urls.get("gltf")
     if not glb_url:
         kinds = "、".join(sorted(k for k in urls if k != "preview")) or "无"
-        raise ReconstructionError(f"TokenHub 任务完成但没有返回 GLB（返回格式：{kinds}）。")
+        fields = "、".join(sorted(k for k in payload if isinstance(k, str))) or "空"
+        raise ReconstructionError(
+            f"TokenHub 任务完成但没有返回 GLB（返回格式：{kinds}；响应字段：{fields}）。"
+        )
     files: dict[str, Path] = {"glb": _download(glb_url, dest / "model_textured.glb", timeout=timeout)}
     if urls.get("preview"):
         try:
@@ -1598,48 +1601,93 @@ def _tokenhub_reconstruct(
     )
 
 
+MODEL_KINDS = ("glb", "gltf", "obj", "fbx", "usdz")
+
+_MODEL_URL_KEYS = ("model_url", "glb_url", "url", "file_url", "download_url")
+_PREVIEW_KEYS = (
+    "preview_image_url",
+    "rendered_image_url",
+    "generated_image_url",
+    "thumbnail_url",
+    "preview",
+    "image_url",
+)
+_RESULT_CONTAINERS = ("data", "result", "output", "outputs", "files", "models", "items")
+
+
 def _url_kind(url: str) -> str:
     path = url.split("?", 1)[0].lower()
-    for suffix in ("glb", "gltf", "obj", "fbx", "usdz"):
+    for suffix in MODEL_KINDS:
         if path.endswith(f".{suffix}"):
             return suffix
     return ""
 
 
-def _tokenhub_results(payload: Any) -> dict[str, str]:
-    """Extract downloadable files from the documented query response.
+def _url_suffix(url: str) -> str:
+    name = url.split("?", 1)[0].lower().rsplit("/", 1)[-1]
+    return name.rsplit(".", 1)[-1] if "." in name else ""
 
-    TokenHub returns ``data`` (or ``result``) as a list of
-    ``{"type": "glb", "url": ...}`` items in the console examples.  A mapping
-    with ``glb_url`` / ``model_url`` is accepted too, so a gateway change does
-    not silently lose the mesh.
+
+def _result_items(value: Any, depth: int = 0):
+    """Yield every mapping that carries a download or preview URL."""
+    if depth > 4:
+        return
+    if isinstance(value, dict):
+        if any(
+            isinstance(value.get(key), str) and value.get(key).startswith("http")
+            for key in _MODEL_URL_KEYS + _PREVIEW_KEYS
+        ):
+            yield value
+            return
+        for key in _RESULT_CONTAINERS:
+            child = value.get(key)
+            if isinstance(child, (dict, list)):
+                yield from _result_items(child, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _result_items(item, depth + 1)
+
+
+def _tokenhub_results(payload: Any) -> dict[str, str]:
+    """Extract downloadable files from a completed query response.
+
+    TokenHub documents three different shapes, and all of them must work:
+
+    * HY-3D — ``data`` is a list of ``{"type": "glb", "url": ...}`` items.
+    * Tripo (``tripo-3d-p1`` / ``-3.1`` / ``-p2``) — one ``output`` object with
+      ``model_url`` plus ``generated_image_url`` / ``rendered_image_url``.
+    * Rodin and other marketplaces — ``data`` items that only carry a file name
+      and ``url``.
+
+    The extractor walks ``data`` / ``result`` / ``output`` recursively, so one
+    extra level of nesting on the gateway side does not lose the mesh again.
     """
     if not isinstance(payload, dict):
         return {}
-    raw = payload.get("data", payload.get("result"))
-    if isinstance(raw, dict):
-        items = [raw]
-    elif isinstance(raw, list):
-        items = [item for item in raw if isinstance(item, dict)]
-    else:
-        items = []
     urls: dict[str, str] = {}
-    for item in items:
-        url = ""
-        for key in ("url", "glb_url", "model_url", "file_url", "download_url"):
-            candidate = item.get(key)
-            if isinstance(candidate, str) and candidate.startswith("http"):
-                url = candidate
-                break
-        kind = str(item.get("type") or item.get("format") or item.get("file_type") or "").lower()
-        if not kind and url:
-            kind = _url_kind(url)
-        if kind and url:
-            urls.setdefault(kind, url)
-        for key in ("preview_image_url", "thumbnail_url", "preview"):
-            preview = item.get(key)
-            if isinstance(preview, str) and preview.startswith("http"):
-                urls.setdefault("preview", preview)
+    for container in ("data", "result", "output"):
+        for item in _result_items(payload.get(container)):
+            url = ""
+            for key in _MODEL_URL_KEYS:
+                candidate = item.get(key)
+                if isinstance(candidate, str) and candidate.startswith("http"):
+                    url = candidate
+                    break
+            kind = str(item.get("type") or item.get("format") or item.get("file_type") or "").lower()
+            if kind not in MODEL_KINDS:
+                # Tripo's ``type`` is the task kind (``image_to_model``), and
+                # Rodin publishes a file name; fall back to the URL itself.
+                kind = _url_kind(url) if url else ""
+            if not kind and url and not _url_suffix(url):
+                # Documented model URLs are GLB even when a signature hides the
+                # extension.  A ``.zip`` / ``.png`` stays unnamed on purpose.
+                kind = "glb"
+            if kind and url:
+                urls.setdefault(kind, url)
+            for key in _PREVIEW_KEYS:
+                preview = item.get(key)
+                if isinstance(preview, str) and preview.startswith("http"):
+                    urls.setdefault("preview", preview)
     return urls
 
 

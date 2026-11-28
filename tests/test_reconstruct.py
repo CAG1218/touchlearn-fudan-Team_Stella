@@ -590,6 +590,39 @@ class TokenHubAdapterTests(unittest.TestCase):
         self.assertEqual(_tokenhub_results(single), {"glb": "https://cos.example.com/b.glb"})
         self.assertEqual(_tokenhub_results({"data": None}), {})
 
+    def test_result_parser_accepts_the_documented_tripo_output_object(self) -> None:
+        # Shape from the TokenHub Tripo-3D guide: one ``output`` object whose
+        # ``type`` is the task kind, not a file kind.
+        payload = {
+            "status": "completed",
+            "input": {"prompt": "一只可爱的小猫", "pbr": True},
+            "output": {
+                "type": "text_to_model",
+                "model_url": "https://cos.example.com/t.glb",
+                "generated_image_url": "https://cos.example.com/g.png",
+                "rendered_image_url": "https://cos.example.com/r.png",
+            },
+            "credits_consumed": 50,
+        }
+        self.assertEqual(
+            _tokenhub_results(payload),
+            {"glb": "https://cos.example.com/t.glb", "preview": "https://cos.example.com/r.png"},
+        )
+
+    def test_result_parser_accepts_image_to_model_and_marketplace_items(self) -> None:
+        image_task = {
+            "status": "completed",
+            "output": {"type": "image_to_model", "model_url": "https://cos.example.com/i.glb"},
+        }
+        self.assertEqual(_tokenhub_results(image_task), {"glb": "https://cos.example.com/i.glb"})
+        rodin = {"data": [{"name": "base_basic_pbr.glb", "url": "https://cos.example.com/base.glb"}]}
+        self.assertEqual(_tokenhub_results(rodin), {"glb": "https://cos.example.com/base.glb"})
+        nested = {"data": {"output": {"model_url": "https://cos.example.com/n.glb"}}}
+        self.assertEqual(_tokenhub_results(nested), {"glb": "https://cos.example.com/n.glb"})
+        unsigned = {"output": {"model_url": "https://cos.example.com/download/abc123"}}
+        self.assertEqual(_tokenhub_results(unsigned), {"glb": "https://cos.example.com/download/abc123"})
+        self.assertEqual(_tokenhub_results({"status": "completed"}), {})
+
 
 class TokenHubTextGenerationTests(unittest.TestCase):
     def test_quality_defaults_to_high_and_is_configurable(self) -> None:

@@ -132,6 +132,8 @@ TOUCHLEARN_3D_GENERATIVE=1            # 0 = 回退本地结构化编译器
 
 图生 3D 的 `input` 按控制台示例需要 HTTPS URL。部署在公网时，后端会把上传照片临时发布到 `/files/<job>/input-N.<ext>` 并把该 URL 交给 TokenHub，重建结束后立即删除；本地预览没有公网地址时退回 data URI。文件名含 `front/left/back/right`（或 `前/左/后/右`）且上传 2–4 张照片时，Tripo 自动走 `inputs` 多视图；无方向词时按文件名顺序填充 front/left/back/right。
 
+查询接口的返回结构随模型族不同：混元返回 `data` 数组（`{type, url}`），Tripo 返回单个 `output` 对象（`model_url` + `rendered_image_url`），Rodin 等市场模型在 `data` 里给 `{name, url}`。适配器对三种结构都做解析。
+
 质量档位只决定面数与纹理预算，不改变协议：`draft` 约 20 万 Tripo 面 / 30 万混元面，`standard` 约 50 万 / 50 万，`high` 约 150 万 / 100 万。文字提示词会被压缩到 1024 字符以内，并明确要求“单个完整物体、不要文字/铭牌/支架/底座/场景”，底座和标题由本地后处理添加。
 
 也支持 Tripo 官方（`TOUCHLEARN_3D_PROVIDER=tripo`）和 Meshy 官方（`meshy`）接口，各自填 `TOUCHLEARN_3D_TRIPO_KEY` / `TOUCHLEARN_3D_MESHY_KEY` 或通用 `TOUCHLEARN_3D_KEY`。

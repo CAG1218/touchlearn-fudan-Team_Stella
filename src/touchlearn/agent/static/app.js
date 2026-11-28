@@ -5284,7 +5284,7 @@ TOUCHLEARN_VLM_MODEL=deepseek/deepseek-flash</pre>
     $("#paperPopover").addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       const id = event.target && event.target.id;
-      if (id === "paperCustomW" || id === "paperCustomH") {
+      if (id === "paperCustomW" || id === "paperCustomH" || id === "paperCustomT") {
         event.preventDefault();
         applyCustomPaper();
       }
